@@ -1,60 +1,59 @@
-     1|<!DOCTYPE html>
-     2|<html lang="zh-CN">
-     3|<head>
-     4|    <meta charset="UTF-8">
-     5|    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-     6|    <title>玄枢 (XuanShu) v5.0</title>
-     7|    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-     8|    <link rel="stylesheet" href="/static/css/style.css">
-     9|</head>
-    10|<body class="theme-origin">
-    11|    <div class="sidebar">
-    12|        <div class="logo"><div class="logo-icon">A</div> 玄枢 (XuanShu)</div>
-    13|        <div class="nav-menu">
-    14|            <div class="nav-item active"><span>💬</span> 对话</div>
-    15|            <div class="nav-item"><span>🧠</span> 记忆</div>
-    16|            <div class="nav-item"><span>⚙️</span> 设置</div>
-    17|        </div>
-    18|    </div>
-    19|    <div class="main-content">
-    20|        <div class="header">
-    21|            <div class="header-title">智能协作空间</div>
-    22|            <div class="header-actions">
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>玄枢 (XuanShu) v5.0</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body class="theme-origin">
+    <div class="sidebar">
+        <div class="logo"><div class="logo-icon">A</div> 玄枢 (XuanShu)</div>
+        <div class="nav-menu">
+            <div class="nav-item active"><span>💬</span> 对话</div>
+            <div class="nav-item"><span>🧠</span> 记忆</div>
+            <div class="nav-item"><span>⚙️</span> 设置</div>
+        </div>
+    </div>
+    <div class="main-content">
+        <div class="header">
+            <div class="header-title">智能协作空间</div>
+            <div class="header-actions">
 <select id="theme-select" class="theme-selector" onchange="changeTheme(this.value)">
     <option value="theme-origin">🌑 原点 · 极简黑</option>
     <option value="theme-zen">🍃 空灵 · 禅意白</option>
     <option value="theme-cyber">⚡ 赛博 · 霓虹蓝</option>
 </select>
 
-    23|                <button class="btn btn-secondary btn-sm">导出记录</button>
-    24|            </div>
-    25|        </div>
-    26|        <div class="page-content">
-    27|            <div class="chat-container">
-    28|                <div id="messages" class="messages"></div>
-    29|                <div class="input-area">
-    30|                    <textarea id="message-input" placeholder="输入消息..."></textarea>
-    31|                    <button id="send-btn" class="send-btn">发送</button>
-    32|                </div>
-    33|            </div>
-    34|        </div>
-    35|    </div>
-    36|    <!-- 协作面板 -->
-    37|    <div id="cluster-panel" style="display:none; position:fixed; top:20%; left:30%; width:40%; background:var(--bg-card); border:1px solid var(--border); padding:20px; z-index:1000; border-radius:12px; color:var(--text-primary);">
-    38|        <h3>🤝 集群协作模式</h3>
-    39|        <div style="margin-bottom:15px;">
-    40|            <input type="text" id="room-name" placeholder="房间名称" style="width:60%; padding:5px; background:var(--bg-primary); color:white; border:1px solid var(--border);">
-    41|            <button onclick="createCluster()" style="padding:5px 10px; cursor:pointer;">创建房间</button>
-    42|        </div>
-    43|        <div style="margin-bottom:15px;">
-    44|            <button onclick="joinCluster()" style="padding:5px 20px; cursor:pointer;">搜索并加入</button>
-    45|        </div>
-    46|        <div id="cluster-status-msg">状态：待机</div>
-    47|        <button onclick="document.getElementById('cluster-panel').style.display='none'" style="margin-top:10px; cursor:pointer;">关闭</button>
-    48|    </div>
-    49|    <button id="cluster-btn">🤝</button>
-    50|    <script src="/static/js/main.js"></script>
-    51|    <script src="/static/js/cluster.js"></script>
-    52|</body>
-    53|</html>
-    54|
+                <button class="btn btn-secondary btn-sm">导出记录</button>
+            </div>
+        </div>
+        <div class="page-content">
+            <div class="chat-container">
+                <div id="messages" class="messages"></div>
+                <div class="input-area">
+                    <textarea id="message-input" placeholder="输入消息..."></textarea>
+                    <button id="send-btn" class="send-btn">发送</button>
+                </div>
+            </div>
+        </div>
+    </div>
+    <!-- 协作面板 -->
+    <div id="cluster-panel" style="display:none; position:fixed; top:20%; left:30%; width:40%; background:var(--bg-card); border:1px solid var(--border); padding:20px; z-index:1000; border-radius:12px; color:var(--text-primary);">
+        <h3>🤝 集群协作模式</h3>
+        <div style="margin-bottom:15px;">
+            <input type="text" id="room-name" placeholder="房间名称" style="width:60%; padding:5px; background:var(--bg-primary); color:white; border:1px solid var(--border);">
+            <button onclick="createCluster()" style="padding:5px 10px; cursor:pointer;">创建房间</button>
+        </div>
+        <div style="margin-bottom:15px;">
+            <button onclick="joinCluster()" style="padding:5px 20px; cursor:pointer;">搜索并加入</button>
+        </div>
+        <div id="cluster-status-msg">状态：待机</div>
+        <button onclick="document.getElementById('cluster-panel').style.display='none'" style="margin-top:10px; cursor:pointer;">关闭</button>
+    </div>
+    <button id="cluster-btn">🤝</button>
+    <script src="/static/js/main.js"></script>
+    <script src="/static/js/cluster.js"></script>
+</body>
+</html>
