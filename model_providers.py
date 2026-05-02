@@ -208,18 +208,18 @@ def call_model(config: ModelConfig, prompt: str, system_prompt: str = "", temper
 
 
 def _call_ollama(config: ModelConfig, prompt: str, system_prompt: str, temperature: float) -> str:
-    chat_url = f"{config.api_base}/api/chat"
+    # Ollama 使用 /api/generate 端点（兼容旧版）
+    chat_url = f"{config.api_base}/api/generate"
     
-    messages = []
+    # 合并 system_prompt 和 prompt
+    full_prompt = prompt
     if system_prompt:
-        messages.append({"role": "system", "content": system_prompt})
-    messages.append({"role": "user", "content": prompt})
+        full_prompt = f"{system_prompt}\n\n{prompt}"
     
     payload = {
         "model": config.model_name,
-        "messages": messages,
+        "prompt": full_prompt,
         "stream": False,
-        "temperature": temperature,
         "options": {
             "temperature": temperature,
             "top_p": 0.9,
@@ -232,7 +232,7 @@ def _call_ollama(config: ModelConfig, prompt: str, system_prompt: str, temperatu
         response.raise_for_status()
         result = response.json()
         
-        content = result.get("message", {}).get("content", result.get("response", ""))
+        content = result.get("response", "")
         
         if token_tracker and "usage" in result:
             usage = result["usage"]

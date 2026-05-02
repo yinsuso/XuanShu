@@ -296,9 +296,9 @@ async def get_memory(key: Optional[str] = None):
 async def export_conversation():
  try:
   # 获取当前会话历史
-  history = conversation_manager.get_current_conversation()
-  if not history:
+  if not conversation_manager.current_conversation:
    return JSONResponse(status_code=404, content={"success": False, "error": "当前没有可导出的对话历史"})
+  history = [msg.to_dict() for msg in conversation_manager.current_conversation.messages]
   
   # 转换为 Markdown 格式
   md_content = "# Local Agent 对话记录\n\n"
