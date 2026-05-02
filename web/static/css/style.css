@@ -1,0 +1,56 @@
+
+/* --- 基础通用样式 --- */
+* { margin: 0; padding: 0; box-sizing: border-box; transition: background 0.3s, color 0.3s, border-color 0.3s, box-shadow 0.3s; }
+body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; height: 100vh; display: flex; overflow: hidden; }
+
+/* --- 【境界一：原点 · 极简黑】 (Default) --- */
+body.theme-origin {
+    --bg-primary: #0f1419; --bg-secondary: #1a1f2e; --bg-tertiary: #242b3d; --bg-card: #1e2732;
+    --text-primary: #e7e9ea; --text-secondary: #71767b; --accent: #3b82f6; --accent-hover: #2563eb;
+    --border: #38444d; --shadow: 0 4px 0 rgba(0,0,0,0.5); --radius: 8px;
+}
+
+/* --- 【境界二：空灵 · 禅意白】 --- */
+body.theme-zen {
+    --bg-primary: #fcfaf7; --bg-secondary: #ffffff; --bg-tertiary: #f5f1e9; --bg-card: #ffffff;
+    --text-primary: #433422; --text-secondary: #8c7e6a; --accent: #859900; --accent-hover: #6a7a00;
+    --border: #e2ddd3; --shadow: 0 10px 30px rgba(133, 153, 0, 0.08); --radius: 20px;
+}
+
+/* --- 【境界三：赛博 · 霓虹蓝】 --- */
+body.theme-cyber {
+    --bg-primary: #050a1f; --bg-secondary: #0a1133; --bg-tertiary: #121b4d; --bg-card: rgba(20, 30, 80, 0.7);
+    --text-primary: #e0e6ed; --text-secondary: #8b9bb4; --accent: #00f3ff; --accent-hover: #00c4cf;
+    --border: #2a3a5f; --shadow: 0 0 15px rgba(0, 243, 255, 0.3); --radius: 12px;
+}
+
+/* 布局应用 */
+body { background: var(--bg-primary); color: var(--text-primary); }
+.sidebar { width: 260px; background: var(--bg-secondary); border-right: 1px solid var(--border); display: flex; flex-direction: column; padding: 20px; }
+.logo { font-size: 20px; font-weight: 700; margin-bottom: 28px; display: flex; align-items: center; gap: 10px; }
+.logo-icon { width: 32px; height: 32px; background: linear-gradient(135deg, var(--accent), #8b5cf6); border-radius: var(--radius); display: flex; align-items: center; justify-content: center; color: white; }
+.nav-menu { flex: 1; display: flex; flex-direction: column; gap: 4px; }
+.nav-item { display: flex; align-items: center; gap: 12px; padding: 12px 16px; border-radius: var(--radius); cursor: pointer; transition: all 0.2s; color: var(--text-secondary); font-size: 14px; }
+.nav-item:hover { background: var(--bg-tertiary); color: var(--text-primary); }
+.nav-item.active { background: rgba(59, 130, 246, 0.15); color: var(--accent); }
+
+.main-content { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+.header { padding: 20px 24px; background: var(--bg-secondary); border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; backdrop-filter: blur(10px); }
+.chat-container { max-width: 900px; margin: 0 auto; width: 100%; height: 100%; display: flex; flex-direction: column; padding: 24px; box-sizing: border-box; }
+.messages { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 20px; padding-bottom: 20px; }
+.message { display: flex; gap: 16px; animation: fadeIn 0.3s ease; }
+@keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+.avatar { width: 42px; height: 42px; border-radius: 50%; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.user-avatar { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); }
+.assistant-avatar { background: linear-gradient(135deg, #3b82f6 0%, #10b981 100%); }
+.message-content { flex: 1; background: var(--bg-secondary); padding: 16px 20px; border-radius: var(--radius); border: 1px solid var(--border); line-height: 1.6; color: var(--text-primary); box-shadow: var(--shadow); }
+.user-message .message-content { background: var(--accent); border-color: var(--accent); color: white; }
+.input-area { background: var(--bg-secondary); padding: 16px; border-radius: var(--radius); border: 1px solid var(--border); margin-top: 20px; display: flex; gap: 12px; box-shadow: var(--shadow); }
+#message-input { flex: 1; background: var(--bg-primary); border: 1px solid var(--border); color: var(--text-primary); padding: 14px 18px; border-radius: var(--radius); resize: none; outline: none; height: 50px; }
+.send-btn { padding: 14px 28px; background: var(--accent); color: white; border: none; border-radius: var(--radius); cursor: pointer; font-weight: 600; }
+
+/* 主题切换下拉菜单 */
+.theme-selector { background: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border); padding: 6px 12px; border-radius: var(--radius); cursor: pointer; font-size: 13px; outline: none; }
+
+#cluster-panel { display:none; position:fixed; top:20%; left:30%; width:40%; background:var(--bg-card); border:1px solid var(--border); padding:20px; z-index:1000; box-shadow: var(--shadow); border-radius: var(--radius); color: var(--text-primary); }
+#cluster-btn { position:fixed; bottom:20px; right:20px; width:50px; height:50px; border-radius:50%; background:var(--accent); color:white; border:none; cursor:pointer; font-size:20px; z-index:999; box-shadow: var(--shadow); }

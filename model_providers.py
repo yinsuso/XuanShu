@@ -1,0 +1,293 @@
+import os
+import json
+import requests
+from typing import Dict, Any, List, Optional
+from dataclasses import dataclass, asdict
+from enum import Enum
+from .config import PROJECT_ROOT
+from .logger import logger
+
+try:
+    from .token_tracker import token_tracker
+except ImportError:
+    token_tracker = None
+
+CONFIG_FILE = os.path.join(PROJECT_ROOT, "data", "model_config.json")
+os.makedirs(os.path.dirname(CONFIG_FILE), exist_ok=True)
+
+
+class ProviderType(Enum):
+    OLLAMA = "ollama"
+    OPENAI_COMPATIBLE = "openai_compatible"
+    CUSTOM = "custom"
+
+
+@dataclass
+class ModelConfig:
+    provider: ProviderType
+    name: str
+    model_name: str
+    api_base: str
+    api_key: str = ""
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "provider": self.provider.value,
+            "name": self.name,
+            "model_name": self.model_name,
+            "api_base": self.api_base,
+            "api_key": self.api_key
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'ModelConfig':
+        return cls(
+            provider=ProviderType(data["provider"]),
+            name=data["name"],
+            model_name=data["model_name"],
+            api_base=data["api_base"],
+            api_key=data.get("api_key", "")
+        )
+
+
+PRESET_CONFIGS: List[Dict[str, Any]] = [
+    {
+        "name": "Ollama (本地)",
+        "provider": "ollama",
+        "model_name": "qwen2.5-coder:7b",
+        "api_base": "http://localhost:11434",
+        "api_key": ""
+    },
+    {
+        "name": "OpenAI (GPT-4)",
+        "provider": "openai_compatible",
+        "model_name": "gpt-4",
+        "api_base": "https://api.openai.com/v1",
+        "api_key": ""
+    },
+    {
+        "name": "OpenAI (GPT-3.5)",
+        "provider": "openai_compatible",
+        "model_name": "gpt-3.5-turbo",
+        "api_base": "https://api.openai.com/v1",
+        "api_key": ""
+    },
+    {
+        "name": "DeepSeek",
+        "provider": "openai_compatible",
+        "model_name": "deepseek-chat",
+        "api_base": "https://api.deepseek.com/v1",
+        "api_key": ""
+    },
+    {
+        "name": "通义千问",
+        "provider": "openai_compatible",
+        "model_name": "qwen-plus",
+        "api_base": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "api_key": ""
+    },
+    {
+        "name": "智谱AI",
+        "provider": "openai_compatible",
+        "model_name": "glm-4",
+        "api_base": "https://open.bigmodel.cn/api/paas/v4",
+        "api_key": ""
+    }
+]
+
+
+class ModelConfigManager:
+    def __init__(self):
+        self.configs: List[ModelConfig] = []
+        self.current_config: Optional[ModelConfig] = None
+        self.load_configs()
+
+    def load_configs(self):
+        if os.path.exists(CONFIG_FILE):
+            try:
+                with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    self.configs = [ModelConfig.from_dict(cfg) for cfg in data.get("configs", [])]
+                    current_name = data.get("current", "")
+                    for cfg in self.configs:
+                        if cfg.name == current_name:
+                            self.current_config = cfg
+                            break
+                logger.info(f"已加载 {len(self.configs)} 个模型配置")
+            except Exception as e:
+                logger.error(f"加载配置失败: {e}")
+                self.configs = []
+
+        if not self.configs:
+            for preset in PRESET_CONFIGS:
+                self.configs.append(ModelConfig.from_dict(preset))
+            self.current_config = self.configs[0]
+            self.save_configs()
+
+    def save_configs(self):
+        try:
+            data = {
+                "configs": [cfg.to_dict() for cfg in self.configs],
+                "current": self.current_config.name if self.current_config else ""
+            }
+            with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            logger.info(f"已保存 {len(self.configs)} 个模型配置")
+        except Exception as e:
+            logger.error(f"保存配置失败: {e}")
+
+    def add_config(self, config: ModelConfig) -> bool:
+        for cfg in self.configs:
+            if cfg.name == config.name:
+                logger.warning(f"配置名称已存在: {config.name}")
+                return False
+        self.configs.append(config)
+        self.save_configs()
+        return True
+
+    def update_config(self, config: ModelConfig) -> bool:
+        for i, cfg in enumerate(self.configs):
+            if cfg.name == config.name:
+                self.configs[i] = config
+                if self.current_config and self.current_config.name == config.name:
+                    self.current_config = config
+                self.save_configs()
+                return True
+        return False
+
+    def delete_config(self, name: str) -> bool:
+        for i, cfg in enumerate(self.configs):
+            if cfg.name == name:
+                self.configs.pop(i)
+                if self.current_config and self.current_config.name == name:
+                    self.current_config = self.configs[0] if self.configs else None
+                self.save_configs()
+                return True
+        return False
+
+    def set_current(self, name: str) -> bool:
+        for cfg in self.configs:
+            if cfg.name == name:
+                self.current_config = cfg
+                self.save_configs()
+                logger.info(f"已切换到模型: {name}")
+                return True
+        return False
+
+    def get_config(self, name: str) -> Optional[ModelConfig]:
+        for cfg in self.configs:
+            if cfg.name == name:
+                return cfg
+        return None
+
+    def list_configs(self) -> List[Dict[str, Any]]:
+        filtered = []
+        for cfg in self.configs:
+            if cfg.provider == ProviderType.OLLAMA:
+                filtered.append(cfg)
+            elif cfg.api_key:
+                filtered.append(cfg)
+        
+        return [
+            {
+                "name": cfg.name,
+                "provider": cfg.provider.value,
+                "model": cfg.model_name,
+                "has_api_key": bool(cfg.api_key),
+                "is_current": self.current_config and self.current_config.name == cfg.name
+            }
+            for cfg in filtered
+        ]
+
+
+def call_model(config: ModelConfig, prompt: str, system_prompt: str = "", temperature: float = 0.7) -> str:
+    if config.provider == ProviderType.OLLAMA:
+        return _call_ollama(config, prompt, system_prompt, temperature)
+    else:
+        return _call_openai_compatible(config, prompt, system_prompt, temperature)
+
+
+def _call_ollama(config: ModelConfig, prompt: str, system_prompt: str, temperature: float) -> str:
+    chat_url = f"{config.api_base}/api/chat"
+    
+    messages = []
+    if system_prompt:
+        messages.append({"role": "system", "content": system_prompt})
+    messages.append({"role": "user", "content": prompt})
+    
+    payload = {
+        "model": config.model_name,
+        "messages": messages,
+        "stream": False,
+        "temperature": temperature,
+        "options": {
+            "temperature": temperature,
+            "top_p": 0.9,
+            "top_k": 40
+        }
+    }
+
+    try:
+        response = requests.post(chat_url, json=payload, timeout=300)
+        response.raise_for_status()
+        result = response.json()
+        
+        content = result.get("message", {}).get("content", result.get("response", ""))
+        
+        if token_tracker and "usage" in result:
+            usage = result["usage"]
+            token_tracker.record_usage(
+                model_name=config.model_name,
+                prompt_tokens=usage.get("prompt_tokens", 0),
+                completion_tokens=usage.get("completion_tokens", 0),
+                provider="ollama"
+            )
+        
+        return content
+    except Exception as e:
+        logger.error(f"Ollama调用失败: {e}")
+        raise
+
+
+def _call_openai_compatible(config: ModelConfig, prompt: str, system_prompt: str, temperature: float) -> str:
+    url = f"{config.api_base}/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {config.api_key}",
+        "Content-Type": "application/json"
+    }
+
+    messages = []
+    if system_prompt:
+        messages.append({"role": "system", "content": system_prompt})
+    messages.append({"role": "user", "content": prompt})
+
+    payload = {
+        "model": config.model_name,
+        "messages": messages,
+        "temperature": temperature,
+        "stream": False
+    }
+
+    try:
+        response = requests.post(url, json=payload, headers=headers, timeout=300)
+        response.raise_for_status()
+        result = response.json()
+        
+        content = result["choices"][0]["message"]["content"]
+        
+        if token_tracker and "usage" in result:
+            usage = result["usage"]
+            token_tracker.record_usage(
+                model_name=config.model_name,
+                prompt_tokens=usage.get("prompt_tokens", 0),
+                completion_tokens=usage.get("completion_tokens", 0),
+                provider=config.provider.value
+            )
+        
+        return content
+    except Exception as e:
+        logger.error(f"OpenAI兼容API调用失败: {e}")
+        raise
+
+
+config_manager = ModelConfigManager()
