@@ -19,6 +19,7 @@ from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel
 from typing import List, Optional
 import logging
+import sqlite3
 
 from config import WEB_HOST, WEB_PORT, PROJECT_ROOT
 from agent import UniversalAgent
@@ -293,37 +294,89 @@ async def get_memory(key: Optional[str] = None):
 # API: 导出当前对话
 @app.get("/api/export")
 async def export_conversation():
-    try:
-        # 获取当前会话历史
-        history = conversation_manager.get_current_conversation()
-        if not history:
-            return JSONResponse(status_code=404, content={"success": False, "error": "当前没有可导出的对话历史"})
-        
-        # 转换为 Markdown 格式
-        md_content = "# Local Agent 对话记录\n\n"
-        md_content += f"导出时间: {os.popen('date').read().strip()}\n"
-        md_content += f"模型: {config_manager.current_config.model_name if config_manager.current_config else 'Unknown'}\n\n---\n\n"
-        
-        for msg in history:
-            role = "👤 用户" if msg['role'] == 'user' else "🤖 Agent"
-            content = msg['content']
-            md_content += f"### {role}\n{content}\n\n"
-            md_content += "---\n\n"
-        
-        # 保存为临时文件
-        export_path = os.path.join(PROJECT_ROOT, "data", "current_export.md")
-        os.makedirs(os.path.dirname(export_path), exist_ok=True)
-        with open(export_path, "w", encoding="utf-8") as f:
-            f.write(md_content)
-        
-        return FileResponse(
-            path=export_path, 
-            filename="agent_conversation_export.md", 
-            media_type='text/markdown'
-        )
-    except Exception as e:
-        logger.error(f"导出对话失败: {e}", exc_info=True)
-        return JSONResponse(status_code=500, content={"success": False, "error": str(e)})
+ try:
+  # 获取当前会话历史
+  history = conversation_manager.get_current_conversation()
+  if not history:
+   return JSONResponse(status_code=404, content={"success": False, "error": "当前没有可导出的对话历史"})
+  
+  # 转换为 Markdown 格式
+  md_content = "# Local Agent 对话记录\n\n"
+  md_content += f"导出时间：{os.popen('date').read().strip()}\n"
+  md_content += f"模型：{config_manager.current_config.model_name if config_manager.current_config else 'Unknown'}\n\n---\n\n"
+  
+  for msg in history:
+   role = "👤 用户" if msg['role'] == 'user' else "🤖 Agent"
+   content = msg['content']
+   md_content += f"### {role}\n{content}\n\n"
+   md_content += "---\n\n"
+  
+  # 保存为临时文件
+  export_path = os.path.join(PROJECT_ROOT, "data", "current_export.md")
+  os.makedirs(os.path.dirname(export_path), exist_ok=True)
+  with open(export_path, "w", encoding="utf-8") as f:
+   f.write(md_content)
+  
+  return FileResponse(
+   path=export_path, 
+   filename="agent_conversation_export.md", 
+   media_type='text/markdown'
+  )
+ except Exception as e:
+  logger.error(f"导出对话失败：{e}", exc_info=True)
+  return JSONResponse(status_code=500, content={"success": False, "error": str(e)})
+
+# API: Token 统计
+@app.get("/api/token-stats")
+async def get_token_stats():
+ try:
+  db_path = os.path.join(PROJECT_ROOT, "data", "token_stats.db.bak")
+  if not os.path.exists(db_path):
+   # 尝试 .db 版本
+   db_path = os.path.join(PROJECT_ROOT, "data", "token_stats.db")
+  
+  if not os.path.exists(db_path):
+   return {"success": True, "data": {"total": 0, "by_model": [], "by_date": []}}
+  
+  conn = sqlite3.connect(db_path)
+  cursor = conn.cursor()
+  
+  # 总统计
+  cursor.execute("SELECT SUM(total_tokens), SUM(prompt_tokens), SUM(completion_tokens) FROM token_usage")
+  total_row = cursor.fetchone()
+  total_stats = {
+   "total_tokens": total_row[0] or 0,
+   "prompt_tokens": total_row[1] or 0,
+   "completion_tokens": total_row[2] or 0
+  }
+  
+  # 按模型统计
+  cursor.execute("SELECT model_name, SUM(total_tokens), COUNT(*) FROM token_usage GROUP BY model_name ORDER BY SUM(total_tokens) DESC")
+  by_model = [{"model": row[0], "total": row[1], "count": row[2]} for row in cursor.fetchall()]
+  
+  # 按日期统计 (最近 7 天)
+  cursor.execute("""
+   SELECT date(timestamp), SUM(total_tokens) 
+   FROM token_usage 
+   WHERE date(timestamp) >= date('now', '-7 days')
+   GROUP BY date(timestamp) 
+   ORDER BY date(timestamp)
+  """)
+  by_date = [{"date": row[0], "total": row[1]} for row in cursor.fetchall()]
+  
+  conn.close()
+  
+  return {
+   "success": True,
+   "data": {
+    "total": total_stats,
+    "by_model": by_model,
+    "by_date": by_date
+   }
+  }
+ except Exception as e:
+  logger.error(f"获取 Token 统计失败：{e}", exc_info=True)
+  return {"success": False, "error": str(e)}
 
 # API: 进化记录
 @app.get("/api/evolution")

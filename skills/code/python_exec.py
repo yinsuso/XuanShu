@@ -5,7 +5,7 @@ Author: Hermes Agent (Refactored)
 Date: 2026-04-30
 """
 
-from ..skills.utils.code_utils import execute_python_code
+from skills.utils.code_utils import execute_python_code
 
 # 技能元数据
 SKILL_NAME = "python_exec"

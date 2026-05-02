@@ -1,59 +1,112 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>玄枢 (XuanShu) v5.0</title>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    <link rel="stylesheet" href="/static/css/style.css">
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>玄枢 (XuanShu) v5.0</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <link rel="stylesheet" href="/static/css/style.css">
 </head>
 <body class="theme-origin">
-    <div class="sidebar">
-        <div class="logo"><div class="logo-icon">A</div> 玄枢 (XuanShu)</div>
-        <div class="nav-menu">
-            <div class="nav-item active"><span>💬</span> 对话</div>
-            <div class="nav-item"><span>🧠</span> 记忆</div>
-            <div class="nav-item"><span>⚙️</span> 设置</div>
-        </div>
+  <div class="sidebar">
+    <div class="logo"><div class="logo-icon">A</div> 玄枢 (XuanShu)</div>
+    <div class="nav-menu">
+      <div class="nav-item active"><span>💬</span> 对话</div>
+      <div class="nav-item"><span>🧠</span> 记忆</div>
+      <div class="nav-item"><span>🤝</span> 协作</div>
+      <div class="nav-item"><span>📊</span> 统计</div>
+      <div class="nav-item"><span>⚙️</span> 设置</div>
     </div>
-    <div class="main-content">
-        <div class="header">
-            <div class="header-title">智能协作空间</div>
-            <div class="header-actions">
-<select id="theme-select" class="theme-selector" onchange="changeTheme(this.value)">
-    <option value="theme-origin">🌑 原点 · 极简黑</option>
-    <option value="theme-zen">🍃 空灵 · 禅意白</option>
-    <option value="theme-cyber">⚡ 赛博 · 霓虹蓝</option>
-</select>
-
-                <button class="btn btn-secondary btn-sm">导出记录</button>
-            </div>
-        </div>
-        <div class="page-content">
-            <div class="chat-container">
-                <div id="messages" class="messages"></div>
-                <div class="input-area">
-                    <textarea id="message-input" placeholder="输入消息..."></textarea>
-                    <button id="send-btn" class="send-btn">发送</button>
-                </div>
-            </div>
-        </div>
+  </div>
+  
+  <div class="main-content">
+    <div class="header">
+      <div class="header-title">智能对话空间</div>
+      <div class="header-actions">
+        <select id="theme-select" class="theme-selector" onchange="changeTheme(this.value)">
+          <option value="theme-origin">🌑 原点 · 极简黑</option>
+          <option value="theme-zen">🍃 空灵 · 禅意白</option>
+          <option value="theme-cyber">⚡ 赛博 · 霓虹蓝</option>
+        </select>
+        <button class="btn btn-secondary btn-sm" onclick="exportConversation()">导出记录</button>
+      </div>
     </div>
-    <!-- 协作面板 -->
-    <div id="cluster-panel" style="display:none; position:fixed; top:20%; left:30%; width:40%; background:var(--bg-card); border:1px solid var(--border); padding:20px; z-index:1000; border-radius:12px; color:var(--text-primary);">
-        <h3>🤝 集群协作模式</h3>
-        <div style="margin-bottom:15px;">
-            <input type="text" id="room-name" placeholder="房间名称" style="width:60%; padding:5px; background:var(--bg-primary); color:white; border:1px solid var(--border);">
-            <button onclick="createCluster()" style="padding:5px 10px; cursor:pointer;">创建房间</button>
+    
+    <!-- 对话页面 -->
+    <div id="page-chat" class="page-section" style="display: block;">
+      <div class="chat-container">
+        <div id="messages" class="messages"></div>
+        <div class="input-area">
+          <textarea id="message-input" placeholder="输入消息..."></textarea>
+          <button id="send-btn" class="send-btn">发送</button>
         </div>
-        <div style="margin-bottom:15px;">
-            <button onclick="joinCluster()" style="padding:5px 20px; cursor:pointer;">搜索并加入</button>
-        </div>
-        <div id="cluster-status-msg">状态：待机</div>
-        <button onclick="document.getElementById('cluster-panel').style.display='none'" style="margin-top:10px; cursor:pointer;">关闭</button>
+      </div>
     </div>
-    <button id="cluster-btn">🤝</button>
-    <script src="/static/js/main.js"></script>
-    <script src="/static/js/cluster.js"></script>
+    
+    <!-- 记忆页面 -->
+    <div id="page-memory" class="page-section" style="display: none;">
+      <div class="memory-container">
+        <h2>核心记忆库</h2>
+        <div id="memory-list" class="memory-list">
+          <p>加载中...</p>
+        </div>
+      </div>
+    </div>
+    
+    <!-- 协作页面 -->
+    <div id="page-cluster" class="page-section" style="display: none;">
+      <div class="cluster-container">
+        <h2>🤝 集群协作空间</h2>
+        <div class="cluster-controls">
+          <div class="cluster-input-group">
+            <input type="text" id="room-name" placeholder="房间名称" class="cluster-input">
+            <button onclick="createCluster()" class="btn btn-primary">创建房间</button>
+          </div>
+          <div class="cluster-actions">
+            <button onclick="joinCluster()" class="btn btn-secondary">搜索并加入</button>
+          </div>
+          <div id="cluster-status-msg" class="cluster-status">状态：待机</div>
+        </div>
+        <div class="cluster-members">
+          <h3>在线成员</h3>
+          <div id="members-list">暂无成员</div>
+        </div>
+      </div>
+    </div>
+    
+    <!-- 统计页面 -->
+    <div id="page-stats" class="page-section" style="display: none;">
+      <div class="stats-container">
+        <h2>Token 使用统计</h2>
+        <div id="stats-content">
+          <p>加载中...</p>
+        </div>
+      </div>
+    </div>
+    
+    <!-- 设置页面 -->
+    <div id="page-settings" class="page-section" style="display: none;">
+      <div class="settings-container">
+        <h2>系统设置</h2>
+        <div class="setting-group">
+          <label>当前模型</label>
+          <select id="model-select" class="setting-select"></select>
+          <button id="switch-model-btn" class="btn btn-primary">切换模型</button>
+        </div>
+        <div class="setting-group">
+          <label>日志级别</label>
+          <select class="setting-select">
+            <option>INFO</option>
+            <option>DEBUG</option>
+            <option>WARNING</option>
+            <option>ERROR</option>
+          </select>
+        </div>
+      </div>
+    </div>
+  </div>
+  
+  <script src="/static/js/main.js"></script>
+  <script src="/static/js/cluster.js"></script>
 </body>
 </html>

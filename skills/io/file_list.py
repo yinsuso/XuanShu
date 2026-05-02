@@ -5,7 +5,7 @@ Author: Hermes Agent (Refactored)
 Date: 2026-04-30
 """
 
-from ..skills.utils.file_utils import list_directory_safe
+from skills.utils.file_utils import list_directory_safe
 
 # 技能元数据
 SKILL_NAME = "file_list"

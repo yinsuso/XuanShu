@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import sys
 import os
 from pathlib import Path
@@ -9,7 +10,6 @@ if str(_current_root) not in sys.path:
     sys.path.insert(0, str(_current_root))
 
 
-#!/usr/bin/env python3
 """
 智能启动器 - Local Agent v4.0
 功能：
@@ -26,6 +26,7 @@ import time
 import requests
 from typing import List, Dict, Optional
 from colorama import init, Fore, Style
+from config import WEB_HOST, WEB_PORT
 
 init(autoreset=True)
 

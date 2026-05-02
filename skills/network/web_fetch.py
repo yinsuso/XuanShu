@@ -5,7 +5,7 @@ Author: Hermes Agent (Refactored)
 Date: 2026-04-30
 """
 
-from ..skills.utils.net_utils import fetch_webpage_text
+from skills.utils.net_utils import fetch_webpage_text
 
 # 技能元数据
 SKILL_NAME = "web_fetch"
