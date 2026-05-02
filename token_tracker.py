@@ -4,8 +4,8 @@ import sqlite3
 from datetime import datetime, timedelta
 from typing import Dict, Any, Optional, List
 from dataclasses import dataclass
-from .config import PROJECT_ROOT
-from .logger import logger
+from config import PROJECT_ROOT
+from logger import logger
 
 DB_PATH = os.path.join(PROJECT_ROOT, "data", "token_stats.db")
 os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)

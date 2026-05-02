@@ -3,7 +3,7 @@
 负责在角色切换时，清理历史消息，只保留必要的摘要。
 """
 from typing import List, Dict, Any, Optional
-from .logger import logger
+from logger import logger
 
 
 class ContextCleaner:

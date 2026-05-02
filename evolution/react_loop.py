@@ -2,7 +2,7 @@ import json
 from typing import Dict, Any, List, Optional
 from dataclasses import dataclass, field
 from enum import Enum
-from .logger import logger
+from logger import logger
 
 
 class ThoughtType(Enum):

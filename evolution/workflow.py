@@ -3,8 +3,8 @@ import json
 from typing import Dict, Any, List, Optional, Callable
 from dataclasses import dataclass, field
 from enum import Enum
-from .logger import logger
-from .config import PROJECT_ROOT
+from logger import logger
+from config import PROJECT_ROOT
 
 WORKFLOW_DIR = os.path.join(PROJECT_ROOT, "data", "workflows")
 os.makedirs(WORKFLOW_DIR, exist_ok=True)

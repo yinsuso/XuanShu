@@ -1,7 +1,7 @@
 import json
 from typing import List, Dict, Optional
-from .memory_core import memory_core
-from .model_providers import call_model, ModelConfig
+from memory_core import memory_core
+from model_providers import call_model, ModelConfig
 
 class EvolutionEngine:
     def __init__(self, model_config: ModelConfig = None):

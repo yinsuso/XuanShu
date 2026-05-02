@@ -2,7 +2,7 @@
 import json
 import asyncio
 from typing import Dict, Any, Optional
-from .logger import logger
+from logger import logger
 
 class ClusterNode:
     """集群节点定义"""

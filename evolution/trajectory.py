@@ -5,8 +5,8 @@ from datetime import datetime
 from typing import List, Dict, Any, Optional
 from dataclasses import dataclass, asdict
 from enum import Enum
-from .config import PROJECT_ROOT
-from .logger import logger
+from config import PROJECT_ROOT
+from logger import logger
 
 TRACES_DIR = os.path.join(PROJECT_ROOT, "data", "traces")
 os.makedirs(TRACES_DIR, exist_ok=True)

@@ -6,7 +6,7 @@
 import uuid
 import time
 from typing import Dict, Any, List, Optional
-from .logger import logger
+from logger import logger
 from .evolution.role_switcher import RoleSwitcher, Role
 from .utils.context_cleaner import ContextCleaner
 from .utils.file_manager import (

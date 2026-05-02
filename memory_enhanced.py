@@ -8,9 +8,9 @@ import json
 import re
 from datetime import datetime
 from typing import List, Dict, Any, Optional
-from .logger import logger
-from .config import PROJECT_ROOT, MAX_HISTORY_LENGTH
-from .memory_core import memory_core
+from logger import logger
+from config import PROJECT_ROOT, MAX_HISTORY_LENGTH
+from memory_core import memory_core
 
 # 意识层文件路径
 CORE_MEMORY_FILE = os.path.join(PROJECT_ROOT, "data", "core_memory.json")

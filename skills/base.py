@@ -10,7 +10,7 @@ from typing import Dict, Any, List, Optional, Callable, Type, get_type_hints, Tu
 from enum import Enum
 from functools import wraps
 
-from .logger import logger
+from logger import logger
 
 
 class SkillCategory(Enum):

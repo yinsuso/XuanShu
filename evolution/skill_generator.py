@@ -3,8 +3,8 @@ import ast
 import subprocess
 import sys
 from typing import Optional, Tuple
-from .logger import logger
-from .config import PROJECT_ROOT
+from logger import logger
+from config import PROJECT_ROOT
 from .evolution.reflection import Reflection
 
 AUTO_SKILLS_DIR = os.path.join(PROJECT_ROOT, "skills", "auto_generated")

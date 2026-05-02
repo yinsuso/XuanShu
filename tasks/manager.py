@@ -5,7 +5,7 @@
 import asyncio
 import uuid
 from typing import Dict, Any, Optional, Callable
-from .logger import logger
+from logger import logger
 from .evolution.workflow_engine import WorkflowEngine
 
 

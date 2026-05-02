@@ -9,7 +9,7 @@ import shutil
 import time
 from datetime import datetime, timedelta
 from typing import Dict, Any, Optional, List
-from .logger import logger
+from logger import logger
 
 
 WORKFLOW_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "workflow")

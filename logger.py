@@ -1,7 +1,7 @@
 import logging
 import sys
 from typing import Optional
-from .config import LOG_LEVEL, LOG_FILE
+from config import LOG_LEVEL, LOG_FILE
 
 
 def setup_logger(name: str = "local_agent") -> logging.Logger:

@@ -11,8 +11,8 @@ from datetime import datetime
 from typing import List, Dict, Any, Optional, Tuple
 from contextlib import contextmanager
 
-from .config import MEMORY_DB_PATH, PROJECT_ROOT
-from .logger import logger
+from config import MEMORY_DB_PATH, PROJECT_ROOT
+from logger import logger
 
 class MemoryCore:
     _instance = None

@@ -3,8 +3,8 @@ import os
 from typing import Dict, Any, Optional, List
 from dataclasses import dataclass
 from datetime import datetime
-from .logger import logger
-from .config import PROJECT_ROOT
+from logger import logger
+from config import PROJECT_ROOT
 from .evolution.trajectory import TaskTrajectory
 
 REFLECTIONS_DIR = os.path.join(PROJECT_ROOT, "data", "reflections")

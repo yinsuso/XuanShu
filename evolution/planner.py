@@ -2,7 +2,7 @@ import json
 from typing import List, Dict, Any, Optional
 from dataclasses import dataclass, field
 from enum import Enum
-from .logger import logger
+from logger import logger
 
 
 class TaskStatus(Enum):

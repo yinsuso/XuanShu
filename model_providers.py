@@ -4,8 +4,8 @@ import requests
 from typing import Dict, Any, List, Optional
 from dataclasses import dataclass, asdict
 from enum import Enum
-from .config import PROJECT_ROOT
-from .logger import logger
+from config import PROJECT_ROOT
+from logger import logger
 
 try:
     from .token_tracker import token_tracker

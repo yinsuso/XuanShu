@@ -4,7 +4,7 @@
 """
 from enum import Enum
 from typing import Dict, Any, List, Optional
-from .logger import logger
+from logger import logger
 
 
 class Role(Enum):
