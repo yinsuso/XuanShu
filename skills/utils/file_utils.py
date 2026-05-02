@@ -7,7 +7,7 @@ Date: 2026-04-30
 
 import os
 from typing import Optional, List
-from ..config import ALLOWED_DIR
+from config import ALLOWED_DIR
 
 def validate_path(path: str) -> str:
     """
