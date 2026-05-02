@@ -17,55 +17,54 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 
-     1|
-     2|async function sendMessage() {
-     3|    const input = document.getElementById('message-input');
-     4|    const text = input.value.trim();
-     5|    if (!text) return;
-     6|
-     7|    appendMessage('user', text);
-     8|    input.value = '';
-     9|    
-    10|    const loading = document.getElementById('typing-indicator');
-    11|    if(loading) loading.classList.add('active');
-    12|
-    13|    try {
-    14|        const formData = new FormData();
-    15|        formData.append('message', text);
-    16|        const res = await fetch('/api/chat', { method: 'POST', body: formData });
-    17|        const data = await res.json();
-    18|        if(data.success) {
-    19|            appendMessage('assistant', data.response);
-    20|        } else {
-    21|            appendMessage('assistant', '❌ Error: ' + (data.error || 'Unknown error'));
-    22|        }
-    23|    } catch (e) {
-    24|        appendMessage('assistant', '❌ Network Error: ' + e.message);
-    25|    } finally {
-    26|        if(loading) loading.classList.remove('active');
-    27|    }
-    28|}
-    29|
-    30|function appendMessage(role, content) {
-    31|    const container = document.getElementById('messages');
-    32|    if(!container) return;
-    33|    const div = document.createElement('div');
-    34|    div.className = 'message ' + (role === 'user' ? 'user-message' : 'assistant-message');
-    35|    div.innerHTML = `
-    36|        <div class="avatar ${role === 'user' ? 'user-avatar' : 'assistant-avatar'}">${role === 'user' ? '👤' : '🤖'}</div>
-    37|        <div class="message-content">${content}</div>
-    38|    `;
-    39|    container.appendChild(div);
-    40|    container.scrollTop = container.scrollHeight;
-    41|}
-    42|
-    43|document.addEventListener('DOMContentLoaded', () => {
-    44|    document.getElementById('send-btn')?.addEventListener('click', sendMessage);
-    45|    document.getElementById('message-input')?.addEventListener('keypress', (e) => {
-    46|        if(e.key === 'Enter' && !e.shiftKey) {
-    47|            e.preventDefault();
-    48|            sendMessage();
-    49|        }
-    50|    });
-    51|});
-    52|
+
+async function sendMessage() {
+    const input = document.getElementById('message-input');
+    const text = input.value.trim();
+    if (!text) return;
+
+    appendMessage('user', text);
+    input.value = '';
+    
+    const loading = document.getElementById('typing-indicator');
+    if(loading) loading.classList.add('active');
+
+    try {
+        const formData = new FormData();
+        formData.append('message', text);
+        const res = await fetch('/api/chat', { method: 'POST', body: formData });
+        const data = await res.json();
+        if(data.success) {
+            appendMessage('assistant', data.response);
+        } else {
+            appendMessage('assistant', '❌ Error: ' + (data.error || 'Unknown error'));
+        }
+    } catch (e) {
+        appendMessage('assistant', '❌ Network Error: ' + e.message);
+    } finally {
+        if(loading) loading.classList.remove('active');
+    }
+}
+
+function appendMessage(role, content) {
+    const container = document.getElementById('messages');
+    if(!container) return;
+    const div = document.createElement('div');
+    div.className = 'message ' + (role === 'user' ? 'user-message' : 'assistant-message');
+    div.innerHTML = `
+        <div class="avatar ${role === 'user' ? 'user-avatar' : 'assistant-avatar'}">${role === 'user' ? '👤' : '🤖'}</div>
+        <div class="message-content">${content}</div>
+    `;
+    container.appendChild(div);
+    container.scrollTop = container.scrollHeight;
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+    document.getElementById('send-btn')?.addEventListener('click', sendMessage);
+    document.getElementById('message-input')?.addEventListener('keypress', (e) => {
+        if(e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            sendMessage();
+        }
+    });
+});

@@ -110,7 +110,7 @@ async def chat(request: Request):
         else:
             logger.warning("⚠️ [Chat Request] 当前配置为 None！将使用默认配置。")
 
-        response = agent.process_simple(message)
+        response = agent.process_adaptive(message)
         # 路径转化：将本地缓存路径转化为 Web 可访问的 /media/ 路径
         # 这样前端收到路径后即可直接通过 <img src="/media/xxx.png"> 显示
         web_response = response.replace(os.path.join(PROJECT_ROOT, "data", "cache"), "/media")
