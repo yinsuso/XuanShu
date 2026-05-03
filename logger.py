@@ -25,6 +25,7 @@ import gzip
 import shutil
 
 from config import (
+    PROJECT_ROOT,
     LOG_LEVEL,
     LOG_FORMAT,
     LOG_FILE,

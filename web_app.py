@@ -432,25 +432,6 @@ async def get_evolution(limit: int = 10):
     except Exception as e:
         return {"success": False, "error": str(e)}
 
-# WebSocket: 实时对话（可选，支持流式输出）
-@app.websocket("/ws/chat")
-async def websocket_chat(websocket: WebSocket):
-    await websocket.accept()
-    try:
-        while True:
-            data = await websocket.receive_text()
-            # 使用线程池执行同步方法，避免阻塞事件循环
-            response = await run_in_threadpool(agent.process_simple, data)
-            await websocket.send_text(response)
-    except WebSocketDisconnect:
-        logger.info("WebSocket client disconnected")
-
-# 启动脚本
-if __name__ == "__main__":
-    import uvicorn
-    logger.info(f"🚀 启动 Web 界面：http://{WEB_HOST}:{WEB_PORT}")
-    uvicorn.run(app, host=WEB_HOST, port=WEB_PORT)
-
 # API: 集群协作 - 创建房间
 @app.post("/api/cluster/create")
 async def create_cluster(request: Request):
@@ -482,3 +463,22 @@ async def get_cluster_status():
         "room_name": discovery.room_name,
         "found_rooms": discovery.found_rooms
     }
+
+# WebSocket: 实时对话（可选，支持流式输出）
+@app.websocket("/ws/chat")
+async def websocket_chat(websocket: WebSocket):
+    await websocket.accept()
+    try:
+        while True:
+            data = await websocket.receive_text()
+            # 使用线程池执行同步方法，避免阻塞事件循环
+            response = await run_in_threadpool(agent.process_simple, data)
+            await websocket.send_text(response)
+    except WebSocketDisconnect:
+        logger.info("WebSocket client disconnected")
+
+# 启动脚本
+if __name__ == "__main__":
+    import uvicorn
+    logger.info(f"🚀 启动 Web 界面：http://{WEB_HOST}:{WEB_PORT}")
+    uvicorn.run(app, host=WEB_HOST, port=WEB_PORT)

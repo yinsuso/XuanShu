@@ -307,7 +307,7 @@ def _audit_security(report: Dict, root_path: Path):
     }
 
 
-def _check_code_execution_risk impact(root_path: Path) -> List[Dict]:
+def _check_code_execution_risk_impact(root_path: Path) -> List[Dict]:
     """检查代码执行风险（技能、eval、subprocess等）"""
     risks = []
     
