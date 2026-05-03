@@ -215,7 +215,12 @@ async def new_conversation():
 async def get_models():
     try:
         models = config_manager.list_configs()
-        return {"success": True, "models": models}
+        current = config_manager.current_config
+        return {
+            "success": True,
+            "models": models,
+            "current_config": current.name if current else None
+        }
     except Exception as e:
         logger.error(f"获取模型列表失败：{e}", exc_info=True)
         return {"success": False, "error": str(e)}
@@ -307,7 +312,9 @@ async def get_memory(key: Optional[str] = None):
                 return {"success": True, "key": key, "value": value}
             else:
                 all_memories = await run_in_threadpool(agent.memory.get_all_core_memory)
-                return {"success": True, "memories": all_memories}
+                # 将 dict 转换为数组格式供前端使用
+                memories_array = [{"key": k, "value": v} for k, v in all_memories.items()] if all_memories else []
+                return {"success": True, "memories": memories_array}
         
         result = await _get_memory_async()
         return result

@@ -523,13 +523,14 @@ class Launcher:
                 max_wait = 30
                 waited = 0
                 health_ok = False
+                health_host = "127.0.0.1"  # 强制使用本地回环地址进行健康检查
                 while waited < max_wait:
                     try:
                         # 先检查根路径
-                        resp = requests.get(f"http://{WEB_HOST}:{WEB_PORT}/", timeout=2)
+                        resp = requests.get(f"http://{health_host}:{WEB_PORT}/", timeout=2)
                         if resp.status_code == 200:
                             # 根路径正常，再检查 API 端点
-                            resp2 = requests.get(f"http://{WEB_HOST}:{WEB_PORT}/api/skills", timeout=2)
+                            resp2 = requests.get(f"http://{health_host}:{WEB_PORT}/api/skills", timeout=2)
                             if resp2.status_code == 200:
                                 data = resp2.json()
                                 if data.get('success'):
