@@ -62,15 +62,68 @@ WEB_PORT = int(os.getenv("WEB_PORT", 30001))
 WEB_DEBUG = os.getenv("WEB_DEBUG", "false").lower() == "true"
 
 # =============================================================================
-# 日志配置（新增）
+# 结构化日志配置（新增）
 # =============================================================================
 
 # 日志级别：控制日志输出的详细程度
 # 可选值：DEBUG, INFO, WARNING, ERROR, CRITICAL
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 
+# 日志格式："text"（传统格式）或 "json"（结构化JSON行）
+LOG_FORMAT = os.getenv("LOG_FORMAT", "text")
+
 # 日志文件路径：日志文件的存储位置，None表示只输出到控制台
 LOG_FILE = os.getenv("LOG_FILE", None)
+
+# 日志轮转配置
+LOG_ROTATION_DAYS = int(os.getenv("LOG_ROTATION_DAYS", 30))  # 保留天数
+LOG_COMPRESS = os.getenv("LOG_COMPRESS", "true").lower() == "true"  # 是否压缩归档
+
+# Trace ID 请求头名称：用于跨组件追踪
+TRACE_ID_HEADER = os.getenv("TRACE_ID_HEADER", "X-Hermes-Trace")
+
+# 异步写入配置
+LOG_ASYNC_QUEUE_SIZE = int(os.getenv("LOG_ASYNC_QUEUE_SIZE", 1000))  # 队列容量
+LOG_BATCH_SIZE = int(os.getenv("LOG_BATCH_SIZE", 100))  # 批量写入条数
+LOG_FLUSH_INTERVAL = float(os.getenv("LOG_FLUSH_INTERVAL", 1.0))  # 刷盘间隔(秒)
+
+# =============================================================================
+# 敏感信息脱敏配置（新增）
+# =============================================================================
+
+# 是否启用脱敏
+MASKING_ENABLED = os.getenv("MASKING_ENABLED", "true").lower() == "true"
+
+# 脱敏正则模式列表（按优先级顺序）
+MASKING_PATTERNS = [
+    r"Bearer\s+[A-Za-z0-9_\-]+",  # Bearer tokens
+    r"sk-[A-Za-z0-9]{48}",  # OpenAI keys
+    r"ghp_[A-Za-z0-9]{36}",  # GitHub tokens
+    r"AKIA[0-9A-Z]{16}",  # AWS Access Keys
+    r"\$[A-Za-z_]\w*",  # 环境变量引用（$VAR 或 ${VAR} 的简化版）
+]
+
+# 脱敏替换文本
+MASKING_REPLACEMENT = os.getenv("MASKING_REPLACEMENT", "[REDACTED]")
+
+# 是否保留脱敏后长度（用于某些场景）
+MASKING_PRESERVE_LENGTH = os.getenv("MASKING_PRESERVE_LENGTH", "false").lower() == "true"
+
+# 脱敏统计文件路径
+MASKING_STATS_PATH = os.path.join(PROJECT_ROOT, "logs", "masking_stats.json")
+
+# =============================================================================
+# 日志文件路径（增强）
+# =============================================================================
+
+# 结构化日志文件路径（覆盖 LOG_FILE，若 LOG_FORMAT=json）
+if LOG_FORMAT == "json":
+    if LOG_FILE:
+        LOG_FILE_JSON = LOG_FILE.replace(".log", "_json.log")
+    else:
+        LOG_FILE_JSON = os.path.join(PROJECT_ROOT, "logs", "hermes.jsonl")
+else:
+    LOG_FILE_JSON = None
 
 # =============================================================================
 # 重试配置（新增）
