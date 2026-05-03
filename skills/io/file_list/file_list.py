@@ -22,13 +22,14 @@ SKILL_PARAMETERS = [
     }
 ]
 
-def execute(path: str = ".") -> str:
+def execute(path: str = ".", **kwargs) -> str:
     """
     执行目录列表操作。
     
     Args:
         path: 目录路径
-        
+        **kwargs: 额外参数（忽略）
+    
     Returns:
         目录列表或错误信息
     """

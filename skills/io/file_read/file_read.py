@@ -27,14 +27,15 @@ SKILL_PARAMETERS = [
     }
 ]
 
-def execute(path: str, lines: int = 0) -> str:
+def execute(path: str, lines: int = 0, **kwargs) -> str:
     """
     执行文件读取操作。
     
     Args:
         path: 文件路径
         lines: 读取行数
-        
+        **kwargs: 额外参数（忽略）
+    
     Returns:
         文件内容或错误信息
     """

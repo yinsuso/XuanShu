@@ -54,7 +54,7 @@ SKILL_PARAMETERS = [
 ]
 
 
-def execute(project_root: str, output_format: str = "markdown", audit_scope: List[str] = None) -> str:
+def execute(project_root: str, output_format: str = "markdown", audit_scope: List[str] = None, **kwargs) -> str:
     """
     执行项目安全审计
     
@@ -62,6 +62,7 @@ def execute(project_root: str, output_format: str = "markdown", audit_scope: Lis
         project_root: 项目根目录
         output_format: 输出格式 (markdown/json)
         audit_scope: 审计范围列表，默认 ["all"]
+        **kwargs: 额外参数（忽略）
     
     Returns:
         审计报告（Markdown 或 JSON）

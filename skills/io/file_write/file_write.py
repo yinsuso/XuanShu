@@ -26,14 +26,15 @@ SKILL_PARAMETERS = [
     }
 ]
 
-def execute(path: str, content: str) -> str:
+def execute(path: str, content: str, **kwargs) -> str:
     """
     执行文件写入操作。
     
     Args:
         path: 文件路径
         content: 要写入的内容
-        
+        **kwargs: 额外参数（忽略）
+    
     Returns:
         操作结果
     """

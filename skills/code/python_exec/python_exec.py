@@ -27,14 +27,15 @@ SKILL_PARAMETERS = [
     }
 ]
 
-def execute(code: str, timeout: int = 10) -> str:
+def execute(code: str, timeout: int = 10, **kwargs) -> str:
     """
     执行 Python 代码。
     
     Args:
         code: Python 代码
         timeout: 超时时间
-        
+        **kwargs: 额外参数（忽略）
+    
     Returns:
         执行结果或错误信息
     """
