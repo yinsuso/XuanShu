@@ -143,8 +143,13 @@ async def delete_model(request: Request):
 @app.get("/api/conversations")
 async def get_conversations():
     try:
-        conversations = conversation_manager.list_conversations(limit=50)
-        return {"success": True, "conversations": conversations}
+        
+        async def _list_conversations_async():
+            conversations = await run_in_threadpool(conversation_manager.list_conversations, limit=50)
+            return {"success": True, "conversations": conversations}
+        
+        result = await _list_conversations_async()
+        return result
     except Exception as e:
         logger.error(f"获取对话历史失败：{e}", exc_info=True)
         return {"success": False, "error": str(e)}
@@ -157,11 +162,17 @@ async def load_conversation(request: Request):
         conversation_id = data.get("conversation_id")
         if not conversation_id:
             return {"success": False, "error": "未指定对话 ID"}
-
-        if conversation_manager.load_conversation(conversation_id):
-            return {"success": True, "message": f"已加载对话：{conversation_id}"}
-        else:
-            return {"success": False, "error": f"加载失败：对话不存在"}
+        
+        async def _load_conversation_async():
+            success = await run_in_threadpool(conversation_manager.load_conversation, conversation_id)
+            if success:
+                return {"success": True, "message": f"已加载对话：{conversation_id}"}
+            else:
+                return {"success": False, "error": f"加载失败：对话不存在"}
+        
+        result = await _load_conversation_async()
+        return result
+        
     except Exception as e:
         logger.error(f"加载对话失败：{e}", exc_info=True)
         return {"success": False, "error": str(e)}
@@ -174,9 +185,14 @@ async def delete_conversation(request: Request):
         conversation_id = data.get("conversation_id")
         if not conversation_id:
             return {"success": False, "error": "未指定对话 ID"}
-
-        conversation_manager.delete_conversation(conversation_id)
-        return {"success": True, "message": f"已删除对话：{conversation_id}"}
+        
+        async def _delete_conversation_async():
+            conversation_manager.delete_conversation(conversation_id)
+            return {"success": True, "message": f"已删除对话：{conversation_id}"}
+        
+        result = await _delete_conversation_async()
+        return result
+        
     except Exception as e:
         logger.error(f"删除对话失败：{e}", exc_info=True)
         return {"success": False, "error": str(e)}
@@ -284,95 +300,127 @@ async def get_skills():
 @app.get("/api/memory")
 async def get_memory(key: Optional[str] = None):
     try:
-        if key:
-            value = agent.memory.get_core_memory(key)
-            return {"success": True, "key": key, "value": value}
-        else:
-            all_memories = agent.memory.get_all_core_memory()
-            return {"success": True, "memories": all_memories}
+        
+        async def _get_memory_async():
+            if key:
+                value = await run_in_threadpool(agent.memory.get_core_memory, key)
+                return {"success": True, "key": key, "value": value}
+            else:
+                all_memories = await run_in_threadpool(agent.memory.get_all_core_memory)
+                return {"success": True, "memories": all_memories}
+        
+        result = await _get_memory_async()
+        return result
     except Exception as e:
+        logger.error(f"获取记忆失败：{e}", exc_info=True)
         return {"success": False, "error": str(e)}
 
 # API: 导出当前对话
 @app.get("/api/export")
 async def export_conversation():
     try:
-        # 获取当前会话历史
-        if not conversation_manager.current_conversation:
-            return JSONResponse(status_code=404, content={"success": False, "error": "当前没有可导出的对话历史"})
-        history = [msg.to_dict() for msg in conversation_manager.current_conversation.messages]
         
-        # 转换为 Markdown 格式
-        md_content = "# Local Agent 对话记录\n\n"
-        md_content += f"导出时间：{os.popen('date').read().strip()}\n"
-        md_content += f"模型：{config_manager.current_config.model_name if config_manager.current_config else 'Unknown'}\n\n---\n\n"
+        async def _export_async():
+            # 获取当前会话历史
+            if not conversation_manager.current_conversation:
+                raise HTTPException(status_code=404, detail="当前没有可导出的对话历史")
+            
+            # 获取历史记录在 threadpool 中执行
+            history = await run_in_threadpool(
+                lambda: [msg.to_dict() for msg in conversation_manager.current_conversation.messages]
+            )
+            
+            # 获取当前模型信息
+            current_cfg = await run_in_threadpool(lambda: config_manager.current_config)
+            model_name = current_cfg.model_name if current_cfg else 'Unknown'
+            
+            # 构建 Markdown 内容
+            from datetime import datetime
+            export_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            
+            md_content = "# Local Agent 对话记录\n\n"
+            md_content += f"导出时间：{export_time}\n"
+            md_content += f"模型：{model_name}\n\n---\n\n"
+            
+            for msg in history:
+                role = "👤 用户" if msg['role'] == 'user' else "🤖 Agent"
+                content = msg['content']
+                md_content += f"### {role}\n{content}\n\n---\n\n"
+            
+            # 保存为临时文件（需要异步执行）
+            export_path = os.path.join(PROJECT_ROOT, "data", "current_export.md")
+            os.makedirs(os.path.dirname(export_path), exist_ok=True)
+            
+            def write_file_sync():
+                with open(export_path, "w", encoding="utf-8") as f:
+                    f.write(md_content)
+                return export_path
+                
+            written_path = await run_in_threadpool(write_file_sync)
+            
+            return FileResponse(
+                path=written_path,
+                filename="agent_conversation_export.md",
+                media_type='text/markdown'
+            )
         
-        for msg in history:
-            role = "👤 用户" if msg['role'] == 'user' else "🤖 Agent"
-            content = msg['content']
-            md_content += f"### {role}\n{content}\n\n---\n\n"
-        
-        # 保存为临时文件
-        export_path = os.path.join(PROJECT_ROOT, "data", "current_export.md")
-        os.makedirs(os.path.dirname(export_path), exist_ok=True)
-        with open(export_path, "w", encoding="utf-8") as f:
-            f.write(md_content)
-        
-        return FileResponse(
-            path=export_path,
-            filename="agent_conversation_export.md",
-            media_type='text/markdown'
-        )
+        return await _export_async()
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"导出对话失败：{e}", exc_info=True)
         return JSONResponse(status_code=500, content={"success": False, "error": str(e)})
 @app.get("/api/token-stats")
 async def get_token_stats():
     try:
-        db_path = os.path.join(PROJECT_ROOT, "data", "token_stats.db.bak")
-        if not os.path.exists(db_path):
-            # 尝试 .db 版本
-            db_path = os.path.join(PROJECT_ROOT, "data", "token_stats.db")
         
-        if not os.path.exists(db_path):
-            return {"success": True, "data": {"total": {"total_tokens": 0, "prompt_tokens": 0, "completion_tokens": 0}, "by_model": [], "by_date": []}}
+        async def _get_token_stats_async():
+            db_path = os.path.join(PROJECT_ROOT, "data", "token_stats.db.bak")
+            if not os.path.exists(db_path):
+                # 尝试 .db 版本
+                db_path = os.path.join(PROJECT_ROOT, "data", "token_stats.db")
+            
+            if not os.path.exists(db_path):
+                return {"success": True, "data": {"total": {"total_tokens": 0, "prompt_tokens": 0, "completion_tokens": 0}, "by_model": [], "by_date": []}}
+            
+            # 在 threadpool 中执行数据库查询
+            def query_db_sync():
+                import sqlite3
+                conn = sqlite3.connect(db_path)
+                cursor = conn.cursor()
+                
+                # 总统计
+                cursor.execute("SELECT SUM(total_tokens), SUM(prompt_tokens), SUM(completion_tokens) FROM token_usage")
+                total_row = cursor.fetchone()
+                total_stats = {
+                    "total_tokens": total_row[0] or 0,
+                    "prompt_tokens": total_row[1] or 0,
+                    "completion_tokens": total_row[2] or 0
+                }
+                
+                # 按模型统计
+                cursor.execute("SELECT model_name, SUM(total_tokens), COUNT(*) FROM token_usage GROUP BY model_name ORDER BY SUM(total_tokens) DESC")
+                by_model = [{"model": row[0], "total": row[1], "count": row[2]} for row in cursor.fetchall()]
+                
+                # 按日期统计 (最近 7 天)
+                cursor.execute(
+                    "SELECT date(timestamp), SUM(total_tokens) FROM token_usage WHERE date(timestamp) >= date('now', '-7 days') GROUP BY date(timestamp) ORDER BY date(timestamp)"
+                )
+                by_date = [{"date": row[0], "total": row[1]} for row in cursor.fetchall()]
+                
+                conn.close()
+                
+                return {
+                    "total": total_stats,
+                    "by_model": by_model,
+                    "by_date": by_date
+                }
+            
+            data = await run_in_threadpool(query_db_sync)
+            return {"success": True, "data": data}
         
-        conn = sqlite3.connect(db_path)
-        cursor = conn.cursor()
-        
-        # 总统计
-        cursor.execute("SELECT SUM(total_tokens), SUM(prompt_tokens), SUM(completion_tokens) FROM token_usage")
-        total_row = cursor.fetchone()
-        total_stats = {
-            "total_tokens": total_row[0] or 0,
-            "prompt_tokens": total_row[1] or 0,
-            "completion_tokens": total_row[2] or 0
-        }
-        
-        # 按模型统计
-        cursor.execute("SELECT model_name, SUM(total_tokens), COUNT(*) FROM token_usage GROUP BY model_name ORDER BY SUM(total_tokens) DESC")
-        by_model = [{"model": row[0], "total": row[1], "count": row[2]} for row in cursor.fetchall()]
-        
-        # 按日期统计 (最近 7 天)
-        cursor.execute("""
-            SELECT date(timestamp), SUM(total_tokens) 
-            FROM token_usage 
-            WHERE date(timestamp) >= date('now', '-7 days')
-            GROUP BY date(timestamp) 
-            ORDER BY date(timestamp)
-        """)
-        by_date = [{"date": row[0], "total": row[1]} for row in cursor.fetchall()]
-        
-        conn.close()
-        
-        return {
-            "success": True,
-            "data": {
-                "total": total_stats,
-                "by_model": by_model,
-                "by_date": by_date
-            }
-        }
+        result = await _get_token_stats_async()
+        return result
     except Exception as e:
         logger.error(f"获取 Token 统计失败：{e}", exc_info=True)
         return {"success": False, "error": str(e)}
@@ -391,8 +439,8 @@ async def websocket_chat(websocket: WebSocket):
     try:
         while True:
             data = await websocket.receive_text()
-            # 简单处理：直接调用 process_simple
-            response = agent.process_simple(data)
+            # 使用线程池执行同步方法，避免阻塞事件循环
+            response = await run_in_threadpool(agent.process_simple, data)
             await websocket.send_text(response)
     except WebSocketDisconnect:
         logger.info("WebSocket client disconnected")

@@ -30,41 +30,72 @@ def parse_markdown_section(content: str, section_title: str) -> str:
 
 class EnhancedMemorySystem:
     def __init__(self):
-        # 意识层数据缓存
-        self.soul_data = self._load_soul_file()
-        self.memory_data = self._load_memory_file()
-        self.user_profile = self._load_user_profile()
+        # 意识层数据缓存（文件内容缓存，避免重复读取）
+        self.soul_data = None
+        self.memory_data = None
+        self.user_profile = None
+        self._soul_mtime = None
+        self._memory_mtime = None
+        
+        # 加载意识层数据（带缓存）
+        self._load_soul_file()
+        self._load_memory_file()
+        self._load_user_profile()
         
         # 潜意识层由 memory_core 单例管理
         self.db = memory_core
 
     def _load_soul_file(self) -> Dict[str, str]:
-        if not os.path.exists(SOUL_FILE): return {}
+        """加载 SOUL.md 文件，支持缓存（按修改时间判断）"""
+        if not os.path.exists(SOUL_FILE): 
+            return {}
+        
+        # 检查缓存是否有效
+        current_mtime = os.path.getmtime(SOUL_FILE)
+        if self.soul_data is not None and self._soul_mtime == current_mtime:
+            return self.soul_data
+        
         try:
             with open(SOUL_FILE, 'r', encoding='utf-8') as f:
                 content = f.read()
-            return {
+            
+            self.soul_data = {
                 "identity": parse_markdown_section(content, "1. 身份认同"),
                 "instructions": parse_markdown_section(content, "2. 核心指令"),
                 "capabilities": parse_markdown_section(content, "3. 能力边界"),
                 "preferences": parse_markdown_section(content, "4. 输出格式偏好"),
                 "workflow": parse_markdown_section(content, "5. 工作流程")
             }
+            self._soul_mtime = current_mtime
+            logger.debug(f"✅ SOUL.md 已加载（缓存更新）")
+            return self.soul_data
         except Exception as e:
             logger.error(f"加载 SOUL.md 失败: {e}")
             return {}
 
     def _load_memory_file(self) -> Dict[str, str]:
-        if not os.path.exists(MEMORY_FILE): return {}
+        """加载 MEMORY.md 文件，支持缓存（按修改时间判断）"""
+        if not os.path.exists(MEMORY_FILE): 
+            return {}
+        
+        # 检查缓存是否有效
+        current_mtime = os.path.getmtime(MEMORY_FILE)
+        if self.memory_data is not None and self._memory_mtime == current_mtime:
+            return self.memory_data
+        
         try:
             with open(MEMORY_FILE, 'r', encoding='utf-8') as f:
                 content = f.read()
-            return {
+            
+            self.memory_data = {
                 "system_context": parse_markdown_section(content, "1. 系统背景"),
                 "key_facts": parse_markdown_section(content, "2. 关键事实"),
                 "historical_knowledge": parse_markdown_section(content, "3. 历史经验"),
                 "user_preferences": parse_markdown_section(content, "4. 用户偏好"),
             }
+            self._memory_mtime = current_mtime
+            logger.debug(f"✅ MEMORY.md 已加载（缓存更新）")
+            return self.memory_data
         except Exception as e:
             logger.error(f"加载 MEMORY.md 失败: {e}")
             return {}
