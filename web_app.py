@@ -467,9 +467,9 @@ async def create_cluster(request: Request):
 @app.post("/api/cluster/join")
 async def join_cluster(request: Request):
     try:
-        # 触发扫描并尝试加入
-        discovery.scan_and_join() 
-        return {"success": True, "message": "正在搜索并尝试加入局域网协作房间...", "found_rooms": discovery.found_rooms}
+        # 触发扫描（由客户端轮询 status 查看结果）
+        discovery.start_scanning()
+        return {"success": True, "message": "正在搜索局域网协作房间...", "found_rooms": discovery.found_rooms}
     except Exception as e:
         return {"success": False, "error": str(e)}
 
