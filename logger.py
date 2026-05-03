@@ -276,22 +276,26 @@ class StructuredLogger:
         console_handler.setFormatter(formatter)
         self.logger.addHandler(console_handler)
 
-        # 文件处理器（JSON 格式）
-        if LOG_FILE_JSON:
-            try:
-                file_handler = AsyncHandler(
-                    filename=LOG_FILE_JSON,
-                    queue_size=LOG_ASYNC_QUEUE_SIZE,
-                    batch_size=LOG_BATCH_SIZE,
-                    flush_interval=LOG_FLUSH_INTERVAL,
-                )
-                file_handler.setFormatter(JsonFormatter(include_trace_id=True))
-                self.logger.addHandler(file_handler)
-            except Exception as e:
-                self.logger.warning(f"无法创建结构化日志文件 {LOG_FILE_JSON}: {e}")
+        # 文件处理器 - 强制写入 JSON 格式日志到文件，便于排查问题
+        # 无论 LOG_FORMAT 如何，都写入结构化日志到文件
+        try:
+            log_file_path = LOG_FILE_JSON or os.path.join(PROJECT_ROOT, "logs", "hermes.jsonl")
+            file_handler = AsyncHandler(
+                filename=log_file_path,
+                queue_size=LOG_ASYNC_QUEUE_SIZE,
+                batch_size=LOG_BATCH_SIZE,
+                flush_interval=LOG_FLUSH_INTERVAL,
+            )
+            file_handler.setFormatter(JsonFormatter(include_trace_id=True))
+            self.logger.addHandler(file_handler)
+            # 初始化时记录一条日志，确认文件写入正常
+            self.logger.info("✅ 日志文件处理器已初始化", {"log_file": log_file_path})
+        except Exception as e:
+            # 文件处理器失败不阻塞整体，但记录到 stderr
+            print(f"[StructuredLogger] 无法创建日志文件处理器: {e}", file=sys.stderr)
 
         # 传统日志文件（如果指定且不同于 JSON 文件）
-        if LOG_FILE and LOG_FILE != LOG_FILE_JSON:
+        if LOG_FILE and LOG_FILE != (LOG_FILE_JSON or os.path.join(PROJECT_ROOT, "logs", "hermes.jsonl")):
             try:
                 traditional_handler = logging.FileHandler(LOG_FILE, encoding="utf-8")
                 traditional_handler.setFormatter(TextFormatter())

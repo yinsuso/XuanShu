@@ -6,7 +6,24 @@ from typing import Optional
 # =============================================================================
 
 # 项目根目录：项目的根路径，用于构建其他相对路径
-PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+# 使用多级 fallback 确保跨平台兼容性
+_POTENTIAL_ROOTS = [
+    os.path.dirname(os.path.abspath(__file__)),  # 当前文件所在目录
+    os.getcwd(),  # 当前工作目录
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'),  # 父目录
+]
+
+# 选择第一个存在的目录作为 PROJECT_ROOT
+for _root in _POTENTIAL_ROOTS:
+    if os.path.isdir(_root):
+        PROJECT_ROOT = _root
+        break
+else:
+    PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+
+# 调试：记录项目根目录
+import sys
+print(f"[CONFIG] 项目根目录: {PROJECT_ROOT}", file=sys.stderr)
 
 # 允许操作的目录：Agent只能在这个目录及其子目录下进行文件操作，防止路径越权
 ALLOWED_DIR = PROJECT_ROOT

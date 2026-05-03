@@ -519,24 +519,57 @@ class Launcher:
                 # 启动 web_app.py 作为子进程
                 proc = subprocess.Popen([sys.executable, 'web_app.py'], cwd=self.project_root)
                 print(f"{Fore.BLUE}等待 Web 服务启动...")
-                # 健康检查：等待最多 10 秒
-                max_wait = 10
+                # 健康检查：等待最多 30 秒，更宽松的时限
+                max_wait = 30
                 waited = 0
+                health_ok = False
                 while waited < max_wait:
                     try:
-                        resp = requests.get(f"http://{WEB_HOST}:{WEB_PORT}/api/skills", timeout=1)
+                        # 先检查根路径
+                        resp = requests.get(f"http://{WEB_HOST}:{WEB_PORT}/", timeout=2)
                         if resp.status_code == 200:
-                            print(f"{Fore.GREEN}✅ Web 界面启动成功！请访问：http://{WEB_HOST}:{WEB_PORT}")
-                            break
-                    except:
+                            # 根路径正常，再检查 API 端点
+                            resp2 = requests.get(f"http://{WEB_HOST}:{WEB_PORT}/api/skills", timeout=2)
+                            if resp2.status_code == 200:
+                                data = resp2.json()
+                                if data.get('success'):
+                                    print(f"{Fore.GREEN}✅ Web 界面启动成功！请访问：http://{WEB_HOST}:{WEB_PORT}")
+                                    health_ok = True
+                                    break
+                                else:
+                                    print(f"{Fore.YELLOW}⚠️ /api/skills 返回失败: {data.get('error')}")
+                            else:
+                                print(f"{Fore.YELLOW}⚠️ /api/skills 状态码: {resp2.status_code}")
+                        else:
+                            print(f"{Fore.YELLOW}⚠️ 根路径状态码: {resp.status_code}")
+                    except requests.exceptions.ConnectionError:
+                        # 连接被拒绝或超时，继续等待
                         pass
+                    except Exception as e:
+                        print(f"{Fore.YELLOW}⚠️ 健康检查异常: {e}")
                     time.sleep(1)
                     waited += 1
-                else:
-                    print(f"{Fore.RED}❌ Web 界面启动超时，请检查日志。")
+                if not health_ok:
+                    print(f"{Fore.RED}❌ Web 界面启动超时 ({max_wait}秒)，请检查日志或确保端口 {WEB_PORT} 未被占用。")
+                    # 尝试获取子进程的输出
+                    try:
+                        stdout, stderr = proc.communicate(timeout=2)
+                        if stdout:
+                            print(f"{Fore.YELLOW}[子进程标准输出]\n{stdout.decode()}")
+                        if stderr:
+                            print(f"{Fore.YELLOW}[子进程标准错误]\n{stderr.decode()}")
+                    except:
+                        pass
                     proc.terminate()
+                    try:
+                        proc.wait(timeout=5)
+                    except:
+                        proc.kill()
                     input(f"{Fore.YELLOW}按回车键返回...")
-                    proc.terminate() # 退出时关闭子进程
+                    # 确保子进程已终止
+                    if proc.poll() is None:
+                        proc.kill()
+
             else:
                 # CLI mode
                 from agent import UniversalAgent
