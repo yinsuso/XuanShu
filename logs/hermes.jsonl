@@ -5,3 +5,15 @@
 {"timestamp": "2026-05-03T09:44:11.555413Z", "level": "INFO", "component": "test_hermes", "action": "file_operation", "details": {"operation": "read", "path": "/etc/passwd", "size": 1024, "sensitive": "[REDACTED]"}, "trace_id": "test-trace-12345"}
 {"timestamp": "2026-05-03T09:44:11.555559Z", "level": "ERROR", "component": "test_hermes", "action": "exception_caught", "exception": "Traceback (most recent call last):\n  File \"/www/wwwroot/local-agent/test_logger_system.py\", line 108, in <module>\n    raise ValueError(\"这是一个测试异常\")\nValueError: 这是一个测试异常", "details": {"context": "测试异常捕获"}, "trace_id": "test-trace-12345"}
 {"timestamp": "2026-05-03T09:44:11.560067Z", "level": "INFO", "component": "test_hermes", "action": "sensitive_test", "details": {"api_key": "sk-abcdef1234567890ghijklmnopqrstuvwxyz", "authorization": "[REDACTED]", "aws_key": "[REDACTED]", "normal_field": "这是普通字段"}, "trace_id": "test-trace-12345"}
+{"timestamp": "2026-05-03T13:01:25.656895Z", "level": "INFO", "component": "local_agent", "action": "✅ 日志文件处理器已初始化", "trace_id": null}
+{"timestamp": "2026-05-03T13:01:25.658207Z", "level": "INFO", "component": "local_agent", "action": "已加载 8 个模型配置", "trace_id": null}
+{"timestamp": "2026-05-03T13:01:25.661937Z", "level": "INFO", "component": "local_agent", "action": "✅ 统一记忆系统已初始化 (SQLite WAL 模式): /www/wwwroot/local-agent/agent_memory.db", "trace_id": null}
+{"timestamp": "2026-05-03T13:01:26.069355Z", "level": "INFO", "component": "local_agent", "action": "创建新对话: a7425e84-ab4c-47a1-8dc0-b1012161fe53", "trace_id": null}
+{"timestamp": "2026-05-03T13:01:26.070608Z", "level": "INFO", "component": "local_agent", "action": "✅ 成功加载对话: ccd36f00-22fb-4cce-bc9e-05a2ef7da69f, 消息数: 20", "trace_id": null}
+{"timestamp": "2026-05-03T13:01:26.070765Z", "level": "INFO", "component": "local_agent", "action": "自动加载最近对话: ccd36f00...", "trace_id": null}
+{"timestamp": "2026-05-03T13:01:26.072060Z", "level": "INFO", "component": "local_agent", "action": "创建新对话: fc95d5a4-97c4-4583-baf9-e8abef456db7", "trace_id": null}
+{"timestamp": "2026-05-03T13:01:26.082266Z", "level": "INFO", "component": "local_agent", "action": "🤖 UniversalAgent v5.0 (Cognitive Evolution) 初始化完成", "trace_id": null}
+{"timestamp": "2026-05-03T13:01:26.082445Z", "level": "INFO", "component": "local_agent", "action": "📦 实际运行模型: Ollama-qwen3.5:9b (qwen3.5:9b)", "trace_id": null}
+{"timestamp": "2026-05-03T13:01:26.082544Z", "level": "INFO", "component": "local_agent", "action": "🔧 技能数量: 5", "trace_id": null}
+{"timestamp": "2026-05-03T13:01:26.082621Z", "level": "INFO", "component": "local_agent", "action": "🧬 进化功能: 启用", "trace_id": null}
+{"timestamp": "2026-05-03T13:15:09.544337Z", "level": "INFO", "component": "local_agent", "action": "✅ 日志文件处理器已初始化", "trace_id": null}

@@ -110,14 +110,83 @@ async function sendMessage() {
   }
 }
 
+function copyToClipboard(button) {
+  const messageDiv = button.closest('.message');
+  const contentDiv = messageDiv.querySelector('.message-content');
+  const text = contentDiv.innerText;
+
+  navigator.clipboard.writeText(text).then(() => {
+    const originalText = button.textContent;
+    button.textContent = '✅ 已复制';
+    button.classList.add('copied');
+    setTimeout(() => {
+      button.textContent = originalText;
+      button.classList.remove('copied');
+    }, 2000);
+  }).catch(err => {
+    alert('复制失败: ' + err.message);
+  });
+}
+
+function retryMessage(button) {
+  const messageDiv = button.closest('.message');
+  // 查找前一条用户消息
+  const prevMessage = messageDiv.previousElementSibling;
+  if (!prevMessage || !prevMessage.classList.contains('user-message')) {
+    alert('未找到可重试的用户消息');
+    return;
+  }
+  const userContentDiv = prevMessage.querySelector('.message-content');
+  if (!userContentDiv) {
+    alert('无法获取用户消息内容');
+    return;
+  }
+  const originalText = userContentDiv.innerText.trim();
+  if (!originalText) {
+    alert('用户消息为空');
+    return;
+  }
+
+  // 将原消息重新填入输入框并发送
+  const input = document.getElementById('message-input');
+  if (input) {
+    input.value = originalText;
+    // 自动发送
+    sendMessage();
+  }
+}
+
 function appendMessage(role, content) {
   const container = document.getElementById('messages');
   if(!container) return;
   const div = document.createElement('div');
   div.className = 'message ' + (role === 'user' ? 'user-message' : 'assistant-message');
+
+  // 渲染 Markdown（仅助手消息）
+  let renderedContent = content;
+  if(role === 'assistant' && typeof marked !== 'undefined') {
+    try {
+      renderedContent = marked.parse(content);
+    } catch (e) {
+      renderedContent = content; // 降级为原始文本
+    }
+  }
+
+  // 助手消息添加操作按钮（复制、重新回复）
+  let actionsHtml = '';
+  if(role === 'assistant') {
+    actionsHtml = `
+      <div class="message-actions">
+        <button class="copy-btn" onclick="copyToClipboard(this)" title="复制内容">📋 复制</button>
+        <button class="retry-btn" onclick="retryMessage(this)" title="重新生成"> ↩️ 重新回复</button>
+      </div>
+    `;
+  }
+
   div.innerHTML = `
     <div class="avatar ${role === 'user' ? 'user-avatar' : 'assistant-avatar'}">${role === 'user' ? '👤' : '🤖'}</div>
-    <div class="message-content">${content}</div>
+    <div class="message-content">${renderedContent}</div>
+    ${actionsHtml}
   `;
   container.appendChild(div);
   container.scrollTop = container.scrollHeight;

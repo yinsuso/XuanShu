@@ -459,6 +459,100 @@ class Launcher:
 
             self.print_error("无效的选择，请重试")
 
+    def start_web_interface(self) -> bool:
+        """启动 Web 界面并等待健康检查。"""
+        self.print_step("启动 Web 界面", "正在启动 Web 服务...")
+        proc = subprocess.Popen([sys.executable, 'web_app.py'], cwd=self.project_root)
+        self.print_info("等待 Web 服务启动...")
+        
+        max_wait = 30
+        waited = 0
+        health_ok = False
+        health_host = "127.0.0.1"
+        
+        while waited < max_wait:
+            try:
+                # 先检查根路径
+                resp = requests.get(f"http://{health_host}:{WEB_PORT}/", timeout=2)
+                if resp.status_code == 200:
+                    # 根路径正常，再检查 API 端点
+                    resp2 = requests.get(f"http://{health_host}:{WEB_PORT}/api/skills", timeout=2)
+                    if resp2.status_code == 200:
+                        data = resp2.json()
+                        if data.get('success'):
+                            self.print_success(f"✅ Web 界面启动成功！请访问：http://{WEB_HOST}:{WEB_PORT}")
+                            health_ok = True
+                            break
+                        else:
+                            self.print_warning(f"⚠️ /api/skills 返回失败: {data.get('error')}")
+                    else:
+                        self.print_warning(f"⚠️ /api/skills 状态码: {resp2.status_code}")
+                else:
+                    self.print_warning(f"⚠️ 根路径状态码: {resp.status_code}")
+            except requests.exceptions.ConnectionError:
+                pass
+            except Exception as e:
+                self.print_warning(f"⚠️ 健康检查异常: {e}")
+            time.sleep(1)
+            waited += 1
+        
+        if not health_ok:
+            self.print_error(f"❌ Web 界面启动超时 ({max_wait}秒)，请检查日志或确保端口 {WEB_PORT} 未被占用。")
+            try:
+                stdout, stderr = proc.communicate(timeout=2)
+                if stdout:
+                    self.print_info(f"[子进程标准输出]\n{stdout.decode()}")
+                if stderr:
+                    self.print_info(f"[子进程标准错误]\n{stderr.decode()}")
+            except:
+                pass
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except:
+                proc.kill()
+            input(f"{Fore.YELLOW}按回车键返回...")
+            if proc.poll() is None:
+                proc.kill()
+            return False
+        
+        return True
+
+    def select_cli_mode(self) -> str:
+        """CLI 模式下的子选择：单机模式或协作模式"""
+        self.print_step("选择运行模式", "请选择 Agent 的运行模式")
+        print(f"\n{Fore.CYAN}可用模式:")
+        print(f"  1. 单机模式")
+        print(f"  2. 协作模式")
+        
+        while True:
+            choice = input(f"\n{Fore.GREEN}请选择 [1-2]: ").strip()
+            if choice == '1':
+                return 'standalone'
+            elif choice == '2':
+                # 协作子菜单
+                print(f"\n{Fore.CYAN}协作操作:")
+                print(f"  1. 创建房间")
+                print(f"  2. 加入房间")
+                sub = input(f"{Fore.GREEN}请选择 [1-2]: ").strip()
+                if sub == '1':
+                    # 创建房间需要使用 Web 界面
+                    confirm = input(f"{Fore.YELLOW}创建房间需要使用 Web 界面，是否现在启动 Web？ [Y/n]: ").strip().lower()
+                    if confirm in ('', 'y', 'yes'):
+                        return 'web'  # 切换到 Web 模式
+                    else:
+                        self.print_info("已取消，返回主菜单。")
+                        return 'standalone'  # 视为单机模式
+                elif sub == '2':
+                    # 加入房间 - 当前版本限制
+                    self.print_warning("加入房间功能正在开发中，当前请在 Web 界面使用集群协作。")
+                    self.print_info("已切换回单机模式。")
+                    return 'standalone'
+                else:
+                    self.print_error("无效选择，请重试")
+            else:
+                self.print_error("无效选择，请重试")
+
     def run(self):
         """运行启动器"""
         self.print_banner()
@@ -515,67 +609,20 @@ class Launcher:
             time.sleep(1)
 
             if interface == 'web':
-                print(f"{Fore.GREEN}启动 Web 界面...")
-                # 启动 web_app.py 作为子进程
-                proc = subprocess.Popen([sys.executable, 'web_app.py'], cwd=self.project_root)
-                print(f"{Fore.BLUE}等待 Web 服务启动...")
-                # 健康检查：等待最多 30 秒，更宽松的时限
-                max_wait = 30
-                waited = 0
-                health_ok = False
-                health_host = "127.0.0.1"  # 强制使用本地回环地址进行健康检查
-                while waited < max_wait:
-                    try:
-                        # 先检查根路径
-                        resp = requests.get(f"http://{health_host}:{WEB_PORT}/", timeout=2)
-                        if resp.status_code == 200:
-                            # 根路径正常，再检查 API 端点
-                            resp2 = requests.get(f"http://{health_host}:{WEB_PORT}/api/skills", timeout=2)
-                            if resp2.status_code == 200:
-                                data = resp2.json()
-                                if data.get('success'):
-                                    print(f"{Fore.GREEN}✅ Web 界面启动成功！请访问：http://{WEB_HOST}:{WEB_PORT}")
-                                    health_ok = True
-                                    break
-                                else:
-                                    print(f"{Fore.YELLOW}⚠️ /api/skills 返回失败: {data.get('error')}")
-                            else:
-                                print(f"{Fore.YELLOW}⚠️ /api/skills 状态码: {resp2.status_code}")
-                        else:
-                            print(f"{Fore.YELLOW}⚠️ 根路径状态码: {resp.status_code}")
-                    except requests.exceptions.ConnectionError:
-                        # 连接被拒绝或超时，继续等待
-                        pass
-                    except Exception as e:
-                        print(f"{Fore.YELLOW}⚠️ 健康检查异常: {e}")
-                    time.sleep(1)
-                    waited += 1
-                if not health_ok:
-                    print(f"{Fore.RED}❌ Web 界面启动超时 ({max_wait}秒)，请检查日志或确保端口 {WEB_PORT} 未被占用。")
-                    # 尝试获取子进程的输出
-                    try:
-                        stdout, stderr = proc.communicate(timeout=2)
-                        if stdout:
-                            print(f"{Fore.YELLOW}[子进程标准输出]\n{stdout.decode()}")
-                        if stderr:
-                            print(f"{Fore.YELLOW}[子进程标准错误]\n{stderr.decode()}")
-                    except:
-                        pass
-                    proc.terminate()
-                    try:
-                        proc.wait(timeout=5)
-                    except:
-                        proc.kill()
-                    input(f"{Fore.YELLOW}按回车键返回...")
-                    # 确保子进程已终止
-                    if proc.poll() is None:
-                        proc.kill()
+                self.start_web_interface()
+                return
 
             else:
-                # CLI mode
-                from agent import UniversalAgent
-                agent = UniversalAgent()
-                agent.run()
+                # CLI 模式下选择更细粒度的运行模式
+                cli_mode = self.select_cli_mode()
+                if cli_mode == 'web':
+                    self.start_web_interface()
+                    return
+                else:
+                    # 单机模式运行
+                    from agent import UniversalAgent
+                    agent = UniversalAgent()
+                    agent.run()
 
         except KeyboardInterrupt:
             print(f"\n\n{Fore.YELLOW}👋 已取消")

@@ -164,19 +164,23 @@ load_skills()
 # 创建一个伪 registry 对象，提供旧版接口
 class _LegacyRegistry:
     """伪注册表对象，提供旧版接口以兼容 agent.py。"""
-    
+
     def get_all(self):
         """返回所有技能对象列表。"""
         global _skills_registry
         return [info['skill'] for info in _skills_registry.values()]
-    
+
     def get_openai_schemas(self):
         """返回 OpenAI 风格的技能 Schema 列表。"""
         return get_openai_schemas()
-    
+
     def get(self, name):
         """获取指定技能。"""
         return get_skill(name)
+
+    def list_skills(self):
+        """列出所有技能信息（兼容 web_app.py 调用）。"""
+        return list_skills()
 
 # 导出 registry 对象
 registry = _LegacyRegistry()
