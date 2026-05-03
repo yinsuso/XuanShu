@@ -102,6 +102,21 @@
             <option>ERROR</option>
           </select>
         </div>
+        <div class="setting-group">
+          <label>新增模型配置</label>
+          <div style="display: flex; flex-direction: column; gap: 8px;">
+            <input type="text" id="new-model-name" placeholder="配置名称 (如 My-Ollama)" class="setting-select">
+            <select id="new-model-provider" class="setting-select">
+              <option value="ollama">Ollama (本地)</option>
+              <option value="openai_compatible">OpenAI兼容</option>
+              <option value="custom">自定义</option>
+            </select>
+            <input type="text" id="new-model-model-name" placeholder="模型名称 (如 qwen2.5-coder:7b)" class="setting-select">
+            <input type="text" id="new-model-api-base" placeholder="API地址 (如 http://localhost:11434)" class="setting-select">
+            <input type="password" id="new-model-api-key" placeholder="API密钥 (可选)" class="setting-select">
+            <button id="save-model-btn" class="btn btn-primary">保存模型</button>
+          </div>
+        </div>
       </div>
     </div>
   </div>

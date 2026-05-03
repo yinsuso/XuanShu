@@ -36,6 +36,8 @@ class UniversalAgent:
         self.conversation_id = conversation_id
         self.conversation_manager = ConversationManager(conversation_id)
         self.memory_system = EnhancedMemorySystem()
+        # 兼容性别名：使 agent.memory 指向 memory_core，供 web_app.py 等使用
+        self.memory = self.memory_system.db
         self.enable_evolution = enable_evolution
         self.skills_registry = registry
         self.code_execution_count = 0
@@ -206,7 +208,7 @@ class UniversalAgent:
                     continue
                 
                 response = self.process_adaptive(user_input)
-                print(f"🤖 破执：{response}\n")
+                print(f"🤖 玄枢：{response}\n")
                 
             except KeyboardInterrupt: break
             except Exception as e:

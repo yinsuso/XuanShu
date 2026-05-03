@@ -341,6 +341,52 @@ async function switchModel() {
   }
 }
 
+// ==================== 设置页面功能：保存新增模型 ====================
+async function saveModel() {
+  const nameEl = document.getElementById('new-model-name');
+  const providerEl = document.getElementById('new-model-provider');
+  const modelNameEl = document.getElementById('new-model-model-name');
+  const apiBaseEl = document.getElementById('new-model-api-base');
+  const apiKeyEl = document.getElementById('new-model-api-key');
+
+  const name = nameEl?.value.trim();
+  const provider = providerEl?.value;
+  const model_name = modelNameEl?.value.trim();
+  const api_base = apiBaseEl?.value.trim();
+  const api_key = apiKeyEl?.value.trim();
+
+  if(!name || !provider || !model_name || !api_base) {
+    alert('请填写配置名称、提供商、模型名称和API地址');
+    return;
+  }
+
+  const formData = new FormData();
+  formData.append('name', name);
+  formData.append('provider', provider);
+  formData.append('model_name', model_name);
+  formData.append('api_base', api_base);
+  formData.append('api_key', api_key);
+
+  try {
+    const res = await fetch('/api/save_model', { method: 'POST', body: formData });
+    const data = await res.json();
+    if(data.success) {
+      alert('模型配置已保存');
+      // 清空表单
+      nameEl.value = '';
+      modelNameEl.value = '';
+      apiBaseEl.value = '';
+      apiKeyEl.value = '';
+      // 刷新模型列表
+      loadModels();
+    } else {
+      alert('保存失败：' + data.error);
+    }
+  } catch (e) {
+    alert('网络错误：' + e.message);
+  }
+}
+
 // ==================== 集群协作功能 ====================
 let clusterInterval = null;
 

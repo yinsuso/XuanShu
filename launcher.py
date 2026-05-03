@@ -516,9 +516,6 @@ class Launcher:
 
             if interface == 'web':
                 print(f"{Fore.GREEN}启动 Web 界面...")
-                import subprocess
-                import time
-                import requests
                 # 启动 web_app.py 作为子进程
                 proc = subprocess.Popen([sys.executable, 'web_app.py'], cwd=self.project_root)
                 print(f"{Fore.BLUE}等待 Web 服务启动...")

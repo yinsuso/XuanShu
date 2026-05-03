@@ -168,21 +168,30 @@ class ReActLoop:
             metadata={"type": "reflection"}
         )
     
+    def _format_thoughts(self) -> str:
+        """格式化思考历史"""
+        if not self.thoughts:
+            return "（暂无思考历史）"
+
+        lines = []
+        for i, thought in enumerate(self.thoughts[-8:], 1):  # 最近8条
+            prefix = "🔥" if thought.thought_type == ThoughtType.CORRECTION else ""
+            lines.append(f"{i}. {prefix}[{thought.thought_type.value}] {thought.content[:200]}")
+        return "\n".join(lines)
+
     def _build_context(self, task: str) -> str:
         """构建上下文"""
         parts = [f"任务: {task}"]
-        
+
         if self.thoughts:
             # 1. 首先提取最近的修正计划 (Correction)，给予最高优先级
             corrections = [t.content for t in self.thoughts if t.thought_type == ThoughtType.CORRECTION]
             if corrections:
                 parts.append("\n【⚠️ 最高优先级：当前修正计划】")
                 parts.append(corrections[-1]) # 取最近的一次修正
-            
+
             # 2. 添加最近的思考历史
             parts.append("\n思考历史:")
-            for i, thought in enumerate(self.thoughts[-8:]): # 适当增加历史长度
-                prefix = "🔥" if thought.thought_type == ThoughtType.CORRECTION else ""
-                parts.append(f"{i + 1}. {prefix}[{thought.thought_type.value}] {thought.content[:200]}")
-        
+            parts.append(self._format_thoughts())
+
         return "\n".join(parts)

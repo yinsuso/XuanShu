@@ -84,7 +84,8 @@ class EvolutionEngine:
             system_prompt="你是一个自我进化的 AI 助手，擅长复盘和总结经验。"
         )
         
-        reflection_text = response.get("response", "")
+        # call_model 返回纯文本字符串
+        reflection_text = response
         reflection = self.analyze_reflection(reflection_text)
         
         # 保存到记忆
@@ -134,7 +135,8 @@ class EvolutionEngine:
             system_prompt="你是一个 Python 专家，擅长生成高质量的技能代码。"
         )
         
-        return response.get("response", "")
+        # call_model 返回纯文本字符串（技能代码）
+        return response
     
     def run_evolution_cycle(self, task: str, result: str, success: bool, tools_used: List[str]):
         """运行完整进化循环"""

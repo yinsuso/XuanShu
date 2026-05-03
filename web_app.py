@@ -336,7 +336,7 @@ async def get_token_stats():
    db_path = os.path.join(PROJECT_ROOT, "data", "token_stats.db")
   
   if not os.path.exists(db_path):
-   return {"success": True, "data": {"total": 0, "by_model": [], "by_date": []}}
+   return {"success": True, "data": {"total": {"total_tokens": 0, "prompt_tokens": 0, "completion_tokens": 0}, "by_model": [], "by_date": []}}
   
   conn = sqlite3.connect(db_path)
   cursor = conn.cursor()
