@@ -387,6 +387,32 @@ async function saveModel() {
   }
 }
 
+async function deleteModel() {
+  const select = document.getElementById('model-select');
+  if (!select) return;
+  const name = select.value;
+  if (!confirm(`确定要删除模型 "${name}" 吗？此操作不可撤销。`)) {
+    return;
+  }
+
+  try {
+    const res = await fetch('/api/delete_model', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: name })
+    });
+    const data = await res.json();
+    if (data.success) {
+      alert('模型已删除');
+      loadModels();
+    } else {
+      alert('删除失败: ' + data.error);
+    }
+  } catch (e) {
+    alert('网络错误: ' + e.message);
+  }
+}
+
 // ==================== 集群协作功能 ====================
 let clusterInterval = null;
 
@@ -487,6 +513,7 @@ document.addEventListener('DOMContentLoaded', () => {
   
   // 绑定模型切换按钮
   document.getElementById('switch-model-btn')?.addEventListener('click', switchModel);
+  document.getElementById('delete-model-btn')?.addEventListener('click', deleteModel);
   
   // 绑定导出按钮
   document.querySelector('.btn-secondary.btn-sm')?.addEventListener('click', exportConversation);

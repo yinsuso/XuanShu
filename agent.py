@@ -141,7 +141,9 @@ class UniversalAgent:
             final_response = f"处理过程中出现错误：{str(e)}"
             logger.error(f"Agent 执行异常: {e}", exc_info=True)
 
-        if self.enable_evolution:
+        # 进化触发条件：仅复杂任务 或 执行失败 时触发
+        should_evolve = self.enable_evolution and (not success or is_complex)
+        if should_evolve:
             try:
                 self.evolution.run_evolution_cycle(
                     task=user_input,

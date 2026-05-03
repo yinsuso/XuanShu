@@ -6,6 +6,7 @@ from typing import Optional, Tuple
 from logger import logger
 from config import PROJECT_ROOT
 from .evolution.reflection import Reflection
+from skills import get_skill_filepath, load_skills
 
 AUTO_SKILLS_DIR = os.path.join(PROJECT_ROOT, "skills", "auto_generated")
 os.makedirs(AUTO_SKILLS_DIR, exist_ok=True)
@@ -101,21 +102,38 @@ class SkillGenerator:
 - 技能想法: {reflection.skill_idea}
 
 请生成一个完整的Python技能文件，包含:
-1. 必要的导入（注意使用 from skills.base import skill, SkillCategory
+1. 必要的导入：from skills.base import skill, SkillCategory（注意：必须使用绝对导入）
 2. 使用@skill装饰器注册技能
 3. 完整的函数实现
 4. 参数定义和文档字符串
 5. 适当的错误处理
+6. 命名规范：
+   - 技能名称（name）必须使用英文小写 snake_case 格式（如 quick_calc）
+   - 长度不超过30字符
+   - 仅包含小写字母、数字、下划线
+   - 禁止使用中文、标点、空格
 
 模板示例:
 ```python
-from .skills.base import skill, SkillCategory
+from skills.base import skill, SkillCategory
 
 @skill(
     name="skill_name",
     description="技能描述",
     category=SkillCategory.UTILITY
 )
+def skill_function(param1: str, param2: int = 0) -> str:
+    """技能函数文档"""
+    try:
+        # 实现代码
+        result = f"处理: {param1}, {param2}"
+        return result
+    except Exception as e:
+        return f"错误: {e}"
+```
+
+请只返回Python代码，不要其他解释。"""
+        return prompt
 def skill_function(param1: str, param2: int = 0) -> str:
     \"\"\"技能函数文档\"\"\"
     try:
@@ -134,31 +152,63 @@ def skill_function(param1: str, param2: int = 0) -> str:
         reflection: Reflection,
         code: str
     ) -> Tuple[bool, Optional[str], str]:
-        """生成、验证并保存技能"""
+        """生成、验证并保存技能，支持技能升级"""
         try:
             code = self._extract_code(code)
-            
+
+            # 验证语法
             is_valid, error = self.validator.validate_syntax(code)
             if not is_valid:
                 return False, None, error
-            
+
+            # 验证技能结构
             is_valid, error = self.validator.validate_skill_structure(code)
             if not is_valid:
                 return False, None, error
-            
-            filepath = self.save_skill(reflection.skill_idea, code)
-            if not filepath:
-                return False, None, "保存失败"
-            
-            is_valid, error = self.validator.test_import(filepath)
-            if not is_valid:
-                os.remove(filepath)
-                return False, None, error
-            
-            return True, filepath, "生成成功"
+
+            # 尝试提取技能名称
+            import re
+            match = re.search(r'@skill\s*\(\s*name\s*=\s*['"]([^'"]+)['\"]', code)
+            skill_name = match.group(1) if match else None
+            existing_filepath = get_skill_filepath(skill_name) if skill_name else None
+
+            if existing_filepath:
+                # 升级现有技能
+                try:
+                    # 备份原文件
+                    with open(existing_filepath, 'r', encoding='utf-8') as f:
+                        original_code = f.read()
+                    # 写入新代码
+                    with open(existing_filepath, 'w', encoding='utf-8') as f:
+                        f.write(code)
+                    # 测试导入
+                    is_valid, error = self.validator.test_import(existing_filepath)
+                    if not is_valid:
+                        # 恢复原文件
+                        with open(existing_filepath, 'w', encoding='utf-8') as f:
+                            f.write(original_code)
+                        return False, None, f"升级失败: {error}"
+                    # 重新加载技能
+                    load_skills()
+                    logger.info(f"技能升级成功: {skill_name}")
+                    return True, existing_filepath, "技能升级成功"
+                except Exception as e:
+                    return False, None, f"升级失败: {e}"
+            else:
+                # 全新生成技能
+                filepath = self.save_skill(reflection.skill_idea, code)
+                if not filepath:
+                    return False, None, "保存失败"
+                is_valid, error = self.validator.test_import(filepath)
+                if not is_valid:
+                    os.remove(filepath)
+                    return False, None, error
+                load_skills()
+                logger.info(f"新技能已生成并加载: {filepath}")
+                return True, filepath, "生成成功"
+
         except Exception as e:
             return False, None, f"生成错误: {e}"
-    
     def _extract_code(self, text: str) -> str:
         """从文本中提取代码"""
         if "```python" in text:

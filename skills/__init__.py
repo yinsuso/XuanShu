@@ -11,6 +11,7 @@ from typing import Dict, List, Any, Optional
 
 # 技能注册表
 _skills_registry: Dict[str, dict] = {}
+_skill_filepaths: Dict[str, str] = {}
 
 class SkillMetadata:
     """技能元数据结构。"""
@@ -105,6 +106,7 @@ def load_skills(base_dir: str = None) -> List[str]:
                         'skill': skill,
                         'metadata': skill.metadata
                     }
+                    _skill_filepaths[skill.name] = file_path
                     loaded_skills.append(skill.name)
     
     print(f"✅ 已加载 {len(loaded_skills)} 个技能：{', '.join(loaded_skills)}")
