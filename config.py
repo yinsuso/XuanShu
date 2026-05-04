@@ -56,6 +56,80 @@ MAX_CODE_EXECUTIONS = 10
 CODE_EXECUTION_TIMEOUT = 10
 
 # =============================================================================
+# Docker 沙箱配置（新增强）
+# =============================================================================
+
+# 是否启用 Docker 沙箱执行（若 False 则降级到 subprocess 模式）
+SANDBOX_ENABLED = os.getenv("SANDBOX_ENABLED", "true").lower() == "true"
+
+# 沙箱 Docker 镜像：使用轻量级 Python 镜像
+SANDBOX_IMAGE = os.getenv("SANDBOX_IMAGE", "python:3.10-slim")
+
+# CPU 限制：0.0-1.0，表示 CPU 核心数的比例
+SANDBOX_CPU_LIMIT = float(os.getenv("SANDBOX_CPU_LIMIT", 0.5))
+
+# 内存限制：Docker 格式（如 "256m", "512m"）
+SANDBOX_MEMORY_LIMIT = os.getenv("SANDBOX_MEMORY_LIMIT", "256m")
+
+# 执行超时：秒
+SANDBOX_TIMEOUT = int(os.getenv("SANDBOX_TIMEOUT", 30))
+
+# 网络模式："none"（无网络）、"host"（共享主机）、"bridge"（桥接）等
+SANDBOX_NETWORK_MODE = os.getenv("SANDBOX_NETWORK_MODE", "none")
+
+# 文件系统只读：只在 /tmp 可写
+SANDBOX_READ_ONLY = os.getenv("SANDBOX_READ_ONLY", "true").lower() == "true"
+
+# 宿主机临时目录：用于挂载到容器 /tmp
+SANDBOX_TEMP_DIR = os.getenv("SANDBOX_TEMP_DIR", os.path.join(PROJECT_ROOT, "tmp"))
+
+# Docker 安全选项：如 ["no-new-privileges", "apparmor:unconfined"]
+SANDBOX_SECURITY_OPTIONS = os.getenv("SANDBOX_SECURITY_OPTIONS", "no-new-privileges").split(",") if os.getenv("SANDBOX_SECURITY_OPTIONS") else ["no-new-privileges"]
+
+# =============================================================================
+# 网络访问控制配置
+# =============================================================================
+
+# 是否启用网络访问控制
+NETWORK_ENABLED = os.getenv("NETWORK_ENABLED", "true").lower() == "true"
+
+# 默认操作：当不匹配任何规则时的行为
+NETWORK_DEFAULT_ACTION = os.getenv("NETWORK_DEFAULT_ACTION", "deny")  # allow/deny
+
+# 域名白名单（逗号分隔列表）
+NETWORK_WHITELIST = os.getenv("NETWORK_WHITELIST", "api.openai.com,ollama.local,huggingface.co").split(",") if os.getenv("NETWORK_WHITELIST") else ["api.openai.com", "ollama.local", "huggingface.co"]
+
+# 域名黑名单
+NETWORK_BLOCKED_DOMAINS = os.getenv("NETWORK_BLOCKED_DOMAINS", "metadata.google.internal,169.254.169.254").split(",") if os.getenv("NETWORK_BLOCKED_DOMAINS") else ["metadata.google.internal", "169.254.169.254"]
+
+# IP 黑名单
+NETWORK_BLOCKED_IPS = os.getenv("NETWORK_BLOCKED_IPS", "169.254.169.254,100.100.100.200").split(",") if os.getenv("NETWORK_BLOCKED_IPS") else ["169.254.169.254", "100.100.100.200"]
+
+# 过滤空字符串，避免无效配置
+NETWORK_WHITELIST = [x for x in NETWORK_WHITELIST if x]
+NETWORK_BLOCKED_DOMAINS = [x for x in NETWORK_BLOCKED_DOMAINS if x]
+NETWORK_BLOCKED_IPS = [x for x in NETWORK_BLOCKED_IPS if x]
+
+# =============================================================================
+# 审批联动配置
+# =============================================================================
+
+# Web 审批服务地址（Agent 提交审批请求的目标）
+WEB_APP_URL = os.getenv("WEB_APP_URL", "http://localhost:8000")
+
+# 审批 API 共享令牌（用于 Agent ↔ Web 身份验证）
+APPROVAL_API_TOKEN = os.getenv("APPROVAL_API_TOKEN", "change-me-to-secure-random")
+
+# 审批等待超时（秒）
+APPROVAL_TIMEOUT = int(os.getenv("APPROVAL_TIMEOUT", "60"))
+
+# 审批状态轮询间隔（秒）
+APPROVAL_POLL_INTERVAL = int(os.getenv("APPROVAL_POLL_INTERVAL", "2"))
+
+# 审批数据存储路径（SQLite）
+APPROVAL_DB_PATH = os.getenv("APPROVAL_DB_PATH", os.path.join(PROJECT_ROOT, "data", "approvals.db"))
+
+# =============================================================================
 # Agent 配置
 # =============================================================================
 
@@ -118,6 +192,11 @@ MASKING_PATTERNS = [
     r"ghp_[A-Za-z0-9]{36}",  # GitHub tokens
     r"AKIA[0-9A-Z]{16}",  # AWS Access Keys
     r"\$[A-Za-z_]\w*",  # 环境变量引用（$VAR 或 ${VAR} 的简化版）
+        r"glpat-[0-9a-zA-Z_-]{20}",  # GitLab tokens
+        r"eyJ[a-zA-Z0-9_-]{20,}\.[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{20,}",  # JWT tokens
+        r"AIza[0-9A-Za-z_-]{35}",  # Google API Keys
+        r"xoxb-[0-9]{12}-[0-9]{12}-[0-9A-Za-z]+",  # Slack Bot Tokens
+        r"mongodb://[^:@]+:[^:@]*@[^:@]+",  # MongoDB connection strings
 ]
 
 # 脱敏替换文本
@@ -192,4 +271,28 @@ ENABLE_EVOLUTION = os.getenv("ENABLE_EVOLUTION", "false").lower() == "true"
 # =============================================================================
 
 # 版本号
-VERSION = "4.0.0"
+VERSION = "5.1.0"
+
+# =============================================================================
+# 集群协作配置（Phase 2 新增）
+# =============================================================================
+
+CLUSTER_ENABLED = os.getenv("CLUSTER_ENABLED", "false").lower() == "true"
+CLUSTER_ROLE = os.getenv("CLUSTER_ROLE", "worker")
+CLUSTER_MANAGER_HOST = os.getenv("CLUSTER_MANAGER_HOST", "127.0.0.1")
+CLUSTER_MANAGER_PORT = int(os.getenv("CLUSTER_MANAGER_PORT", 30001))
+CLUSTER_NODE_ID = os.getenv("CLUSTER_NODE_ID", None)
+CLUSTER_NODE_NICKNAME = os.getenv("CLUSTER_NODE_NICKNAME", "玄枢成员")
+CLUSTER_WORKER_THREADS = int(os.getenv("CLUSTER_WORKER_THREADS", 1))
+CLUSTER_API_TOKEN = os.getenv("CLUSTER_API_TOKEN", None)
+
+# Docker sandbox isolation (Phase 3)
+DOCKER_SANDBOX_ENABLED = os.getenv("DOCKER_SANDBOX_ENABLED", "false").lower() == "true"
+DOCKER_IMAGE = os.getenv("DOCKER_IMAGE", "python:3.11-slim")
+DOCKER_NETWORK_MODE = os.getenv("DOCKER_NETWORK_MODE", "none")
+DOCKER_READ_ONLY = True
+DOCKER_MEM_LIMIT = os.getenv("DOCKER_MEM_LIMIT", "512m")
+DOCKER_CPU_QUOTA = int(os.getenv("DOCKER_CPU_QUOTA", "50000"))
+DOCKER_SECURITY_PROFILE = os.getenv("DOCKER_SECURITY_PROFILE", None)
+WHITELIST_DOMAINS = os.getenv("WHITELIST_DOMAINS", "").split(",") if os.getenv("WHITELIST_DOMAINS") else []
+DNS_LEAK_PROTECTION = os.getenv("DNS_LEAK_PROTECTION", "true").lower() == "true"

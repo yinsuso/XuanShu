@@ -278,7 +278,7 @@ def _audit_security(report: Dict, root_path: Path):
     recommendations = []
     
     # 1. 代码执行风险
-    vuln_code_execution = _check_code_execution_risks(root_path)
+    vuln_code_execution = _check_code_execution_risk_impact(root_path)
     if vuln_code_execution:
         vulnerabilities.extend(vuln_code_execution)
     

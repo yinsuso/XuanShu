@@ -1,9 +1,25 @@
 # 玄枢 (XuanShu) 技术路线图 (Technical Roadmap)
 
+## 当前开发进度
+
+- ✅ Phase 1：协议层与连接层增强（已完成）
+- 🔄 Phase 2：Cluster API 实现（进行中）
+- ⏳ Phase 3：能力评估器与任务调度器
+- ⏳ Phase 4：Web 前端重构（三栏布局）
+- ⏳ Phase 5：授权机制
+- ⏳ Phase 6：CLI 简化版
+- ⏳ Phase 7：测试与文档完善
+
+---
+
+
 ## 1. 核心架构 (Core Architecture)
 ### 1.1 认知模型
 - **自适应处理链路**：`agent.py` 实现 `process_adaptive` 逻辑，根据任务复杂度在 **Simple Loop** (直接响应) 与 **ReAct Loop** (推理-行动-观察) 之间动态切换。
-- **闭环进化机制**：每个任务结束强制触发 `EvolutionEngine`，执行“执行 $ightarrow$ 反思 $ightarrow$ 技能生成 $ightarrow$ 验证”的闭环，实现 Agent 的自我升级。
+- **闭环进化机制**：每个任务结束强制触发 `EvolutionEngine`，执行“执行 $
+ightarrow$ 反思 $
+ightarrow$ 技能生成 $
+ightarrow$ 验证”的闭环，实现 Agent 的自我升级。
 
 ### 1.2 记忆系统 (Dual-Track Memory)
 - **潜意识层 (Subconscious)**：基于 **SQLite (WAL 模式)** 的结构化存储。负责海量对话历史、反思日志和技能注册表，解决高并发下的 `database is locked` 问题。
@@ -15,7 +31,10 @@
 - **角色定义**：支持 `架构师`、`工程师`、`文案` 等多角色定义，实现分工协作。
 
 ### 2.2 交互协议
-- **握手流程**：房主 (Host) 广播 $ightarrow$ 成员 (Node) 扫描 $ightarrow$ 握手确认 $ightarrow$ 状态同步。
+- **握手流程**：房主 (Host) 广播 $
+ightarrow$ 成员 (Node) 扫描 $
+ightarrow$ 握手确认 $
+ightarrow$ 状态同步。
 - **Web 控制**：通过 `/api/cluster/*` 系列接口将底层集群状态映射至前端 UI。
 
 ## 3. Web 界面与交互 (Frontend Engineering)

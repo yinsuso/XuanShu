@@ -2,6 +2,32 @@
 
 本项目遵循语义化版本管理。所有重大更新、功能新增及漏洞修复均记录于此。
 
+## [Unreleased]
+
+### Added
+- 集群协作协议层（evolution/cluster/）：
+  - MessageType 枚举（8种消息类型）
+  - ClusterMessage 基类（序列化/反序列化）
+  - 便捷构造函数：create_capability_advertisement, create_task_assignment, create_auth_request, create_auth_response, create_heartbeat, create_leave_notification
+- 连接层增强
+  - ClusterNode 扩展：capability_score, last_heartbeat, connection, pending_tasks
+  - 简易能力评估（模型排行榜 + GPU 加成）
+  - TCP 握手流程加入能力广播
+- 单元测试套件：tests/cluster/ (23 tests)
+- **Phase 2: 集群任务管理**
+  - `ClusterNode` 任务状态机（PENDING / RUNNING / COMPLETED / FAILED）
+  - 集群 API 端点：`POST /cluster/tasks`、`POST /cluster/tasks/batch`、`GET /cluster/status`、`WebSocket /cluster/ws/updates`
+  - FastAPI 集成（CORS 支持、startup 事件、Agent 挂载）
+  - Agent 任务执行与状态推送钩子
+- **配置扩展**：新增 `CLUSTER_ENABLED`、`CLUSTER_ROLE`、`CLUSTER_MANAGER_HOST`、`CLUSTER_MANAGER_PORT`、`CLUSTER_NODE_ID`、`CLUSTER_NODE_NICKNAME`、`CLUSTER_WORKER_THREADS`、`CLUSTER_API_TOKEN`
+- **依赖更新**：`fastapi==0.104.1`、`uvicorn[standard]==0.24.0`
+
+### Changed
+- N/A
+
+### Fixed
+- N/A
+
 ## [v5.0.0] - 2026-05-02
 ### 🚀 重大更新
 - **认知系统升级**：引入 `process_adaptive` 自适应处理链路，支持在 Simple 和 ReAct 模式间动态切换。

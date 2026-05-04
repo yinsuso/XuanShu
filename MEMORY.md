@@ -88,3 +88,12 @@
 **技能目录**：`./skills/`
 
 ---
+
+## 2026-05-04
+### Phase 1 完成（协议扩展 + 能力评估）
+- 新增 `evolution/cluster/protocol.py`：MessageType 枚举、ClusterMessage 序列化
+- 增强 `evolution/cluster/connection.py`：简易能力评估、握手流程能力广播
+- 新增单元测试 23 个，全部通过
+- 关键决策：自动评估、房主推送任务、实时授权、响应式Web、CLI简化
+- 后续：Phase 2 将实现 Cluster API 端点
+

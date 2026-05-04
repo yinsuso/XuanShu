@@ -23,6 +23,13 @@ from evolution_engine import EvolutionEngine
 from evolution.react_loop import ReActLoop
 from skills import registry, load_skills, list_skills
 from logger import logger
+
+# 安全审批支持
+try:
+    from security.firewall.approval import ApprovalManager
+    SECURITY_AVAILABLE = True
+except ImportError:
+    SECURITY_AVAILABLE = False
 from model_providers import config_manager, call_model
 from conversation_manager import ConversationManager, MessageRole, conversation_manager as global_conversation_manager
 
@@ -41,6 +48,18 @@ class UniversalAgent:
         self.enable_evolution = enable_evolution
         self.skills_registry = registry
         self.code_execution_count = 0
+
+        # 安全审批管理器（可选）
+        self.approval_manager = None
+        if SECURITY_AVAILABLE:
+            try:
+                # 检查全局安全开关
+                from config import SECURITY_ENABLED
+                if SECURITY_ENABLED:
+                    self.approval_manager = ApprovalManager()
+            except Exception:
+                # 配置缺失则禁用
+                self.approval_manager = None
         
         # 进化引擎
         self.evolution = EvolutionEngine()
@@ -185,6 +204,11 @@ class UniversalAgent:
     def _execute_skill(self, skill_name: str, args: dict):
         skill = self.skills_registry.get(skill_name)
         if not skill: return f"❌ 未知技能：{skill_name}"
+        # 安全审批检查
+        if self.approval_manager is not None:
+                approval = self.approval_manager.request(skill_name, args)
+                if not approval.get('allowed', True):
+                    return f"❌ 安全拦截：{approval.get('message','已被阻止')} (风险等级: {approval.get('risk_level','unknown')})"
         try:
             return skill.execute(**args)
         except Exception as e:

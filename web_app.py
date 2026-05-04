@@ -1,491 +1,189 @@
-import sys
-import os
-from pathlib import Path
 
-# Ensure project root is in sys.path for script-mode execution
-# This allows absolute imports to work even when running as a script
-_current_root = Path(__file__).resolve().parent
-if str(_current_root) not in sys.path:
-    sys.path.insert(0, str(_current_root))
-
-
-import os
-import sys
-from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect, HTTPException
-from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
-from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
-from fastapi.exceptions import RequestValidationError
-
-from fastapi.concurrency import run_in_threadpool
-from pydantic import BaseModel
-from typing import List, Optional
-import logging
+# === 安全审批模块（SQLite 持久化 + API 扩展） ===
 import sqlite3
+import json
+import time
+from threading import Lock
+from pathlib import Path
+from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from config import WEB_APP_URL, APPROVAL_API_TOKEN, APPROVAL_DB_PATH, PROJECT_ROOT
 
-from config import WEB_HOST, WEB_PORT, PROJECT_ROOT
+app = FastAPI(title="玄枢智能体", version="5.1.0")
+
+# CORS 支持
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# 集群 API 挂载
+from evolution.cluster import cluster_api
+app.include_router(cluster_api.router)
+
+class ApprovalStore:
+    def __init__(self):
+        db_path = Path(APPROVAL_DB_PATH)
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        self.conn = sqlite3.connect(APPROVAL_DB_PATH, check_same_thread=False)
+        self.lock = Lock()
+        self._init_db()
+
+    def _init_db(self):
+        with self.lock:
+            self.conn.execute('CREATE TABLE IF NOT EXISTS approvals (id INTEGER PRIMARY KEY AUTOINCREMENT, skill TEXT NOT NULL, args TEXT NOT NULL, risk TEXT NOT NULL, status TEXT NOT NULL DEFAULT "pending", created_at REAL NOT NULL, decided_at REAL, decision TEXT)')
+            self.conn.commit()
+
+    def create_request(self, skill_name, args, risk_level):
+        with self.lock:
+            cur = self.conn.execute(
+                "INSERT INTO approvals (skill, args, risk, status, created_at) VALUES (?, ?, ?, ?, ?)",
+                (skill_name, json.dumps(args), risk_level, 'pending', time.time())
+            )
+            self.conn.commit()
+            return cur.lastrowid
+
+    def get_status(self, approval_id):
+        with self.lock:
+            cur = self.conn.execute(
+                "SELECT status, decision, decided_at FROM approvals WHERE id = ?",
+                (approval_id,)
+            )
+            row = cur.fetchone()
+            if row is None:
+                return None
+            status, decision, decided_at = row
+            return {"status": status, "decision": decision, "decided_at": decided_at}
+
+    def get_all_pending(self):
+        with self.lock:
+            cur = self.conn.execute(
+                "SELECT id, skill, args, risk, created_at FROM approvals WHERE status = 'pending'"
+            )
+            rows = cur.fetchall()
+            result = []
+            for row in rows:
+                rid, skill, args, risk, created_at = row
+                result.append({
+                    "id": rid,
+                    "skill": skill,
+                    "args": json.loads(args),
+                    "risk": risk,
+                    "timestamp": created_at
+                })
+            return result
+
+    def set_decision(self, approval_id, decision):
+        with self.lock:
+            cur = self.conn.execute(
+                "UPDATE approvals SET status = 'decided', decision = ?, decided_at = ? WHERE id = ? AND status = 'pending'",
+                (decision, time.time(), approval_id)
+            )
+            self.conn.commit()
+            return cur.rowcount > 0
+
+# 全局存储实例
+approval_store = ApprovalStore()
+
+def verify_approval_token(request: Request):
+    # 若未配置 API Token，则允许所有请求
+    if not APPROVAL_API_TOKEN:
+        return True
+    token = request.headers.get("X-Approval-Token")
+    return token == APPROVAL_API_TOKEN
+
+@app.get("/api/approvals/pending")
+async def api_approvals_pending(request: Request):
+    if not verify_approval_token(request):
+        return JSONResponse(status_code=401, content={"success": False, "error": "Unauthorized"})
+    return {"approvals": approval_store.get_all_pending()}
+
+@app.post("/api/approvals/decide")
+async def api_approvals_decide(request: Request):
+    if not verify_approval_token(request):
+        return JSONResponse(status_code=401, content={"success": False, "error": "Unauthorized"})
+    data = await request.json()
+    aid = data.get("approval_id")
+    decision = data.get("decision")
+    if decision not in ("approve", "reject"):
+        return {"success": False, "error": "无效的决策值"}
+    if approval_store.set_decision(aid, decision):
+        return {"success": True, "message": "已处理"}
+    else:
+        return {"success": False, "error": "未找到对应审批请求"}
+
+@app.get("/api/approvals/{approval_id}/status")
+async def api_approval_status(approval_id: int, request: Request):
+    if not verify_approval_token(request):
+        return JSONResponse(status_code=401, content={"success": False, "error": "Unauthorized"})
+    status_info = approval_store.get_status(approval_id)
+    if status_info is None:
+        return JSONResponse(status_code=404, content={"success": False, "error": "未找到审批请求"})
+    return {"status": status_info["status"], "decision": status_info.get("decision")}
+
+@app.post("/api/approvals/create")
+async def api_approvals_create(request: Request):
+    if not verify_approval_token(request):
+        return JSONResponse(status_code=401, content={"success": False, "error": "Unauthorized"})
+    data = await request.json()
+    skill = data.get("skill_name")
+    args = data.get("args")
+    risk = data.get("risk_level")
+    if not all([skill, args, risk]):
+        return {"success": False, "error": "缺少必要参数"}
+    aid = approval_store.create_request(skill, args, risk)
+    return {"approval_id": aid}
+
+# =============================================================================
+# 集群协作启动事件（Phase 2 新增）
+# =============================================================================
+import uuid
+import time
+import threading
 from agent import UniversalAgent
-from skills import registry, list_skills
-from model_providers import config_manager, ModelConfig, ProviderType
-from conversation_manager import conversation_manager
-from logger import logger
-from evolution.cluster.discovery import ClusterDiscovery
+from config import CLUSTER_ENABLED, CLUSTER_ROLE, CLUSTER_NODE_ID, CLUSTER_NODE_NICKNAME, MODEL_NAME
+from evolution.cluster.connection import ClusterNode, ClusterManager
+import asyncio
 
-# 初始化 Agent
-agent = UniversalAgent(enable_evolution=True)
-
-app = FastAPI(title="Local Agent v5.0", version="5.0.0")
-
-# 集群协作发现实例
-discovery = ClusterDiscovery()
-
-# 静态文件与模板
-templates_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web", "templates")
-static_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web", "static")
-
-if not os.path.isdir(templates_dir):
-    raise FileNotFoundError(f"模板目录不存在：{templates_dir}")
-
-templates = Jinja2Templates(directory=templates_dir)
-
-if os.path.exists(static_dir):
-    app.mount("/static", StaticFiles(directory=static_dir), name="static")
-
-# 挂载媒体缓存目录，解决 Web 端无法显示本地图片/音频问题
-cache_dir = os.path.join(PROJECT_ROOT, "data", "cache")
-os.makedirs(cache_dir, exist_ok=True)
-if os.path.exists(cache_dir):
-    app.mount("/media", StaticFiles(directory=cache_dir), name="media")
-
-# 全局异常处理
-@app.exception_handler(Exception)
-async def global_exception_handler(request: Request, exc: Exception):
-    logger.error(f"全局异常：{exc}", exc_info=True)
-    return JSONResponse(
-        status_code=500,
-        content={"success": False, "error": f"服务器内部错误：{str(exc)}"}
+@app.on_event("startup")
+async def startup_cluster():
+    if not CLUSTER_ENABLED:
+        return
+    node = ClusterNode(
+        node_id=CLUSTER_NODE_ID or str(uuid.uuid4()),
+        ip="0.0.0.0",
+        model=MODEL_NAME,
+        role=CLUSTER_ROLE,
+        mode="auto"
     )
+    app.state.cluster_node = node
+    agent = UniversalAgent(auto_load_skills=True, enable_evolution=False)
+    app.state.agent = agent
 
-@app.exception_handler(RequestValidationError)
-async def validation_exception_handler(request: Request, exc: RequestValidationError):
-    return JSONResponse(
-        status_code=422,
-        content={"success": False, "error": f"参数验证失败：{exc.errors()}"}
-    )
-
-# 数据模型
-class ChatMessage(BaseModel):
-    message: str
-    mode: str = "simple"
-
-class MemoryRequest(BaseModel):
-    key: Optional[str] = None
-
-class EvolutionRequest(BaseModel):
-    limit: int = 10
-
-# 首页
-@app.get("/", response_class=HTMLResponse)
-async def index(request: Request):
-    return templates.TemplateResponse("index.html", {"request": request})
-
-# API: 对话
-@app.post("/api/chat")
-async def chat(request: Request):
-    try:
-        # 尝试获取表单数据（兼容前端 FormData）
-        form = await request.form()
-        message = form.get("message", "")
-        # session_id 暂时 unused，但保留以防后续需要
-        # session_id = form.get("session_id", "")
-
-        if not message:
-            return {"success": False, "error": "消息不能为空"}
-
-        # 🔍 【调试】打印当前实际使用的模型配置
-        current_cfg = config_manager.current_config
-        if current_cfg:
-            logger.info(f"🔥 [Chat Request] 当前模型：{current_cfg.name}")
-            logger.info(f" ├─ Provider: {current_cfg.provider.value}")
-            logger.info(f" ├─ Model Name: {current_cfg.model_name}")
-            logger.info(f" ├─ API Base: {current_cfg.api_base}")
-            logger.info(f" └─ API Key: {'✅ 存在' if current_cfg.api_key else '❌ 缺失！'}")
-        else:
-            logger.warning("⚠️ [Chat Request] 当前配置为 None！将使用默认配置。")
-
-        response = await run_in_threadpool(agent.process_adaptive, message)
-        # 路径转化：将本地缓存路径转化为 Web 可访问的 /media/ 路径
-        # 这样前端收到路径后即可直接通过 <img src="/media/xxx.png"> 显示
-        web_response = response.replace(os.path.join(PROJECT_ROOT, "data", "cache"), "/media")
-        return {"success": True, "response": web_response}
-    except Exception as e:
-        logger.error(f"Chat error: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
-
-# API: 删除模型
-@app.post("/api/delete_model")
-async def delete_model(request: Request):
-    try:
-        data = await request.json()
-        name = data.get("name")
-        if not name:
-            return {"success": False, "error": "未指定模型名称"}
-
-        if config_manager.delete_config(name):
-            return {"success": True, "message": f"已删除模型：{name}"}
-        else:
-            return {"success": False, "error": f"删除失败：模型不存在或无法删除"}
-    except Exception as e:
-        logger.error(f"删除模型失败：{e}", exc_info=True)
-        return {"success": False, "error": str(e)}
-
-# API: 获取对话历史
-@app.get("/api/conversations")
-async def get_conversations():
-    try:
-        
-        async def _list_conversations_async():
-            conversations = await run_in_threadpool(conversation_manager.list_conversations, limit=50)
-            return {"success": True, "conversations": conversations}
-        
-        result = await _list_conversations_async()
-        return result
-    except Exception as e:
-        logger.error(f"获取对话历史失败：{e}", exc_info=True)
-        return {"success": False, "error": str(e)}
-
-# API: 加载对话
-@app.post("/api/load_conversation")
-async def load_conversation(request: Request):
-    try:
-        data = await request.json()
-        conversation_id = data.get("conversation_id")
-        if not conversation_id:
-            return {"success": False, "error": "未指定对话 ID"}
-        
-        async def _load_conversation_async():
-            success = await run_in_threadpool(conversation_manager.load_conversation, conversation_id)
-            if success:
-                return {"success": True, "message": f"已加载对话：{conversation_id}"}
-            else:
-                return {"success": False, "error": f"加载失败：对话不存在"}
-        
-        result = await _load_conversation_async()
-        return result
-        
-    except Exception as e:
-        logger.error(f"加载对话失败：{e}", exc_info=True)
-        return {"success": False, "error": str(e)}
-
-# API: 删除对话
-@app.post("/api/delete_conversation")
-async def delete_conversation(request: Request):
-    try:
-        data = await request.json()
-        conversation_id = data.get("conversation_id")
-        if not conversation_id:
-            return {"success": False, "error": "未指定对话 ID"}
-        
-        async def _delete_conversation_async():
-            conversation_manager.delete_conversation(conversation_id)
-            return {"success": True, "message": f"已删除对话：{conversation_id}"}
-        
-        result = await _delete_conversation_async()
-        return result
-        
-    except Exception as e:
-        logger.error(f"删除对话失败：{e}", exc_info=True)
-        return {"success": False, "error": str(e)}
-
-# API: 新建对话（清空当前）
-@app.post("/api/new_conversation")
-async def new_conversation():
-    try:
-        new_id = conversation_manager.clear_conversation()
-        if new_id:
-            return {"success": True, "conversation_id": new_id, "message": "已创建新对话"}
-        else:
-            return {"success": False, "error": "无法创建新对话"}
-    except Exception as e:
-        logger.error(f"创建新对话失败：{e}", exc_info=True)
-        return {"success": False, "error": str(e)}
-
-# API: 模型列表
-@app.get("/api/models")
-async def get_models():
-    try:
-        models = config_manager.list_configs()
-        current = config_manager.current_config
-        return {
-            "success": True,
-            "models": models,
-            "current_config": current.name if current else None
-        }
-    except Exception as e:
-        logger.error(f"获取模型列表失败：{e}", exc_info=True)
-        return {"success": False, "error": str(e)}
-
-# API: 当前状态
-@app.get("/api/status")
-async def get_status():
-    try:
-        current_model = config_manager.current_config
-        if current_model:
-            return {"success": True, "config_name": current_model.name, "model_name": current_model.model_name}
-        else:
-            return {"success": True, "config_name": "未配置", "model_name": ""}
-    except Exception as e:
-        logger.error(f"获取状态失败：{e}", exc_info=True)
-        return {"success": False, "error": str(e)}
-
-# API: 切换模型
-@app.post("/api/switch_model")
-async def switch_model(request: Request):
-    try:
-        form = await request.form()
-        name = form.get("name")
-        if not name:
-            return {"success": False, "error": "未指定模型名称"}
-
-        if config_manager.set_current(name):
-            return {"success": True, "message": f"已切换到模型：{name}"}
-        else:
-            return {"success": False, "error": f"模型不存在：{name}"}
-    except Exception as e:
-        logger.error(f"切换模型失败：{e}", exc_info=True)
-        return {"success": False, "error": str(e)}
-
-# API: 保存模型
-@app.post("/api/save_model")
-async def save_model(request: Request):
-    try:
-        form = await request.form()
-        name = form.get("name")
-        provider = form.get("provider")
-        model_name = form.get("model_name")
-        api_base = form.get("api_base")
-        api_key = form.get("api_key", "")
-
-        if not all([name, provider, model_name, api_base]):
-            return {"success": False, "error": "缺少必要参数"}
-
-        provider_enum = ProviderType(provider)
-        config = ModelConfig(
-            provider=provider_enum,
-            name=name,
-            model_name=model_name,
-            api_base=api_base,
-            api_key=api_key
-        )
-
-        # 检查是否已存在
-        existing = config_manager.get_config(name)
-        if existing:
-            # 更新
-            config_manager.update_config(config)
-            return {"success": True, "message": "模型配置已更新"}
-        else:
-            # 新增
-            config_manager.add_config(config)
-            return {"success": True, "message": "模型配置已保存"}
-    except Exception as e:
-        logger.error(f"保存模型失败：{e}", exc_info=True)
-        return {"success": False, "error": str(e)}
-
-# API: 技能列表
-@app.get("/api/skills")
-async def get_skills():
-    try:
-        skills_list = registry.list_skills()
-        return {"success": True, "skills": skills_list}
-    except Exception as e:
-        return {"success": False, "error": str(e)}
-
-# API: 核心记忆
-@app.get("/api/memory")
-async def get_memory(key: Optional[str] = None):
-    try:
-        
-        async def _get_memory_async():
-            if key:
-                value = await run_in_threadpool(agent.memory.get_core_memory, key)
-                return {"success": True, "key": key, "value": value}
-            else:
-                all_memories = await run_in_threadpool(agent.memory.get_all_core_memory)
-                # 将 dict 转换为数组格式供前端使用
-                memories_array = [{"key": k, "value": v} for k, v in all_memories.items()] if all_memories else []
-                return {"success": True, "memories": memories_array}
-        
-        result = await _get_memory_async()
-        return result
-    except Exception as e:
-        logger.error(f"获取记忆失败：{e}", exc_info=True)
-        return {"success": False, "error": str(e)}
-
-# API: 导出当前对话
-@app.get("/api/export")
-async def export_conversation():
-    try:
-        
-        async def _export_async():
-            # 获取当前会话历史
-            if not conversation_manager.current_conversation:
-                raise HTTPException(status_code=404, detail="当前没有可导出的对话历史")
-            
-            # 获取历史记录在 threadpool 中执行
-            history = await run_in_threadpool(
-                lambda: [msg.to_dict() for msg in conversation_manager.current_conversation.messages]
-            )
-            
-            # 获取当前模型信息
-            current_cfg = await run_in_threadpool(lambda: config_manager.current_config)
-            model_name = current_cfg.model_name if current_cfg else 'Unknown'
-            
-            # 构建 Markdown 内容
-            from datetime import datetime
-            export_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            
-            md_content = "# Local Agent 对话记录\n\n"
-            md_content += f"导出时间：{export_time}\n"
-            md_content += f"模型：{model_name}\n\n---\n\n"
-            
-            for msg in history:
-                role = "👤 用户" if msg['role'] == 'user' else "🤖 Agent"
-                content = msg['content']
-                md_content += f"### {role}\n{content}\n\n---\n\n"
-            
-            # 保存为临时文件（需要异步执行）
-            export_path = os.path.join(PROJECT_ROOT, "data", "current_export.md")
-            os.makedirs(os.path.dirname(export_path), exist_ok=True)
-            
-            def write_file_sync():
-                with open(export_path, "w", encoding="utf-8") as f:
-                    f.write(md_content)
-                return export_path
-                
-            written_path = await run_in_threadpool(write_file_sync)
-            
-            return FileResponse(
-                path=written_path,
-                filename="agent_conversation_export.md",
-                media_type='text/markdown'
-            )
-        
-        return await _export_async()
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"导出对话失败：{e}", exc_info=True)
-        return JSONResponse(status_code=500, content={"success": False, "error": str(e)})
-@app.get("/api/token-stats")
-async def get_token_stats():
-    try:
-        
-        async def _get_token_stats_async():
-            db_path = os.path.join(PROJECT_ROOT, "data", "token_stats.db.bak")
-            if not os.path.exists(db_path):
-                # 尝试 .db 版本
-                db_path = os.path.join(PROJECT_ROOT, "data", "token_stats.db")
-            
-            if not os.path.exists(db_path):
-                return {"success": True, "data": {"total": {"total_tokens": 0, "prompt_tokens": 0, "completion_tokens": 0}, "by_model": [], "by_date": []}}
-            
-            # 在 threadpool 中执行数据库查询
-            def query_db_sync():
-                import sqlite3
-                conn = sqlite3.connect(db_path)
-                cursor = conn.cursor()
-                
-                # 总统计
-                cursor.execute("SELECT SUM(total_tokens), SUM(prompt_tokens), SUM(completion_tokens) FROM token_usage")
-                total_row = cursor.fetchone()
-                total_stats = {
-                    "total_tokens": total_row[0] or 0,
-                    "prompt_tokens": total_row[1] or 0,
-                    "completion_tokens": total_row[2] or 0
-                }
-                
-                # 按模型统计
-                cursor.execute("SELECT model_name, SUM(total_tokens), COUNT(*) FROM token_usage GROUP BY model_name ORDER BY SUM(total_tokens) DESC")
-                by_model = [{"model": row[0], "total": row[1], "count": row[2]} for row in cursor.fetchall()]
-                
-                # 按日期统计 (最近 7 天)
-                cursor.execute(
-                    "SELECT date(timestamp), SUM(total_tokens) FROM token_usage WHERE date(timestamp) >= date('now', '-7 days') GROUP BY date(timestamp) ORDER BY date(timestamp)"
-                )
-                by_date = [{"date": row[0], "total": row[1]} for row in cursor.fetchall()]
-                
-                conn.close()
-                
-                return {
-                    "total": total_stats,
-                    "by_model": by_model,
-                    "by_date": by_date
-                }
-            
-            data = await run_in_threadpool(query_db_sync)
-            return {"success": True, "data": data}
-        
-        result = await _get_token_stats_async()
-        return result
-    except Exception as e:
-        logger.error(f"获取 Token 统计失败：{e}", exc_info=True)
-        return {"success": False, "error": str(e)}
-@app.get("/api/evolution")
-async def get_evolution(limit: int = 10):
-    try:
-        reflections = agent.memory.get_recent_reflections(limit=limit)
-        return {"success": True, "reflections": reflections}
-    except Exception as e:
-        return {"success": False, "error": str(e)}
-
-# API: 集群协作 - 创建房间
-@app.post("/api/cluster/create")
-async def create_cluster(request: Request):
-    try:
-        data = await request.json()
-        room_name = data.get("room_name", "Default-Agent-Room")
-        discovery.room_name = room_name
-        discovery.start_hosting()
-        return {"success": True, "message": f"已创建协作房间：{room_name}", "is_hosting": True}
-    except Exception as e:
-        return {"success": False, "error": str(e)}
-
-# API: 集群协作 - 加入房间
-@app.post("/api/cluster/join")
-async def join_cluster(request: Request):
-    try:
-        # 触发扫描（由客户端轮询 status 查看结果）
-        discovery.start_scanning()
-        return {"success": True, "message": "正在搜索局域网协作房间...", "found_rooms": discovery.found_rooms}
-    except Exception as e:
-        return {"success": False, "error": str(e)}
-
-# API: 集群协作 - 状态查询
-@app.get("/api/cluster/status")
-async def get_cluster_status():
-    return {
-        "success": True, 
-        "is_hosting": discovery.running, 
-        "room_name": discovery.room_name,
-        "found_rooms": discovery.found_rooms
-    }
-
-# WebSocket: 实时对话（可选，支持流式输出）
-@app.websocket("/ws/chat")
-async def websocket_chat(websocket: WebSocket):
-    await websocket.accept()
-    try:
+    async def task_worker():
         while True:
-            data = await websocket.receive_text()
-            # 使用线程池执行同步方法，避免阻塞事件循环
-            response = await run_in_threadpool(agent.process_simple, data)
-            await websocket.send_text(response)
-    except WebSocketDisconnect:
-        logger.info("WebSocket client disconnected")
+            if node.pending_tasks:
+                task_id = node.pending_tasks.pop(0)
+                node.start_task(task_id)
+                task = node.tasks[task_id]
+                try:
+                    loop = asyncio.get_running_loop()
+                    result = await loop.run_in_executor(None, lambda: agent._execute_skill(task["task_type"], task["parameters"]))
+                    node.complete_task(task_id, result)
+                except Exception as e:
+                    node.fail_task(task_id, str(e))
+                node.notify_status_change(task_id)
+            else:
+                await asyncio.sleep(0.2)
 
-# 启动脚本
-if __name__ == "__main__":
-    import uvicorn
-    logger.info(f"🚀 启动 Web 界面：http://{WEB_HOST}:{WEB_PORT}")
-    uvicorn.run(app, host=WEB_HOST, port=WEB_PORT)
+    asyncio.create_task(task_worker())
+
+    if CLUSTER_ROLE == "manager":
+        manager = ClusterManager()
+        mgr_thread = threading.Thread(target=manager.start_server, kwargs={"host":"0.0.0.0", "port":30001}, daemon=True)
+        mgr_thread.start()
+        app.state.cluster_manager = manager
