@@ -71,6 +71,14 @@ class ClusterNode:
         self._task_lock = threading.Lock()
         self.ws_connections = []
         self.capabilities = [] # 待通过接口获取
+        
+        # Phase 3 扩展：负载监控字段
+        self.load_cpu: float = 0.0        # CPU 负载 (0.0-1.0)
+        self.load_memory: float = 0.0     # 内存使用率 (0.0-1.0)
+        self.gpu_memory: float = 0.0      # GPU 显存 (GB)
+        self.cpu_cores: int = 4           # CPU 核心数
+        self.queue_length: int = 0        # 本地队列长度（可用 len(pending_tasks) 替代）
+        self.task_start_time: Dict[str, float] = {}  # 任务开始时间戳
 
     def to_dict(self):
         return {
@@ -139,6 +147,40 @@ class ClusterNode:
             except RuntimeError:
                 pass
 
+    def receive_assignment(self, task_id: str, task_type: str, description: str, parameters: Dict[str, Any] = None):
+        """接收来自 manager 的任务分配"""
+        with self._task_lock:
+            if task_id not in self.tasks:
+                self.tasks[task_id] = {
+                    "task_id": task_id,
+                    "task_type": task_type,
+                    "description": description,
+                    "parameters": parameters or {},
+                    "status": TaskStatus.PENDING.value,
+                    "created_at": time.time(),
+                    "started_at": None,
+                    "completed_at": None,
+                    "result": None,
+                    "error": None
+                }
+                self.pending_tasks.append(task_id)
+
+    def send_task_result(self, task_id: str, status: str, result=None, error=None):
+        """向 manager 发送任务执行结果"""
+        if not self.connection:
+            return
+        try:
+            from .protocol import create_task_update
+            msg = create_task_update(
+                task_id=task_id,
+                status=status,
+                result=result,
+                error=error
+            )
+            self.connection.sendall(msg.serialize())
+        except Exception as e:
+            logger.error(f"发送任务结果失败: {e}")
+
     async def _broadcast_event(self, event: dict):
         for ws in self.ws_connections:
             try:
@@ -148,11 +190,31 @@ class ClusterNode:
 
 
 class ClusterManager:
-    """集群管理中心 (房主端)"""
+    """集群管理中心 (房主端)"
+    
+    # Phase 3 扩展：智能调度能力
+    """
     def __init__(self):
         self.nodes: Dict[str, ClusterNode] = {}
         self.current_project = "Unnamed Project"
         self._server: Optional["ClusterServer"] = None
+        
+        # 调度器与评估器（Phase 3 动态注入）
+        self.scheduler: Optional[TaskScheduler] = None
+        self.assessor: Optional[CapabilityAssessor] = None
+        
+        # 任务分配追踪
+        self.task_assignments: Dict[str, str] = {}   # task_id -> node_id
+        self.task_timeouts: Dict[str, float] = {}    # task_id -> 超时时间戳
+        self.task_metadata: Dict[str, Dict] = {}     # task_id -> {type, description, parameters}
+        
+        # 监控线程
+        self._monitor_thread: Optional[threading.Thread] = None
+        self._monitor_running = False
+        
+        # 配置参数（可从 config.py 读取）
+        self.max_retries = 3
+        self.monitor_interval = 5  # 秒
 
     def add_node(self, node_info: Dict[str, Any]):
         """
@@ -185,6 +247,277 @@ class ClusterManager:
 
     def get_cluster_map(self):
         return {nid: n.to_dict() for nid, n in self.nodes.items()}
+    
+    # ============================================
+    # Phase 3: 调度器管理
+    # ============================================
+    def set_scheduler(self, scheduler: TaskScheduler, assessor: CapabilityAssessor):
+        """
+        注入调度器和评估器（由 web_app.py startup 调用）
+        
+        Args:
+            scheduler: TaskScheduler 实例
+            assessor: CapabilityAssessor 实例
+        """
+        self.scheduler = scheduler
+        self.assessor = assessor
+        logger.info("✅ [ClusterManager] 调度器与评估器已注入", strategy=scheduler.strategy)
+    
+    def start_monitoring(self, interval: int = 5):
+        """启动后台任务监控线程"""
+        if self._monitor_thread and self._monitor_thread.is_alive():
+            logger.warning("[ClusterManager] 监控线程已在运行")
+            return
+        
+        self.monitor_interval = interval
+        self._monitor_running = True
+        self._monitor_thread = threading.Thread(target=self._monitor_loop, daemon=True)
+        self._monitor_thread.start()
+        logger.info("✅ [ClusterManager] 任务监控线程已启动", interval=interval)
+    
+    def stop_monitoring(self):
+        """停止监控线程"""
+        self._monitor_running = False
+        if self._monitor_thread:
+            self._monitor_thread.join(timeout=2)
+    
+    def _monitor_loop(self):
+        """监控循环：检查任务超时与节点状态"""
+        while self._monitor_running:
+            try:
+                self.monitor_tasks()
+                time.sleep(self.monitor_interval)
+            except Exception as e:
+                logger.error("[ClusterManager] 监控循环异常", error=str(e))
+    
+    def assign_task(self, task_type: str, description: str, parameters: Dict[str, Any] = None) -> Optional[str]:
+        """
+        Manager 分配任务给最优节点（核心调度逻辑）
+        
+        流程：
+        1. 调用 scheduler 选择最优节点
+        2. 发送 TaskAssignment 消息（通过 TCP）
+        3. 记录任务分配关系与超时
+        4. 记录任务元数据备用
+        
+        Returns:
+            task_id 或 None（若无可用节点）
+        """
+        if not self.scheduler:
+            logger.error("❌ [ClusterManager] Scheduler 未初始化，无法分配任务")
+            return None
+        
+        # 生成任务 ID
+        task_id = str(uuid.uuid4())
+        parameters = parameters or {}
+        
+        # 选择节点
+        task = {
+            "task_type": task_type,
+            "description": description,
+            "parameters": parameters
+        }
+        node = self.scheduler.schedule(task)
+        
+        if not node:
+            logger.error("❌ [ClusterManager] 无可用节点接受任务", task_type=task_type)
+            return None
+        
+        # 发送 TaskAssignment 消息（通过节点的连接）
+        try:
+            from .protocol import create_task_assignment
+            message = create_task_assignment(
+                sender_id=self.current_project or "manager",
+                target_id=node.node_id,
+                task_id=task_id,
+                task_type=task_type,
+                description=description,
+                parameters=parameters
+            )
+            # 通过节点连接发送（假设 node.connection 已建立）
+            if node.connection:
+                node.connection.sendall(message.to_json().encode('utf-8'))
+                logger.info(
+                    "📨 [ClusterManager] 任务已分配",
+                    task_id=task_id,
+                    node=node.node_id,
+                    model=node.model,
+                    task_type=task_type
+                )
+            else:
+                logger.error(f"❌ [ClusterManager] 节点 {node.node_id} 无活跃连接，无法发送任务")
+                return None
+        except Exception as e:
+            logger.error("❌ [ClusterManager] 发送任务分配消息失败", task_id=task_id, error=str(e))
+            return None
+        
+        # 记录分配关系
+        self.task_assignments[task_id] = node.node_id
+        self.task_timeouts[task_id] = time.time() + 300  # 5 分钟超时
+        self.task_metadata[task_id] = {
+            "task_type": task_type,
+            "description": description,
+            "parameters": parameters
+        }
+        
+        logger.info(
+            "✅ [ClusterManager] 任务分配完成",
+            task_id=task_id,
+            node=node.node_id,
+            timeout=300
+        )
+        return task_id
+    
+    def monitor_tasks(self):
+        """
+        后台监控：检查任务超时与失败状态
+        
+        逻辑：
+        - 扫描 task_timeouts，对超时任务触发重派
+        - 检查节点健康状况（可选）
+        """
+        now = time.time()
+        timeout_count = 0
+        
+        for task_id, deadline in list(self.task_timeouts.items()):
+            if now > deadline:
+                node_id = self.task_assignments.get(task_id)
+                if node_id and node_id in self.nodes:
+                    logger.warning(
+                        "⏰ [ClusterManager] 任务超时，触发重派",
+                        task_id=task_id,
+                        original_node=node_id,
+                        timeout=now - deadline
+                    )
+                    self._reassign_task(task_id)
+                    timeout_count += 1
+                else:
+                    # 节点已失效，清理记录
+                    self._cleanup_task(task_id)
+        
+        if timeout_count > 0:
+            logger.info("[ClusterManager] 本轮重派完成", count=timeout_count)
+    
+    def _reassign_task(self, task_id: str):
+        """
+        重派任务（由于超时或失败）
+        
+        流程：
+        1. 从 task_metadata 恢复任务信息
+        2. 重新调度（可能选择不同节点）
+        3. 更新分配记录
+        """
+        if task_id not in self.task_metadata:
+            logger.error(f"❌ [ClusterManager] 无法重派任务：元数据丢失 task_id={task_id}")
+            self._cleanup_task(task_id)
+            return
+        
+        meta = self.task_metadata[task_id]
+        
+        # 可选：限制重试次数（检查原分配节点）
+        # TODO: 实现重试计数逻辑
+        
+        logger.info("🔄 [ClusterManager] 正在重派任务", task_id=task_id, **meta)
+        
+        # 重新分配（相当于新任务）
+        new_task_id = self.assign_task(
+            task_type=meta["task_type"],
+            description=meta["description"],
+            parameters=meta["parameters"]
+        )
+        
+        if new_task_id:
+            # 原任务记录清理（新任务已生成新 ID）
+            self._cleanup_task(task_id)
+            logger.info("✅ [ClusterManager] 重派成功", old_task_id=task_id, new_task_id=new_task_id)
+        else:
+            logger.error("❌ [ClusterManager] 重派失败，无可用节点", task_id=task_id)
+            # 保留原 task_id，稍后再次重试
+    
+    def _cleanup_task(self, task_id: str):
+        """清理任务记录"""
+        self.task_assignments.pop(task_id, None)
+        self.task_timeouts.pop(task_id, None)
+        self.task_metadata.pop(task_id, None)
+    
+    def handle_node_failure(self, node_id: str):
+        """
+        处理节点失效：将该节点上所有任务重新分配
+        
+        Args:
+            node_id: 失效的节点 ID
+        """
+        logger.warning("🚨 [ClusterManager] 节点失效，重新分配其任务", node_id=node_id)
+        
+        # 找出该节点上的所有任务
+        affected_tasks = [
+            tid for tid, nid in self.task_assignments.items()
+            if nid == node_id
+        ]
+        
+        for task_id in affected_tasks:
+            self._reassign_task(task_id)
+        
+        # 移除失效节点
+        self.remove_node(node_id)
+    
+    def get_node_load_info(self) -> Dict[str, Dict[str, Any]]:
+        """
+        获取所有节点的负载信息（用于监控展示）
+        
+        Returns:
+            {node_id: {load_cpu, load_memory, pending_tasks_count, ...}}
+        """
+        load_info = {}
+        for nid, node in self.nodes.items():
+            load_info[nid] = {
+                "load_cpu": getattr(node, "load_cpu", 0.0),
+                "load_memory": getattr(node, "load_memory", 0.0),
+                "pending_tasks": len(getattr(node, "pending_tasks", [])),
+                "status": node.status,
+                "model": node.model,
+                "capability_score": node.capability_score
+            }
+        return load_info
+    
+    def get_scheduler_stats(self) -> Dict[str, Any]:
+        """获取调度器统计信息"""
+        if self.scheduler:
+            return self.scheduler.get_stats()
+        return {"error": "Scheduler not initialized"}
+
+    
+    # ============================================
+    # 原有方法保持不变
+    # ============================================
+    
+    
+
+    def handle_heartbeat(self, node_id: str, load_info: Dict[str, Any]):
+        node = self.nodes.get(node_id)
+        if node:
+            node.load_cpu = load_info.get("load_cpu", 0.0)
+            node.load_memory = load_info.get("load_memory", 0.0)
+            node.queue_length = load_info.get("queue_length", 0)
+            node.last_heartbeat = time.time()
+        else:
+            logger.warning("心跳来自未知节点", node_id=node_id)
+
+    def handle_task_update(self, node_id: str, task_id: str, status: str, result=None, error=None):
+        node = self.nodes.get(node_id)
+        if node:
+            if status == "completed":
+                node.complete_task(task_id, result)
+            elif status == "failed":
+                node.fail_task(task_id, error)
+            # 清理追踪记录
+            self.task_assignments.pop(task_id, None)
+            self.task_timeouts.pop(task_id, None)
+            self.task_metadata.pop(task_id, None)
+            # 通知前端
+            node.notify_status_change(task_id)
+        else:
+            logger.warning("任务状态更新来自未知节点", node_id=node_id, task_id=task_id)
 
     def start_server(self, host: str = "0.0.0.0", port: int = 30001):
         """启动房主端 TCP 服务器，监听节点加入请求"""
@@ -244,8 +577,10 @@ class ClusterServer:
                 self._server_socket.close()
 
     def _handle_client(self, conn: socket.socket, addr):
-        """处理客户端加入请求"""
+        """处理客户端连接（加入后持续接收消息）"""
+        node = None
         try:
+            # 第一步：处理 join 消息
             data = conn.recv(4096)
             if not data:
                 return
@@ -273,16 +608,48 @@ class ClusterServer:
             logger.info(f"📊 [ClusterServer] 节点 {node_info['node_id']} 能力评估: {node_info['capability_score']:.2f}")
 
             self.manager.add_node(node_info)
+            node = self.manager.nodes.get(node_info['node_id'])
+            if node:
+                node.connection = conn
+                node.ip = addr[0]
             response = {"type": "ack", "status": "ok", "reason": "加入成功"}
             conn.sendall(json.dumps(response).encode('utf-8'))
-        except json.JSONDecodeError:
-            logger.error(f"[ClusterServer] 收到无效JSON: {data}")
-            response = {"type": "ack", "status": "error", "reason": "无效的消息格式"}
-            conn.sendall(json.dumps(response).encode('utf-8'))
+
+            # 进入消息循环，处理心跳和任务状态更新
+            while True:
+                data = conn.recv(4096)
+                if not data:
+                    break
+                try:
+                    msg = json.loads(data.decode('utf-8'))
+                    msg_type = msg.get("type")
+                    if msg_type == "heartbeat":
+                        node_id = msg.get("node_id")
+                        load_info = msg.get("load", {})
+                        self.manager.handle_heartbeat(node_id, load_info)
+                    elif msg_type == "task_update":
+                        node_id = msg.get("node_id")
+                        task_id = msg.get("task_id")
+                        status = msg.get("status")
+                        result = msg.get("result")
+                        error = msg.get("error")
+                        self.manager.handle_task_update(node_id, task_id, status, result, error)
+                    else:
+                        logger.warning(f"[ClusterServer] 未知消息类型: {msg_type}")
+                except json.JSONDecodeError:
+                    logger.error(f"[ClusterServer] 解析消息失败")
+                except Exception as e:
+                    logger.error(f"[ClusterServer] 处理消息异常: {e}")
         except Exception as e:
             logger.error(f"[ClusterServer] 处理客户端异常: {e}")
         finally:
-            conn.close()
+            if node:
+                node.connection = None
+                node.status = "offline"
+            try:
+                conn.close()
+            except:
+                pass
 
     def stop(self):
         """停止服务器"""
@@ -298,10 +665,11 @@ class ClusterClient:
     """客户端：连接房主并注册节点信息"""
     def __init__(self, timeout: float = 5.0):
         self.timeout = timeout
+        self.socket: Optional[socket.socket] = None  # 保存持久连接
 
     def join(self, host: str, port: int, node_info: Dict[str, Any]) -> bool:
         """
-        连接到房主服务器并发送加入请求
+        连接到房主服务器并发送加入请求，保持连接打开
         
         Args:
             host: 房主IP地址
@@ -332,6 +700,8 @@ class ClusterClient:
             response = json.loads(response_data.decode('utf-8'))
             if response.get("status") == "ok":
                 logger.info(f"✅ [ClusterClient] 成功加入房间 {host}:{port}")
+                # 保持连接，不关闭
+                self.socket = sock
                 return True
             else:
                 logger.error(f"❌ [ClusterClient] 加入失败: {response.get('reason', '未知错误')}")
@@ -345,9 +715,13 @@ class ClusterClient:
         except Exception as e:
             logger.error(f"❌ [ClusterClient] 连接异常: {e}")
             return False
-        finally:
-            if sock:
-                try:
-                    sock.close()
-                except Exception:
-                    pass
+        # 不再关闭 socket
+    
+    def close(self):
+        """关闭持久连接"""
+        if self.socket:
+            try:
+                self.socket.close()
+            except Exception:
+                pass
+            self.socket = None

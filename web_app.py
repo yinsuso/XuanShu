@@ -8,7 +8,9 @@ from pathlib import Path
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from config import WEB_APP_URL, APPROVAL_API_TOKEN, APPROVAL_DB_PATH, PROJECT_ROOT
+from config import WEB_APP_URL,  APPROVAL_API_TOKEN,  APPROVAL_DB_PATH,  PROJECT_ROOT, CAPABILITY_MODEL_RANKINGS, SCHEDULER_STRATEGY, MANAGER_MONITOR_INTERVAL, CLUSTER_MANAGER_HOST, CLUSTER_MANAGER_PORT
+from evolution.cluster.capability import CapabilityAssessor
+from evolution.cluster.scheduler import TaskScheduler
 
 app = FastAPI(title="玄枢智能体", version="5.1.0")
 
@@ -23,7 +25,8 @@ app.add_middleware(
 
 # 集群 API 挂载
 from evolution.cluster import cluster_api
-app.include_router(cluster_api.router)
+from evolution.cluster.protocol import create_heartbeat, create_task_update
+app.include_router(cluster_api.router, prefix='/api')
 
 class ApprovalStore:
     def __init__(self):
@@ -146,7 +149,7 @@ import time
 import threading
 from agent import UniversalAgent
 from config import CLUSTER_ENABLED, CLUSTER_ROLE, CLUSTER_NODE_ID, CLUSTER_NODE_NICKNAME, MODEL_NAME
-from evolution.cluster.connection import ClusterNode, ClusterManager
+from evolution.cluster.connection import ClusterNode, ClusterManager, ClusterClient
 import asyncio
 
 @app.on_event("startup")
@@ -174,16 +177,98 @@ async def startup_cluster():
                     loop = asyncio.get_running_loop()
                     result = await loop.run_in_executor(None, lambda: agent._execute_skill(task["task_type"], task["parameters"]))
                     node.complete_task(task_id, result)
+                    # 发送完成状态给 manager
+                    if node.connection:
+                        try:
+                            update_msg = create_task_update(
+                                task_id=task_id,
+                                status="completed",
+                                result=result
+                            )
+                            node.connection.sendall(update_msg.serialize())
+                        except Exception as e:
+                            logger.error("发送任务完成状态失败", error=str(e))
                 except Exception as e:
                     node.fail_task(task_id, str(e))
+                    if node.connection:
+                        try:
+                            update_msg = create_task_update(
+                                task_id=task_id,
+                                status="failed",
+                                error=str(e)
+                            )
+                            node.connection.sendall(update_msg.serialize())
+                        except Exception as e2:
+                            logger.error("发送任务失败状态失败", error=str(e2))
                 node.notify_status_change(task_id)
             else:
                 await asyncio.sleep(0.2)
 
     asyncio.create_task(task_worker())
 
+    if CLUSTER_ROLE == "worker":
+        client = ClusterClient()
+        node_info = {
+            "node_id": node.node_id,
+            "model": MODEL_NAME,
+            "role": "worker",
+            "mode": "auto"
+        }
+        success = client.join(CLUSTER_MANAGER_HOST, CLUSTER_MANAGER_PORT, node_info)
+        if success:
+            node.connection = client.socket
+            def listener():
+                while True:
+                    try:
+                        data = node.connection.recv(4096)
+                        if not data:
+                            break
+                        msg = json.loads(data.decode('utf-8'))
+                        msg_type = msg.get("type")
+                        if msg_type == "task_assignment":
+                            payload = msg.get("payload", {})
+                            node.receive_assignment(
+                                task_id=payload["task_id"],
+                                task_type=payload["task_type"],
+                                description=payload["description"],
+                                parameters=payload.get("parameters")
+                            )
+                        else:
+                            logger.debug("Worker 收到其他消息类型", type=msg_type)
+                    except Exception as e:
+                        logger.error("Worker 监听线程异常", error=str(e))
+                        break
+            threading.Thread(target=listener, daemon=True).start()
+
+            def heartbeat_loop():
+                while True:
+                    try:
+                        if node.connection:
+                            hb = create_heartbeat(
+                                node.node_id,
+                                {
+                                    "load_cpu": node.load_cpu,
+                                    "load_memory": node.load_memory,
+                                    "queue_length": len(node.pending_tasks)
+                                }
+                            )
+                            node.connection.sendall(hb.serialize())
+                    except Exception as e:
+                        logger.error("心跳发送失败", error=str(e))
+                        break
+                    time.sleep(5)
+            threading.Thread(target=heartbeat_loop, daemon=True).start()
+        else:
+            logger.error("Worker 加入集群失败")
+
     if CLUSTER_ROLE == "manager":
         manager = ClusterManager()
+        # 初始化调度器与能力评估器
+        assessor = CapabilityAssessor(CAPABILITY_MODEL_RANKINGS)
+        scheduler = TaskScheduler(assessor, strategy=SCHEDULER_STRATEGY)
+        manager.set_scheduler(scheduler, assessor)
+        manager.start_monitoring(interval=MANAGER_MONITOR_INTERVAL)
+        logger.info("✅ [ClusterManager] 调度器已就绪", strategy=SCHEDULER_STRATEGY, assessor_model_rankings=CAPABILITY_MODEL_RANKINGS)
         mgr_thread = threading.Thread(target=manager.start_server, kwargs={"host":"0.0.0.0", "port":30001}, daemon=True)
         mgr_thread.start()
         app.state.cluster_manager = manager

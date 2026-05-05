@@ -286,6 +286,37 @@ CLUSTER_NODE_NICKNAME = os.getenv("CLUSTER_NODE_NICKNAME", "玄枢成员")
 CLUSTER_WORKER_THREADS = int(os.getenv("CLUSTER_WORKER_THREADS", 1))
 CLUSTER_API_TOKEN = os.getenv("CLUSTER_API_TOKEN", None)
 
+# =============================================================================
+# Phase 3 智能调度配置（能力评估器 + 任务调度器）
+# =============================================================================
+
+# 能力评估器权重配置
+CAPABILITY_WEIGHTS = {
+    "model": 0.4,       # 模型基准分权重
+    "hardware": 0.2,    # 硬件算力权重
+    "load": 0.15,       # 实时负载权重
+    "history": 0.15,    # 历史表现权重
+    "network": 0.1      # 网络质量权重（预留）
+}
+
+# 能力评估器模型排行榜（可动态更新）
+CAPABILITY_MODEL_RANKINGS = {
+    "qwen2.5-coder:7b": 0.95,
+    "qwen2.5:7b": 0.85,
+    "llama3:8b": 0.80,
+    "phi3:3.8b": 0.60,
+    "mistral:7b": 0.70
+}
+
+# 调度器配置
+SCHEDULER_STRATEGY = os.getenv("SCHEDULER_STRATEGY", "affinity")  # capability/load_balance/affinity/round_robin
+SCHEDULER_MAX_TASKS_PER_NODE = int(os.getenv("SCHEDULER_MAX_TASKS_PER_NODE", "5"))
+SCHEDULER_TASK_TIMEOUT = int(os.getenv("SCHEDULER_TASK_TIMEOUT", "300"))  # 秒
+
+# Manager 监控配置
+MANAGER_MONITOR_INTERVAL = int(os.getenv("MANAGER_MONITOR_INTERVAL", "5"))  # 监控间隔（秒）
+MANAGER_MAX_RETRIES = int(os.getenv("MANAGER_MAX_RETRIES", "3"))  # 最大重试次数
+
 # Docker sandbox isolation (Phase 3)
 DOCKER_SANDBOX_ENABLED = os.getenv("DOCKER_SANDBOX_ENABLED", "false").lower() == "true"
 DOCKER_IMAGE = os.getenv("DOCKER_IMAGE", "python:3.11-slim")

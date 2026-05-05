@@ -252,6 +252,31 @@ def create_heartbeat(node_id: str,负载信息: Dict[str, Any] = None) -> Cluste
     )
 
 
+def create_task_update(task_id: str, status: str, result: Any = None, error: str = None) -> ClusterMessage:
+    """
+    创建任务状态更新消息
+
+    Args:
+        task_id: 任务ID
+        status: 任务状态 ("completed", "failed", 等)
+        result: 执行结果（可选）
+        error: 错误信息（可选）
+
+    Returns:
+        ClusterMessage: 任务状态更新消息
+    """
+    return ClusterMessage(
+        type=MessageType.TASK_UPDATE,
+        payload={
+            "task_id": task_id,
+            "status": status,
+            "result": result,
+            "error": error,
+            "reported_at": time.time()
+        }
+    )
+
+
 # 工具函数 =============================================================
 
 def generate_node_id() -> str:

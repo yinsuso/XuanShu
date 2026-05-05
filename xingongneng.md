@@ -363,3 +363,439 @@ uvicorn[standard]==0.24.0
 ---
 **文档生成时间**: 2025-05-04
 **负责**: 破执 (Hermes Agent)
+
+
+# PHASE 3 规划：能力评估器与任务调度器
+
+## 一、目标
+实现 **智能任务分配**，超越 Phase 2 的 FIFO 队列，实现：
+- 动态能力评估（多维度、可配置权重）
+- 智能任务调度（多种策略）
+- 房主（Manager）完整分派逻辑
+- 负载感知与自动均衡
+- 任务类型与节点特长的亲和性匹配
+
+## 二、现状缺口
+1. **能力评估**：Phase 2 使用固定排行榜（MODEL_RANKINGS），无法动态更新
+2. **调度策略**：Phase 2 是先进先出（FIFO），无优先级、无匹配
+3. **Manager 角色**：仅有 TCP 服务器，无任务分派逻辑
+4. **负载均衡**：未实现，忙碌节点仍可能被分配任务
+5. **亲和性**：任务类型与节点模型无关联
+
+## 三、架构设计
+
+### 3.1 能力评估器（CapabilityAssessor）
+**文件**: `evolution/cluster/capability.py`
+
+**评估维度与权重**（可配置）：
+- 模型基准分 40%（动态排行榜）
+- 硬件算力 20%（GPU 显存、CPU 核心）
+- 实时负载 15%（CPU、内存）
+- 历史表现 15%（成功率、平均耗时）
+- 网络质量 10%（RTT，可选）
+
+**核心方法**：
+- `assess(node_info) -> float`：计算综合能力分 (0.0-1.0)
+- `record_task_outcome(node_id, success, duration)`：更新历史表现
+- `update_model_rankings(new_rankings)`：动态更新排行榜
+
+### 3.2 任务调度器（TaskScheduler）
+**文件**: `evolution/cluster/scheduler.py`
+
+**调度策略**（可切换）：
+1. `capability`：能力分最高优先
+2. `load_balance`：负载最低优先
+3. `affinity`：亲和性匹配后能力最优
+4. `round_robin`：轮询
+
+**任务亲和性规则**：
+```python
+TASK_AFFINITY = {
+    "code_generation": ["qwen2.5-coder"],
+    "text_writing": ["qwen2.5", "mistral"],
+    "default": []
+}
+```
+
+### 3.3 Manager 扩展（ClusterManager）
+**扩展位置**: `evolution/cluster/connection.py`
+
+**新增方法**：
+- `set_scheduler(assessor, scheduler)`：注入评估器与调度器
+- `assign_task(task_type, description, parameters)`：选择节点并发送分配消息
+- `monitor_tasks()`：后台监控，超时重派
+- `handle_node_failure(node_id)`：节点失效处理
+
+**任务分派流程**：
+1. 接收任务（来自 API 或 Web）
+2. 调用 scheduler 选择最优节点
+3. 发送 TaskAssignment 消息（TCP）
+4. 记录分配关系与超时时间
+5. 监控线程定期检查，失败则重派（最多 SCHEDULER_MAX_RETRIES 次）
+
+### 3.4 ClusterNode 扩展（Worker）
+**新增字段**：
+- `load_cpu: float`  # 最新 CPU 负载 (0.0-1.0)
+- `load_memory: float`  # 内存使用率
+- `queue_length: int`  # 本地待执行任务数
+- `task_start_time: Dict[str, float]`  # 任务开始时间戳
+
+**新增行为**：
+- 心跳中上报负载信息（`load_cpu`, `load_memory`, `queue_length`）
+- 负载 >80% 时可返回 NACK，拒绝新任务分配
+
+## 四、实施方案（白虎细则）
+
+### 4.1 创建 `evolution/cluster/capability.py`
+```python
+"""
+能力评估器 - 动态计算节点综合能力分
+"""
+from typing import Dict, Any
+from logger import logger
+
+class CapabilityAssessor:
+    def __init__(self, model_rankings=None):
+        self.model_rankings = model_rankings or {
+            "qwen2.5-coder:7b": 0.95,
+            "qwen2.5:7b": 0.85,
+            "llama3:8b": 0.80
+        }
+        self.history: Dict[str, Dict[str, float]] = {}
+        self.weights = {
+            "model": 0.4,
+            "hardware": 0.2,
+            "load": 0.15,
+            "history": 0.15,
+            "network": 0.1
+        }
+    
+    def assess(self, node_info: Dict[str, Any]) -> float:
+        """计算综合能力分 0.0-1.0"""
+        score = 0.0
+        
+        # 1 模型基准分
+        model = node_info.get("model", "unknown")
+        model_score = self.model_rankings.get(model, 0.5)
+        score += model_score * self.weights["model"]
+        
+        # 2 硬件分（GPU 显存 + CPU）
+        hardware_score = self._calc_hardware_score(node_info)
+        score += hardware_score * self.weights["hardware"]
+        
+        # 3 实时负载分（负载越高分越低）
+        load_score = 1.0 - min(node_info.get("load_cpu", 0.0), 1.0)
+        score += load_score * self.weights["load"]
+        
+        # 4 历史表现分
+        node_id = node_info.get("node_id")
+        if node_id in self.history:
+            history_score = self.history[node_id].get("success_rate", 0.8)
+        else:
+            history_score = 0.8  # 默认
+        score += history_score * self.weights["history"]
+        
+        # 5 网络分（暂为 1.0）
+        score += 1.0 * self.weights["network"]
+        
+        return max(0.0, min(1.0, score))
+    
+    def _calc_hardware_score(self, node_info: Dict[str, Any]) -> float:
+        score = 0.5
+        gpu_mem = node_info.get("gpu_memory", 0)
+        if gpu_mem >= 24:
+            score = 1.0
+        elif gpu_mem >= 16:
+            score = 0.9
+        elif gpu_mem >= 8:
+            score = 0.7
+        elif gpu_mem >= 4:
+            score = 0.5
+        else:
+            score = 0.3
+        
+        cpu_cores = node_info.get("cpu_cores", 4)
+        if cpu_cores >= 16:
+            score = min(1.0, score + 0.1)
+        elif cpu_cores >= 8:
+            score = min(1.0, score + 0.05)
+        
+        return score
+    
+    def record_task_outcome(self, node_id: str, success: bool, duration: float):
+        if node_id not in self.history:
+            self.history[node_id] = {"success_rate": 0.8, "avg_duration": 2.0, "samples": 0}
+        
+        hist = self.history[node_id]
+        samples = hist["samples"]
+        old_success = hist["success_rate"]
+        old_duration = hist["avg_duration"]
+        
+        alpha = 0.1
+        new_success = old_success * (1 - alpha) + (1.0 if success else 0.0) * alpha
+        new_duration = old_duration * (1 - alpha) + duration * alpha
+        
+        self.history[node_id] = {
+            "success_rate": new_success,
+            "avg_duration": new_duration,
+            "samples": samples + 1
+        }
+    
+    def update_model_rankings(self, new_rankings: Dict[str, float]):
+        self.model_rankings.update(new_rankings)
+        logger.info("模型排行榜已更新", rankings=self.model_rankings)
+```
+
+### 4.2 创建 `evolution/cluster/scheduler.py`
+```python
+"""
+任务调度器 - 基于策略选择最优执行节点
+"""
+from typing import List, Dict, Any, Optional
+from evolution.cluster.connection import ClusterNode
+from .capability import CapabilityAssessor
+
+class TaskScheduler:
+    def __init__(self, assessor: CapabilityAssessor, strategy: str = "capability"):
+        self.assessor = assessor
+        self.strategy = strategy
+        self.node_pool: Dict[str, ClusterNode] = {}
+        self.round_robin_index = 0
+        
+        # 任务亲和性规则（可配置）
+        self.affinity_rules: Dict[str, List[str]] = {
+            "code_generation": ["qwen2.5-coder"],
+            "text_writing": ["qwen2.5", "mistral"],
+            "default": []
+        }
+    
+    def update_node_pool(self, nodes: List[ClusterNode]):
+        self.node_pool = {n.node_id: n for n in nodes}
+    
+    def schedule(self, task: Dict[str, Any]) -> Optional[ClusterNode]:
+        task_type = task.get("task_type", "default")
+        candidates = self._filter_candidates()
+        if not candidates:
+            logger.warning("无可用候选节点")
+            return None
+        
+        if self.strategy == "capability":
+            return self._schedule_by_capability(candidates, task_type)
+        elif self.strategy == "load_balance":
+            return self._schedule_by_load(candidates)
+        elif self.strategy == "affinity":
+            return self._schedule_by_affinity(candidates, task_type)
+        elif self.strategy == "round_robin":
+            return self._schedule_round_robin(candidates)
+        else:
+            return self._schedule_by_capability(candidates, task_type)
+    
+    def _filter_candidates(self) -> List[ClusterNode]:
+        """过滤出可接受任务的节点（在线、未满载、负载<80%）"""
+        candidates = []
+        for node in self.node_pool.values():
+            if (node.status == "online" and 
+                len(node.pending_tasks) < 5 and 
+                getattr(node, "load_cpu", 0.0) < 0.8):
+                candidates.append(node)
+        return candidates
+    
+    def _schedule_by_capability(self, candidates: List[ClusterNode], task_type: str) -> Optional[ClusterNode]:
+        scored = []
+        for node in candidates:
+            score = self.assessor.assess({
+                "node_id": node.node_id,
+                "model": node.model,
+                "gpu_memory": getattr(node, "gpu_memory", 0),
+                "cpu_cores": getattr(node, "cpu_cores", 4),
+                "load_cpu": getattr(node, "load_cpu", 0.0),
+                "load_memory": getattr(node, "load_memory", 0.0)
+            })
+            scored.append((score, node))
+        
+        scored.sort(key=lambda x: x[0], reverse=True)
+        return scored[0][1] if scored else None
+    
+    def _schedule_by_affinity(self, candidates: List[ClusterNode], task_type: str) -> Optional[ClusterNode]:
+        preferred_models = self.affinity_rules.get(task_type, [])
+        if not preferred_models:
+            return self._schedule_by_capability(candidates, task_type)
+        
+        affinity_candidates = [n for n in candidates if n.model in preferred_models]
+        if not affinity_candidates:
+            affinity_candidates = candidates  # 降级
+        
+        return self._schedule_by_capability(affinity_candidates, task_type)
+    
+    def _schedule_by_load(self, candidates: List[ClusterNode]) -> Optional[ClusterNode]:
+        if not candidates:
+            return None
+        return min(candidates, key=lambda n: getattr(n, "load_cpu", 0.0) + getattr(n, "load_memory", 0.0))
+    
+    def _schedule_round_robin(self, candidates: List[ClusterNode]) -> Optional[ClusterNode]:
+        if not candidates:
+            return None
+        node = candidates[self.round_robin_index % len(candidates)]
+        self.round_robin_index += 1
+        return node
+```
+
+### 4.3 扩展 ClusterManager（在 connection.py 中）
+```python
+class ClusterManager(ClusterNode):
+    def __init__(self, host: str, port: int):
+        super().__init__(...)
+        self.scheduler: Optional[TaskScheduler] = None
+        self.assessor: Optional[CapabilityAssessor] = None
+        self.task_assignments: Dict[str, str] = {}  # task_id -> node_id
+        self.task_timeouts: Dict[str, float] = {}   # task_id -> 超时时间戳
+    
+    def set_scheduler(self, scheduler: TaskScheduler, assessor: CapabilityAssessor):
+        self.scheduler = scheduler
+        self.assessor = assessor
+    
+    def assign_task(self, task_type: str, description: str, parameters: Dict[str, Any] = None) -> Optional[str]:
+        """Manager 分配任务给最优节点"""
+        if not self.scheduler:
+            logger.error("Scheduler 未初始化")
+            return None
+        
+        task_id = str(uuid.uuid4())
+        task = {
+            "task_type": task_type,
+            "description": description,
+            "parameters": parameters or {}
+        }
+        
+        node = self.scheduler.schedule(task)
+        if not node:
+            logger.error("无可用节点接受任务")
+            return None
+        
+        # 发送 TaskAssignment 消息
+        message = create_task_assignment(
+            sender_id=self.node_id,
+            target_id=node.node_id,
+            task_id=task_id,
+            task_type=task_type,
+            description=description,
+            parameters=parameters or {}
+        )
+        self.connection.send(message.to_json())
+        
+        self.task_assignments[task_id] = node.node_id
+        self.task_timeouts[task_id] = time.time() + 300  # 5 分钟超时
+        
+        logger.info("任务已分配", task_id=task_id, node=node.node_id)
+        return task_id
+    
+    def monitor_tasks(self):
+        """后台监控：检查超时和失败，触发重派"""
+        now = time.time()
+        for task_id, deadline in list(self.task_timeouts.items()):
+            if now > deadline:
+                node_id = self.task_assignments.get(task_id)
+                if node_id:
+                    logger.warning("任务超时，重派", task_id=task_id, original_node=node_id)
+                    self._reassign_task(task_id)
+    
+    def _reassign_task(self, task_id: str):
+        """重派任务（需恢复 task_type, description, parameters）"""
+        # TODO: 从任务记录中恢复参数并重新分配
+        pass
+```
+
+### 4.4 修改 `config.py` 扩展配置
+```python
+# 能力评估器配置
+CAPABILITY_WEIGHTS = {
+    "model": 0.4,
+    "hardware": 0.2,
+    "load": 0.15,
+    "history": 0.15,
+    "network": 0.1
+}
+CAPABILITY_MODEL_RANKINGS = {
+    "qwen2.5-coder:7b": 0.95,
+    "qwen2.5:7b": 0.85,
+    "llama3:8b": 0.80
+}
+
+# 调度器配置
+SCHEDULER_STRATEGY = os.getenv("SCHEDULER_STRATEGY", "affinity")
+SCHEDULER_MAX_TASKS_PER_NODE = 5
+SCHEDULER_TASK_TIMEOUT = 300
+
+# Manager 监控配置
+MANAGER_MONITOR_INTERVAL = 5
+MANAGER_MAX_RETRIES = 3
+```
+
+### 4.5 修改 `web_app.py` 集成调度器
+```python
+from evolution.cluster.capability import CapabilityAssessor
+from evolution.cluster.scheduler import TaskScheduler
+
+@app.on_event("startup")
+def startup_event():
+    # ... 原有 ClusterNode 创建 ...
+    
+    if CLUSTER_ROLE == "manager":
+        assessor = CapabilityAssessor()
+        scheduler = TaskScheduler(assessor, strategy=SCHEDULER_STRATEGY)
+        
+        manager = ClusterManager(...)
+        manager.set_scheduler(scheduler, assessor)
+        app.state.manager = manager
+        
+        def monitor_loop():
+            while True:
+                manager.monitor_tasks()
+                time.sleep(MANAGER_MONITOR_INTERVAL)
+        threading.Thread(target=monitor_loop, daemon=True).start()
+```
+
+### 4.6 扩展 Cluster API（可选）
+在 `cluster_api.py` 添加 Manager 专用端点：
+- `POST /manager/schedule`：手动调度任务
+- `GET /manager/nodes/status`：查看所有节点状态与负载
+
+（需权限验证：仅 manager 角色可访问）
+
+## 五、四象协作流程
+- **青龙（规划）**：本文档（已完成）
+- **白虎（实施）**：7 个实施步骤（4.1-4.6）
+- **朱雀（验证）**：单元测试 + 集成测试
+- **玄武（交付）**：审核报告 + 文档更新 + 提交
+
+## 六、验收标准
+- [ ] CapabilityAssessor.assess() 返回 0.0-1.0 分数
+- [ ] TaskScheduler 按策略正确选择节点
+- [ ] Manager 角色启动后能自动分派任务
+- [ ] 负载 >80% 的节点不再接收新任务
+- [ ] 任务亲和性规则生效（如 code_generation → qwen2.5-coder）
+- [ ] 动态更新排行榜后评估分实时变化
+- [ ] 调度延迟 < 10ms
+- [ ] 支持 50+ 节点池快速筛选
+- [ ] 线程安全（评估器与调度器支持并发访问）
+- [ ] 向后兼容：Phase 2 Worker 可与 Phase 3 Manager 互通
+
+## 七、风险与缓解
+| 风险 | 影响 | 缓解 |
+|------|------|------|
+| 评估维度过多导致性能下降 | 调度决策慢 | 缓存、增量更新、权重可配置 |
+| 节点上报负载增加网络开销 | 网络拥堵 | 复用现有心跳，5s 一次 |
+| 调度策略复杂难调试 | 问题定位难 | 详细日志 + Web 界面展示 |
+| Manager 单点故障 | 集群瘫痪 | Phase 4 实现主备高可用 |
+| 亲和性规则维护成本高 | 需频繁调整 | 提供默认规则，支持配置文件扩展 |
+
+## 八、后续展望
+- **Phase 4**: Web 前端三栏布局，实时展示集群状态、任务流、节点负载 heatmap
+- **Phase 5**: 授权机制增强（任务类型和节点能力的动态授权）
+- **Phase 6**: CLI 简化版（快速命令行集群管理）
+- **Phase 7**: 性能优化与文档完善
+
+---
+**文档生成时间**: 2026-05-05 06:50:00
+**负责**: 破执 (Hermes Agent)
+**状态**: 青龙规划完成，待白虎实施
