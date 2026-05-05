@@ -9,6 +9,7 @@ from enum import Enum
 from typing import Dict, Any, Optional
 from logger import logger
 from .protocol import MessageType, ClusterMessage, create_capability_advertisement, create_leave_notification
+from .discovery import ClusterDiscovery
 
 # 临时能力评估（Phase 1简易版）
 # Phase 3 将被 capability.py 替代
@@ -197,6 +198,9 @@ class ClusterManager:
     def __init__(self):
         self.nodes: Dict[str, ClusterNode] = {}
         self.current_project = "Unnamed Project"
+        self.room_id = str(uuid.uuid4())
+        self.room_name = "Default-Room"
+        self.discovery = None
         self._server: Optional["ClusterServer"] = None
         
         # 调度器与评估器（Phase 3 动态注入）
@@ -524,6 +528,10 @@ class ClusterManager:
         if self._server is None:
             self._server = ClusterServer(self, host, port)
             self._server.start()
+            # 启动房间广播服务
+            if not self.discovery:
+                self.discovery = ClusterDiscovery(room_name=self.room_name, host_port=port)
+            self.discovery.start_hosting()
             logger.info(f"🌐 [Cluster] 房主服务器已启动: {host}:{port}")
         else:
             logger.warning("[Cluster] 房主服务器已在运行")

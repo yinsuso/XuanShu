@@ -486,11 +486,33 @@ async function deleteModel() {
 let clusterInterval = null;
 
 async function createCluster() {
-  const roomName = document.getElementById('room-name')?.value || 'Default-Room';
-  try {
-    const res = await fetch('/api/cluster/create', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+    const roomName = document.getElementById('cluster-room-name').value.trim();
+    if (!roomName) {
+        alert('请输入房间名称');
+        return;
+    }
+    try {
+        const res = await fetch('/api/cluster/create', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({room_name: roomName})
+        });
+        if (res.ok) {
+            const data = await res.json();
+            currentRoomId = data.room_id;
+            clusterRole = 'manager';
+            updateClusterUIRole('manager');
+            alert(`房间创建成功：${data.room_name} (ID: ${data.room_id})`);
+            if (clusterPoller) clearInterval(clusterPoller);
+            startClusterPolling();
+        } else {
+            const err = await res.json();
+            alert('创建失败: ' + (err.detail || '未知错误'));
+        }
+    } catch (e) {
+        alert('创建房间请求失败: ' + e);
+    }
+},
       body: JSON.stringify({ room_name: roomName })
     });
     const data = await res.json();
@@ -506,8 +528,10 @@ async function createCluster() {
 }
 
 async function joinCluster() {
-  try {
-    const res = await fetch('/api/cluster/join', { method: 'POST' });
+    // 刷新房间列表并提示用户
+    await checkClusterStatus();
+    alert('请从左侧房间列表中选择一个房间，点击“加入”按钮');
+});
     const data = await res.json();
     if(data.success) {
       alert('正在搜索并加入房间...');
@@ -534,17 +558,29 @@ function stopClusterPolling() {
 }
 
 async function checkClusterStatus() {
-  if(currentPage !== 'cluster') return;
-  
-  try {
-    const res = await fetch('/api/cluster/status');
-    const data = await res.json();
-    
-    const statusEl = document.getElementById('cluster-status-msg');
-    if(statusEl && data.success) {
-      if(data.is_hosting) {
-        statusEl.innerHTML = '<span style="color: #4caf50;">✅ 正在 hosting: ' + data.room_name + '</span>';
-      } else if(data.found_rooms && data.found_rooms.length > 0) {
+    try {
+        if (currentRoomId) {
+            const res = await fetch(`/api/cluster/room/${currentRoomId}/status`);
+            if (res.ok) {
+                const data = await res.json();
+                updateRoomDetailUI(data);
+                return;
+            } else {
+                resetClusterUI();
+                return;
+            }
+        } else {
+            const res = await fetch('/api/cluster/rooms');
+            if (res.ok) {
+                const data = await res.json();
+                updateRoomListUI(data.rooms);
+                return;
+            }
+        }
+    } catch (e) {
+        console.error('Cluster status check failed:', e);
+    }
+} else if(data.found_rooms && data.found_rooms.length > 0) {
         statusEl.innerHTML = '<span style="color: #2196f3;">🔍 发现房间：' + data.found_rooms.join(', ') + '</span>';
       } else {
         statusEl.innerHTML = '<span style="color: #ff9800;">🔍 搜索中...</span>';
@@ -590,3 +626,228 @@ document.addEventListener('DOMContentLoaded', () => {
   // 默认显示对话页面
   switchPage('chat');
 });
+// === 集群协作辅助函数 ===
+
+function updateRoomListUI(rooms) {
+    const list = document.getElementById('room-list');
+    if (!list) return;
+    list.innerHTML = '';
+    if (rooms.length === 0) {
+        list.innerHTML = '<p style="color:#888;padding:8px">暂无可用房间</p>';
+        return;
+    }
+    rooms.forEach(room => {
+        const div = document.createElement('div');
+        div.className = 'room-item';
+        div.style.padding = '8px';
+        div.style.borderBottom = '1px solid #eee';
+        div.innerHTML = `
+            <strong>${room.room_name}</strong>
+            <div style="font-size:12px;color:#666">Host: ${room.ip}:${room.host_port}</div>
+            <button onclick="quickJoin('${room.room_id}', '${room.ip}', ${room.host_port})" style="margin-top:4px;padding:2px 6px;font-size:12px;cursor:pointer">加入</button>
+        `;
+        list.appendChild(div);
+    });
+}
+
+async function quickJoin(roomId, ip, port) {
+    const name = prompt('请输入你的花名（用于识别）:');
+    if (!name) return;
+    const mode = confirm('是否自动协作？\n确定 = 自动（授权由房主决定）\n取消 = 人工干预（部分授权需自己决定）') ? 'auto' : 'manual';
+    await performJoin(roomId, ip, port, name, mode);
+}
+
+async function performJoin(roomId, ip, port, name, mode) {
+    try {
+        const res = await fetch(`/api/cluster/join/${roomId}`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({manager_ip: ip, manager_port: port})
+        });
+        if (res.ok) {
+            const data = await res.json();
+            currentRoomId = roomId;
+            clusterRole = 'worker';
+            memberName = name;
+            memberMode = mode;
+            // 同步模式到后端
+            await fetch('/api/cluster/mode', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({mode: mode})
+            });
+            alert(`已加入房间 ${roomId}（模式: ${mode}）`);
+            updateClusterUIRole('worker');
+            if (clusterPoller) clearInterval(clusterPoller);
+            startClusterPolling();
+        } else {
+            alert('加入失败: ' + (await res.json()).detail);
+        }
+    } catch (e) {
+        alert('加入房间请求失败: ' + e);
+    }
+}
+
+function updateRoomDetailUI(data) {
+    const detail = document.getElementById('room-detail');
+    if (!detail) return;
+    detail.style.display = 'block';
+    document.getElementById('room-name-display').textContent = data.room_name;
+    document.getElementById('room-id-display').textContent = data.room_id;
+
+    const membersDiv = document.getElementById('members-list');
+    membersDiv.innerHTML = '';
+    data.members.forEach(m => {
+        const item = document.createElement('div');
+        item.style.padding = '4px 0';
+        item.innerHTML = `
+            <span>${m.node_id} (${m.model})</span>
+            <span class="status-${m.status}" style="margin-left:8px;color:${m.status==='online'?'green':'gray'}">${m.status}</span>
+            <span style="margin-left:8px">模式: ${m.mode}</span>
+            <span style="margin-left:8px">能力: ${m.capability_score.toFixed(2)}</span>
+            <span style="margin-left:8px">待处理: ${m.pending_tasks}</span>
+        `;
+        membersDiv.appendChild(item);
+    });
+
+    // 更新UI角色区域
+    updateClusterUIRole(clusterRole);
+}
+
+function updateClusterUIRole(role) {
+    const createForm = document.getElementById('create-room-form') || document.querySelector('.create-room');
+    const roomDetail = document.getElementById('room-detail');
+    const controlPanel = document.getElementById('control-panel');
+    const memberInfo = document.getElementById('member-info');
+    const welcomeMsg = document.getElementById('welcome-msg');
+
+    // 隐藏主要区域
+    if (createForm) createForm.style.display = 'none';
+    if (roomDetail) roomDetail.style.display = 'none';
+    if (controlPanel) controlPanel.style.display = 'none';
+    if (memberInfo) memberInfo.style.display = 'none';
+    if (welcomeMsg) welcomeMsg.style.display = 'none';
+
+    if (role === 'manager') {
+        if (roomDetail) roomDetail.style.display = 'block';
+        if (controlPanel) controlPanel.style.display = 'block';
+    } else if (role === 'worker') {
+        if (roomDetail) roomDetail.style.display = 'block';
+        if (memberInfo) memberInfo.style.display = 'block';
+        // 更新成员信息显示
+        const nameSpan = document.getElementById('member-name-display');
+        if (nameSpan) nameSpan.textContent = memberName;
+        const modeSpan = document.getElementById('member-mode-display');
+        if (modeSpan) modeSpan.textContent = memberMode;
+    } else {
+        if (welcomeMsg) welcomeMsg.style.display = 'block';
+        if (createForm) createForm.style.display = 'block';
+    }
+}
+
+function resetClusterUI() {
+    currentRoomId = null;
+    clusterRole = null;
+    clusterManagerIp = null;
+    clusterManagerPort = null;
+    if (clusterPoller) {
+        clearInterval(clusterPoller);
+        clusterPoller = null;
+    }
+    updateClusterUIRole(null);
+    // 隐藏详情，显示欢迎
+    const detail = document.getElementById('room-detail');
+    if (detail) detail.style.display = 'none';
+    // 刷新房间列表
+    checkClusterStatus();
+}
+
+async function startTask() {
+    const taskType = document.getElementById('task-type').value.trim();
+    const description = document.getElementById('task-description').value.trim();
+    const parametersStr = document.getElementById('task-parameters').value.trim();
+    let parameters = {};
+    if (parametersStr) {
+        try { parameters = JSON.parse(parametersStr); } catch (e) {
+            alert('参数必须是有效的 JSON 格式');
+            return;
+        }
+    }
+    try {
+        const res = await fetch(`/api/cluster/room/${currentRoomId}/start_task`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({task_type: taskType, description: description, parameters: parameters})
+        });
+        if (res.ok) {
+            const data = await res.json();
+            alert(`任务已发布，任务ID: ${data.task_id}`);
+            document.getElementById('task-type').value = '';
+            document.getElementById('task-description').value = '';
+            document.getElementById('task-parameters').value = '';
+        } else {
+            alert('发布失败: ' + (await res.json()).detail);
+        }
+    } catch (e) {
+        alert('请求失败: ' + e);
+    }
+}
+
+async function dismissRoom() {
+    if (!confirm('确定要解散房间吗？所有成员将被断开。')) return;
+    try {
+        const res = await fetch(`/api/cluster/room/${currentRoomId}/dismiss`, {method: 'POST'});
+        if (res.ok) {
+            alert('房间已解散');
+            resetClusterUI();
+        } else {
+            alert('解散失败: ' + (await res.json()).detail);
+        }
+    } catch (e) {
+        alert('解散请求失败: ' + e);
+    }
+}
+
+async function leaveRoom() {
+    if (!confirm('确定退出房间吗？')) return;
+    try {
+        const res = await fetch('/api/cluster/leave', {method: 'POST'});
+        if (res.ok) {
+            alert('已退出房间');
+            resetClusterUI();
+        } else {
+            alert('退出失败: ' + (await res.json()).detail);
+        }
+    } catch (e) {
+        alert('退出请求失败: ' + e);
+    }
+}
+
+async function setMode(mode) {
+    try {
+        const res = await fetch('/api/cluster/mode', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({mode: mode})
+        });
+        if (res.ok) {
+            memberMode = mode;
+            alert('协作模式已更新为 ' + mode);
+            // 更新显示
+            const modeSpan = document.getElementById('member-mode-display');
+            if (modeSpan) modeSpan.textContent = mode;
+        } else {
+            alert('模式更新失败: ' + (await res.json()).detail);
+        }
+    } catch (e) {
+        alert('模式更新请求失败: ' + e);
+    }
+}
+
+// 暴露给全局以便 HTML onclick 调用
+window.quickJoin = quickJoin;
+window.performJoin = performJoin;
+window.startTask = startTask;
+window.dismissRoom = dismissRoom;
+window.leaveRoom = leaveRoom;
+window.setMode = setMode;
