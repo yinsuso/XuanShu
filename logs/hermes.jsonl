@@ -67,3 +67,53 @@
 {"timestamp": "2026-05-04T14:39:07.733602Z", "level": "INFO", "component": "local_agent", "action": "🧬 进化功能: 禁用", "trace_id": null}
 {"timestamp": "2026-05-04T14:39:07.716466Z", "level": "INFO", "component": "code_utils", "action": "✅ 日志文件处理器已初始化", "trace_id": null}
 {"timestamp": "2026-05-04T22:54:56.785322Z", "level": "INFO", "component": "local_agent", "action": "✅ 日志文件处理器已初始化", "trace_id": null}
+{"timestamp": "2026-05-05T12:49:34.125197Z", "level": "INFO", "component": "local_agent", "action": "✅ 日志文件处理器已初始化", "trace_id": null}
+{"timestamp": "2026-05-05T12:51:22.563821Z", "level": "INFO", "component": "local_agent", "action": "✅ 日志文件处理器已初始化", "trace_id": null}
+{"timestamp": "2026-05-05T13:12:53.804196Z", "level": "INFO", "component": "local_agent", "action": "✅ 日志文件处理器已初始化", "trace_id": null}
+{"timestamp": "2026-05-05T13:50:59.207590Z", "level": "INFO", "component": "local_agent", "action": "✅ 日志文件处理器已初始化", "trace_id": null}
+{"timestamp": "2026-05-05T13:57:59.500709Z", "level": "INFO", "component": "local_agent", "action": "✅ 日志文件处理器已初始化", "trace_id": null}
+{"timestamp": "2026-05-05T14:09:08.453124Z", "level": "INFO", "component": "local_agent", "action": "✅ 日志文件处理器已初始化", "trace_id": null}
+{"timestamp": "2026-05-05T14:27:46.797437Z", "level": "INFO", "component": "local_agent", "action": "✅ 日志文件处理器已初始化", "trace_id": null}
+{"timestamp": "2026-05-05T14:48:43.065123Z", "level": "INFO", "component": "local_agent", "action": "✅ 日志文件处理器已初始化", "trace_id": null}
+{"timestamp": "2026-05-05T14:50:13.960004Z", "level": "INFO", "component": "local_agent", "action": "✅ 日志文件处理器已初始化", "trace_id": null}
+{"timestamp": "2026-05-06T03:54:25.968071Z", "level": "INFO", "component": "local_agent", "action": "✅ 日志文件处理器已初始化", "trace_id": null}
+{"timestamp": "2026-05-06T04:04:39.497732Z", "level": "INFO", "component": "local_agent", "action": "✅ 日志文件处理器已初始化", "trace_id": null}
+{"timestamp": "2026-05-06T04:04:39.565390Z", "level": "INFO", "component": "local_agent", "action": "✅ 日志文件处理器已初始化", "trace_id": null}
+{"timestamp": "2026-05-06T04:04:40.680283Z", "level": "INFO", "component": "local_agent", "action": "✅ 日志文件处理器已初始化", "trace_id": null}
+{"timestamp": "2026-05-06T04:04:41.805490Z", "level": "INFO", "component": "local_agent", "action": "✅ 日志文件处理器已初始化", "trace_id": null}
+{"timestamp": "2026-05-06T04:04:42.933329Z", "level": "INFO", "component": "local_agent", "action": "✅ 日志文件处理器已初始化", "trace_id": null}
+{"timestamp": "2026-05-06T04:09:28.575483Z", "level": "INFO", "component": "local_agent", "action": "✅ 日志文件处理器已初始化", "trace_id": null}
+{"timestamp": "2026-05-06T04:09:28.649598Z", "level": "INFO", "component": "local_agent", "action": "✅ 日志文件处理器已初始化", "trace_id": null}
+{"timestamp": "2026-05-06T04:09:29.783932Z", "level": "INFO", "component": "local_agent", "action": "✅ 日志文件处理器已初始化", "trace_id": null}
+{"timestamp": "2026-05-06T04:09:29.787699Z", "level": "INFO", "component": "local_agent", "action": "🏠 [ClusterManager] 房间已创建: TestRoom (ID: 7d49081d-3839-4cca-9f54-fdf88ec34585)", "trace_id": null}
+{"timestamp": "2026-05-06T04:09:29.910117Z", "level": "INFO", "component": "local_agent", "action": "✅ 日志文件处理器已初始化", "trace_id": null}
+{"timestamp": "2026-05-06T04:09:31.035743Z", "level": "INFO", "component": "local_agent", "action": "✅ 日志文件处理器已初始化", "trace_id": null}
+{"timestamp": "2026-05-06T04:09:31.042437Z", "level": "INFO", "component": "local_agent", "action": "🏠 [ClusterManager] 房间已创建: TestRoom (ID: ebab58be-4af3-4a29-bce2-27da6a51cfb7)", "trace_id": null}
+{"timestamp": "2026-05-06T04:13:44.379917Z", "level": "INFO", "component": "local_agent", "action": "✅ 日志文件处理器已初始化", "trace_id": null}
+{"timestamp": "2026-05-06T04:13:44.448679Z", "level": "INFO", "component": "local_agent", "action": "✅ 日志文件处理器已初始化", "trace_id": null}
+{"timestamp": "2026-05-06T04:13:45.564621Z", "level": "INFO", "component": "local_agent", "action": "✅ 日志文件处理器已初始化", "trace_id": null}
+{"timestamp": "2026-05-06T04:13:45.568455Z", "level": "INFO", "component": "local_agent", "action": "🏠 [ClusterManager] 房间已创建: TestRoom (ID: 2965fffb-0d95-47eb-96f3-31134eb2c81f)", "trace_id": null}
+{"timestamp": "2026-05-06T04:13:45.690242Z", "level": "INFO", "component": "local_agent", "action": "✅ 日志文件处理器已初始化", "trace_id": null}
+{"timestamp": "2026-05-06T04:13:45.692774Z", "level": "INFO", "component": "local_agent", "action": "🤝 [Cluster] 节点 node-1 (worker, 能力分: 0.90) 已加入集群", "trace_id": null}
+{"timestamp": "2026-05-06T04:13:46.816107Z", "level": "INFO", "component": "local_agent", "action": "✅ 日志文件处理器已初始化", "trace_id": null}
+{"timestamp": "2026-05-06T04:13:46.822741Z", "level": "INFO", "component": "local_agent", "action": "🏠 [ClusterManager] 房间已创建: TestRoom (ID: f427f7d1-569f-4523-83df-611402f1b8b8)", "trace_id": null}
+{"timestamp": "2026-05-06T04:31:09.243689Z", "level": "INFO", "component": "local_agent", "action": "✅ 日志文件处理器已初始化", "trace_id": null}
+{"timestamp": "2026-05-06T04:31:09.244058Z", "level": "INFO", "component": "local_agent", "action": "模型排行榜已更新", "trace_id": null}
+{"timestamp": "2026-05-06T04:31:09.316291Z", "level": "INFO", "component": "local_agent", "action": "✅ 日志文件处理器已初始化", "trace_id": null}
+{"timestamp": "2026-05-06T04:31:10.432574Z", "level": "INFO", "component": "local_agent", "action": "✅ 日志文件处理器已初始化", "trace_id": null}
+{"timestamp": "2026-05-06T04:31:10.436251Z", "level": "INFO", "component": "local_agent", "action": "🏠 [ClusterManager] 房间已创建: TestRoom (ID: 2110a8a1-6860-4fa8-bdc5-89e190d4a92a)", "trace_id": null}
+{"timestamp": "2026-05-06T04:31:10.559290Z", "level": "INFO", "component": "local_agent", "action": "✅ 日志文件处理器已初始化", "trace_id": null}
+{"timestamp": "2026-05-06T04:31:10.561915Z", "level": "INFO", "component": "local_agent", "action": "🤝 [Cluster] 节点 node-1 (worker, 能力分: 0.90) 已加入集群", "trace_id": null}
+{"timestamp": "2026-05-06T04:31:10.562088Z", "level": "INFO", "component": "local_agent", "action": "💔 [Cluster] 节点 node-1 已离开", "trace_id": null}
+{"timestamp": "2026-05-06T04:31:10.562248Z", "level": "INFO", "component": "local_agent", "action": "🤝 [Cluster] 节点 node-1 (worker, 能力分: 0.80) 已加入集群", "trace_id": null}
+{"timestamp": "2026-05-06T04:31:10.562366Z", "level": "INFO", "component": "local_agent", "action": "🤝 [Cluster] 节点 node-2 (worker, 能力分: 0.60) 已加入集群", "trace_id": null}
+{"timestamp": "2026-05-06T04:31:11.685007Z", "level": "INFO", "component": "local_agent", "action": "✅ 日志文件处理器已初始化", "trace_id": null}
+{"timestamp": "2026-05-06T04:31:11.691784Z", "level": "INFO", "component": "local_agent", "action": "🏠 [ClusterManager] 房间已创建: TestRoom (ID: 869bfdea-a905-496b-9396-6ec4c98bfce7)", "trace_id": null}
+{"timestamp": "2026-05-06T04:37:26.260347Z", "level": "INFO", "component": "local_agent", "action": "✅ 日志文件处理器已初始化", "trace_id": null}
+{"timestamp": "2026-05-06T04:37:26.328378Z", "level": "INFO", "component": "local_agent", "action": "✅ 日志文件处理器已初始化", "trace_id": null}
+{"timestamp": "2026-05-06T04:37:27.468323Z", "level": "INFO", "component": "local_agent", "action": "✅ 日志文件处理器已初始化", "trace_id": null}
+{"timestamp": "2026-05-06T04:37:27.472080Z", "level": "INFO", "component": "local_agent", "action": "🏠 [ClusterManager] 房间已创建: TestRoom (ID: be84eaf9-88cb-4fa9-8a44-61f3632db2b7)", "trace_id": null}
+{"timestamp": "2026-05-06T04:37:27.593729Z", "level": "INFO", "component": "local_agent", "action": "✅ 日志文件处理器已初始化", "trace_id": null}
+{"timestamp": "2026-05-06T04:37:27.596427Z", "level": "INFO", "component": "local_agent", "action": "🤝 [Cluster] 节点 node-1 (worker, 能力分: 0.90) 已加入集群", "trace_id": null}
+{"timestamp": "2026-05-06T04:37:27.721807Z", "level": "INFO", "component": "local_agent", "action": "✅ 日志文件处理器已初始化", "trace_id": null}
+{"timestamp": "2026-05-06T04:37:27.728472Z", "level": "INFO", "component": "local_agent", "action": "🏠 [ClusterManager] 房间已创建: TestRoom (ID: 9f4cf487-08a5-48f9-91a2-3b635841f0ba)", "trace_id": null}

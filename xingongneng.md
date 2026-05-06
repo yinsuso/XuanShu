@@ -798,4 +798,29 @@ def startup_event():
 ---
 **文档生成时间**: 2026-05-05 06:50:00
 **负责**: 破执 (Hermes Agent)
-**状态**: 青龙规划完成，待白虎实施
+**状态**: 白虎实施完成，待朱雀验证
+
+---
+## 📌 最新进展 (v5.2.0)
+
+### ✅ 已完成功能
+- 集群协作核心协议扩展：`create_auth_response` 支持 `task_id` 字段
+- 连接层转发与审批队列：`ClusterManager.pending_auth`、`handle_auth_request`、`respond_auth`
+- 风险等级映射：`RISK_LEVEL_MAP`（run_code/execute_code/execute_command=3；write_file/delete_file=2；read_file/search_files/list_directory=1）
+- Web 审批 API：`GET /api/cluster/auth/pending`、`POST /api/cluster/auth/respond`
+- 前端 UI：待审批面板、批准/拒绝按钮、自动轮询
+- 环境变量控制：`CLUSTER_AUTO_APPROVE`（默认 true，设为 false 启用手动审批）
+- 版本号升级至 5.2.0
+
+
+### 📝 后续任务 (待白虎/朱雀)
+1. **端口冲突处理**：修改 `CLUSTER_MANAGER_PORT` 为 30002 并同步所有相关配置
+2. **端到端验证**：
+   - 启动 manager 与 worker 实例
+   - 发布任务触发授权请求
+   - 在 UI 完成手动批准/拒绝
+   - 检查任务状态流转
+3. **单元/集成测试**：为核心流程编写自动化测试
+4. **风险策略细化**：扩展 `RISK_LEVEL_MAP`，支持可配置规则
+5. **审计与日志**：增加授权决策的持久化与操作审计
+6. **文档同步**：更新 README、部署指南、API 文档（OpenAPI）

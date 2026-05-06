@@ -3,12 +3,12 @@
 ## 当前开发进度
 
 - ✅ Phase 1：协议层与连接层增强（已完成）
-- 🔄 Phase 2：Cluster API 实现（进行中）
-- ⏳ Phase 3：能力评估器与任务调度器
-- ⏳ Phase 4：Web 前端重构（三栏布局）
-- ⏳ Phase 5：授权机制
-- ⏳ Phase 6：CLI 简化版
-- ⏳ Phase 7：测试与文档完善
+- ✅ Phase 2：Cluster API 实现（已完成）
+- ✅ Phase 3：能力评估器与任务调度器（已完成）
+- 🔄 Phase 4：调度器集成与 API 适配（进行中）
+- ⏳ Phase 5：安全加固（计划中）
+- ⏳ Phase 6：部署与 CLI 简化
+- ⏳ Phase 7：文档完善
 
 ---
 

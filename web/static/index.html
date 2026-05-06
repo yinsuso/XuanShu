@@ -1,0 +1,565 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>玄枢集群协作</title>
+    <style>
+        /* ==================== 全局样式 ==================== */
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            background: #f5f5f5;
+            color: #333;
+            line-height: 1.6;
+        }
+        .container {
+            display: grid;
+            grid-template-columns: 240px 1fr 280px;
+            gap: 16px;
+            padding: 16px;
+            height: 100vh;
+        }
+        .panel {
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+            padding: 16px;
+            overflow-y: auto;
+        }
+        .panel-title {
+            font-weight: bold;
+            font-size: 16px;
+            margin-bottom: 12px;
+            padding-bottom: 8px;
+            border-bottom: 2px solid #007bff;
+        }
+        .btn {
+            background: #007bff;
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 4px;
+            cursor: pointer;
+            margin: 4px 0;
+            width: 100%;
+        }
+        .btn:hover { background: #0056b3; }
+        .btn:disabled { background: #ccc; cursor: not-allowed; }
+        .btn-danger { background: #dc3545; }
+        .btn-danger:hover { background: #a71d2a; }
+        .form-group { margin-bottom: 12px; }
+        label { display: block; margin-bottom: 4px; font-weight: 500; }
+        input, select {
+            width: 100%;
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+        .room-card {
+            border: 1px solid #e0e0e0;
+            border-radius: 6px;
+            padding: 12px;
+            margin-bottom: 12px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .room-card:hover { border-color: #007bff; background: #f8f9fa; }
+        .room-card h4 { margin-bottom: 4px; color: #007bff; }
+        .room-card p { font-size: 13px; color: #666; }
+        .member-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 8px;
+            border-bottom: 1px solid #f0f0f0;
+        }
+        .member-item:last-child { border-bottom: none; }
+        .status-badge {
+            padding: 2px 8px;
+            border-radius: 10px;
+            font-size: 12px;
+            font-weight: bold;
+        }
+        .status-online { background: #d4edda; color: #155724; }
+        .status-busy { background: #fff3cd; color: #856404; }
+        .status-offline { background: #f8d7da; color: #721c24; }
+        .task-log {
+            background: #f8f9fa;
+            border: 1px solid #e9ecef;
+            border-radius: 4px;
+            padding: 8px;
+            margin-top: 8px;
+            font-family: monospace;
+            font-size: 12px;
+            max-height: 200px;
+            overflow-y: auto;
+        }
+        .hidden { display: none !important; }
+        .toast {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            background: #28a745;
+            color: white;
+            padding: 12px 24px;
+            border-radius: 4px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+            z-index: 1000;
+        }
+        .toast.error { background: #dc3545; }
+        .cluster-badge {
+            position: fixed;
+            top: 10px;
+            left: 10px;
+            background: #007bff;
+            color: white;
+            padding: 4px 12px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: bold;
+            z-index: 100;
+        }
+        .mode-indicator {
+            font-size: 13px;
+            color: #666;
+            margin-bottom: 12px;
+            padding: 6px;
+            background: #e9ecef;
+            border-radius: 4px;
+        }
+    </style>
+</head>
+<body>
+    <div id="cluster-badge" class="cluster-badge hidden">🤝 协作模式</div>
+    <div id="toast" class="toast hidden"></div>
+
+    <div class="container">
+        <!-- 左侧导航 -->
+        <div class="panel">
+            <div class="panel-title">协作导航</div>
+            <button class="btn" onclick="showView('room-list')">🏠 房间列表</button>
+            <button class="btn" onclick="showView('create-room')">➕ 创建房间</button>
+            <button class="btn" onclick="showView('join-room')">🔗 加入房间</button>
+            <hr style="margin: 12px 0; border: none; border-top: 1px solid #eee;">
+            <div id="current-room-info" class="hidden">
+                <strong>当前房间</strong>
+                <p id="room-name-display" style="font-size:13px;color:#007bff;"></p>
+                <button class="btn btn-danger" onclick="leaveRoom()">🚪 退出房间</button>
+            </div>
+        </div>
+
+        <!-- 中间主视图 -->
+        <div class="panel">
+            <div class="panel-title">
+                <span id="view-title">房间列表</span>
+                <span style="float:right;font-size:12px;color:#666;" id="room-status"></span>
+            </div>
+
+            <!-- 房间列表视图 -->
+            <div id="view-room-list">
+                <div class="form-group">
+                    <input type="text" id="room-search" placeholder="🔍 搜索房间..." oninput="filterRooms()">
+                </div>
+                <div id="room-list-container"></div>
+                <button class="btn" onclick="refreshRooms()" style="margin-top:8px;">🔄 刷新</button>
+            </div>
+
+            <!-- 创建房间视图 -->
+            <div id="view-create-room" class="hidden">
+                <div class="form-group">
+                    <label>房间名称</label>
+                    <input type="text" id="new-room-name" placeholder="例如：项目A协作室">
+                </div>
+                <div class="form-group">
+                    <label>房主名称（花名）</label>
+                    <input type="text" id="new-room-owner" placeholder="例如：玄枢居士">
+                </div>
+                <div class="form-group">
+                    <label>选择模型</label>
+                    <select id="new-room-model">
+                        <option value="qwen2.5-coder:7b">qwen2.5-coder:7b (代码专精)</option>
+                        <option value="qwen2.5:7b">qwen2.5:7b (通用)</option>
+                        <option value="llama3:8b">llama3:8b</option>
+                        <option value="phi3:3.8b">phi3:3.8b (轻量)</option>
+                    </select>
+                </div>
+                <button class="btn" onclick="createRoom()">✅ 创建房间</button>
+            </div>
+
+            <!-- 加入房间视图 -->
+            <div id="view-join-room" class="hidden">
+                <div class="form-group">
+                    <label>房间地址（IP:端口）</label>
+                    <input type="text" id="join-room-host" placeholder="例如：192.168.1.100:30001">
+                </div>
+                <div class="form-group">
+                    <label>房间名称（可选）</label>
+                    <input type="text" id="join-room-name" placeholder="如果广播中有房间名可填">
+                </div>
+                <div class="form-group">
+                    <label>成员名称（花名）</label>
+                    <input type="text" id="join-member-name" placeholder="例如：清风明月">
+                </div>
+                <div class="form-group">
+                    <label>协作模式</label>
+                    <select id="join-mode">
+                        <option value="auto">🤖 自动（任务自动执行）</option>
+                        <option value="manual">👤 人工干预（需确认）</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>选择模型</label>
+                    <select id="join-model">
+                        <option value="qwen2.5-coder:7b">qwen2.5-coder:7b</option>
+                        <option value="qwen2.5:7b">qwen2.5:7b</option>
+                        <option value="llama3:8b">llama3:8b</option>
+                        <option value="phi3:3.8b">phi3:3.8b</option>
+                    </select>
+                </div>
+                <button class="btn" onclick="joinRoom()">🔗 加入房间</button>
+            </div>
+
+            <!-- 房间详情视图 -->
+            <div id="view-room-detail" class="hidden">
+                <div style="margin-bottom: 16px;">
+                    <h3 id="detail-room-name" style="color:#007bff;"></h3>
+                    <p style="font-size:13px;color:#666;">
+                        ID: <span id="detail-room-id"></span> | 模型: <span id="detail-room-model"></span>
+                    </p>
+                    <div class="mode-indicator">
+                        我的模式: <span id="detail-my-mode" style="font-weight:bold;"></span>
+                    </div>
+                </div>
+
+                <div style="display:grid; grid-template-columns: 1fr 1fr; gap:16px;">
+                    <!-- 成员列表 -->
+                    <div>
+                        <h4>👥 成员列表</h4>
+                        <div id="member-list" style="max-height:300px;overflow-y:auto;"></div>
+                    </div>
+                    <!-- 任务日志 -->
+                    <div>
+                        <h4>📋 任务日志</h4>
+                        <div id="task-log" class="task-log"></div>
+                    </div>
+                </div>
+
+                <div style="margin-top:16px; display:flex; gap:8px;">
+                    <button class="btn" id="btn-start-task" onclick="startTask()">🚀 开始任务</button>
+                    <button class="btn btn-danger" onclick="closeRoom()">🔒 结束协作</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- 右侧信息面板 -->
+        <div class="panel">
+            <div class="panel-title">状态信息</div>
+            <div id="status-info">
+                <p>🖥️ 本机节点: <span id="local-node-id">未就绪</span></p>
+                <p>🔌 API 服务: <span id="api-status" style="color:red;">未连接</span></p>
+                <p>📡 WebSocket: <span id="ws-status" style="color:red;">未连接</span></p>
+                <p>👥 在线成员: <span id="online-count">0</span></p>
+            </div>
+            <hr style="margin:12px 0; border:none; border-top:1px solid #eee;">
+            <div id="auth-section" class="hidden">
+                <strong>🔐 待审批</strong>
+                <div id="pending-list" style="margin-top:8px;font-size:13px;"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+// ==================== 全局状态 ====================
+const STATE = {
+    role: null, // 'manager' or 'worker' or 'standalone'
+    currentView: 'room-list',
+    nodeMode: 'auto',
+    nodeId: null,
+    ws: null,
+    apiBase: window.location.origin,
+    pendingApprovals: {} // task_id -> DOM element container
+};
+
+// ==================== 工具 ====================
+function showToast(msg, isError = false) {
+    const toast = document.getElementById('toast');
+    toast.textContent = msg;
+    toast.className = 'toast' + (isError ? ' error' : '');
+    toast.classList.remove('hidden');
+    setTimeout(() => toast.classList.add('hidden'), 3000);
+}
+function showView(viewName) {
+    document.querySelectorAll('[id^="view-"]').forEach(el => el.classList.add('hidden'));
+    document.getElementById(`view-${viewName}`).classList.remove('hidden');
+    STATE.currentView = viewName;
+}
+async function api(endpoint, options = {}) {
+    const res = await fetch(`${STATE.apiBase}${endpoint}`, {
+        headers: { 'Content-Type': 'application/json' },
+        ...options
+    });
+    return res.json();
+}
+
+// ==================== 初始化 ====================
+async function init() {
+    try {
+        const data = await api('/api/info');
+        STATE.role = data.role;
+        // 角色相关的 UI 调整
+        const startBtn = document.getElementById('start-task-btn');
+        const joinBtn = document.querySelector('button[onclick="showView('join-room')"]');
+        if (STATE.role === 'manager') {
+            if (startBtn) startBtn.style.display = 'inline-block';
+            if (joinBtn) joinBtn.style.display = 'none';
+            STATE.room = data.room;
+            // 预填充创建房间表单
+            if (data.room) {
+                document.getElementById('new-room-owner').value = data.room.owner_name || '';
+                document.getElementById('new-room-model').value = data.room.owner_model || 'qwen2.5-coder:7b';
+            }
+            showView('room-list');
+            refreshRooms();
+        } else if (STATE.role === 'worker') {
+            if (startBtn) startBtn.style.display = 'none';
+            if (joinBtn) joinBtn.style.display = 'inline-block';
+            STATE.nodeMode = data.mode || 'auto';
+            STATE.nodeId = data.node_id;
+            if (data.connected) {
+                showView('room-detail');
+            } else {
+                // 默认填充 name 为 node_id
+                const nameInput = document.getElementById('join-member-name');
+                if (nameInput) nameInput.value = data.node_id || '';
+                const modeSelect = document.getElementById('join-mode');
+                if (modeSelect) modeSelect.value = STATE.nodeMode;
+                showView('join-room');
+            }
+        } else {
+            showView('room-list');
+        }
+    } catch (e) {
+        showToast('获取节点信息失败', true);
+        console.error(e);
+    }
+    // 建立 WebSocket 连接（如有需要）
+    if (STATE.role === 'manager' || (STATE.role === 'worker')) {
+        connectWebSocket();
+    }
+}
+
+// ==================== 房间管理（Manager） ====================
+async function refreshRooms() {
+    if (STATE.role !== 'manager') return;
+    try {
+        const data = await api('/api/rooms/current');
+        // 对于 manager, data 是 room 对象
+        if (!data || !data.room_id) {
+            document.getElementById('room-list-container').innerHTML = '<p>尚未创建房间</p>';
+            return;
+        }
+        const room = data;
+        document.getElementById('room-list-container').innerHTML = `
+            <div class="room-card">
+                <h4>${room.room_name} <small>${room.room_id}</small></h4>
+                <p>房主: ${room.owner_name}</p>
+                <p>模型: ${room.owner_model}</p>
+                <p>成员数: ${room.total_members}</p>
+                <p>房间状态: ${room.status}</p>
+            </div>
+        `;
+        // 填充成员列表
+        if (data.members_detail && data.members_detail.length > 0) {
+            renderMembers(data.members_detail);
+        } else {
+            document.getElementById('member-list').innerHTML = '<p>暂无其他成员</p>';
+        }
+        // 更新在线人数
+        const members = data.members_detail || [];
+        document.getElementById('online-count').textContent = members.filter(m => m.status === 'online').length;
+    } catch (e) {
+        showToast('获取房间信息失败', true);
+        console.error(e);
+    }
+}
+function renderMembers(members) {
+    const list = document.getElementById('member-list');
+    list.innerHTML = members.map(m => `
+        <div class="member-item">
+            <div>
+                <strong>${m.name}</strong> <small>(${m.model})</small><br>
+                模式: ${m.mode} | 状态: ${m.status || '未知'}
+            </div>
+            <div>
+                <span class="status-badge status-${m.status || 'offline'}">${m.status || '离线'}</span>
+            </div>
+        </div>
+    `).join('');
+}
+
+async function createRoom() {
+    const name = document.getElementById('new-room-name').value.trim();
+    const owner = document.getElementById('new-room-owner').value.trim();
+    const model = document.getElementById('new-room-model').value;
+    if (!name || !owner) {
+        showToast('请填写房间名和房主名', true);
+        return;
+    }
+    try {
+        const res = await api('/api/rooms/create', {
+            method: 'POST',
+            body: JSON.stringify({ room_name: name, owner_name: owner, model })
+        });
+        if (res.success) {
+            showToast('房间创建成功');
+            refreshRooms();
+        } else {
+            showToast(res.error || '创建失败', true);
+        }
+    } catch (e) {
+        showToast('创建房间请求失败', true);
+        console.error(e);
+    }
+}
+
+// ==================== 加入/离开（Worker） ====================
+async function joinRoom() {
+    const host = document.getElementById('join-room-host').value.trim();
+    const name = document.getElementById('join-member-name').value.trim();
+    const mode = document.getElementById('join-mode').value;
+    const model = document.getElementById('join-model').value;
+    if (!host || !name || !model) {
+        showToast('请填写房间地址、成员名称和模型', true);
+        return;
+    }
+    try {
+        const res = await api('/api/rooms/join', {
+            method: 'POST',
+            body: JSON.stringify({ host, name, mode, model })
+        });
+        if (res.success) {
+            showToast('已加入房间');
+            setTimeout(init, 1000);
+        } else {
+            showToast(res.error || '加入失败', true);
+        }
+    } catch (e) {
+        showToast('加入请求失败', true);
+        console.error(e);
+    }
+}
+async function leaveRoom() {
+    try {
+        const res = await api('/api/rooms/leave', { method: 'POST' });
+        if (res.success) {
+            showToast('已退出房间');
+            showView('join-room');
+        } else {
+            showToast(res.error || '退出失败', true);
+        }
+    } catch (e) {
+        showToast('退出请求失败', true);
+    }
+}
+
+// ==================== 任务启动（Manager） ====================
+async function startTask() {
+    const taskType = prompt('任务类型 (例如: code_generation, analysis):', 'code_generation');
+    if (!taskType) return;
+    const description = prompt('任务描述:');
+    if (!description) return;
+    try {
+        const res = await api('/api/rooms/start_task', {
+            method: 'POST',
+            body: JSON.stringify({ task_type: taskType, description })
+        });
+        if (res.success) {
+            showToast('任务已广播');
+            addTaskLog('任务已发起', taskType, description);
+        } else {
+            showToast(res.error || '启动任务失败', true);
+        }
+    } catch (e) {
+        showToast('启动任务请求失败', true);
+        console.error(e);
+    }
+}
+
+// ==================== 任务日志 ====================
+function addTaskLog(msg, taskType, description) {
+    const log = document.getElementById('task-log');
+    const entry = document.createElement('div');
+    entry.className = 'log-entry';
+    entry.innerHTML = `<span class="time">${new Date().toLocaleTimeString()}</span> ${msg} <small>(${taskType})</small>: ${description}`;
+    log.appendChild(entry);
+    log.scrollTop = log.scrollHeight;
+    return entry;
+}
+function addStatusUpdate(taskId, status) {
+    const log = document.getElementById('task-log');
+    const entry = document.createElement('div');
+    entry.className = 'log-entry';
+    entry.innerHTML = `<span class="time">${new Date().toLocaleTimeString()}</span> [状态] 任务 ${taskId.slice(0,8)} => ${status}`;
+    log.appendChild(entry);
+    log.scrollTop = log.scrollHeight;
+}
+
+// ==================== WebSocket ====================
+function connectWebSocket() {
+    if (STATE.ws && STATE.ws.readyState === WebSocket.OPEN) return;
+    const wsUrl = `ws://${window.location.host}/api/cluster/ws/updates`;
+    STATE.ws = new WebSocket(wsUrl);
+    STATE.ws.onopen = () => console.log('WS connected');
+    STATE.ws.onclose = () => {
+        console.log('WS closed, reconnecting in 3s');
+        setTimeout(connectWebSocket, 3000);
+    };
+    STATE.ws.onerror = (e) => console.error('WS error', e);
+    STATE.ws.onmessage = (event) => {
+        try {
+            const data = JSON.parse(event.data);
+            handleClusterEvent(data);
+        } catch (e) {
+            console.error('WS parse error', e);
+        }
+    };
+}
+function handleClusterEvent(data) {
+    if (data.type === 'task_assigned') {
+        const entry = addTaskLog('新任务', data.task_type, data.description);
+        if (STATE.role === 'worker' && STATE.nodeMode === 'manual') {
+            const btn = document.createElement('button');
+            btn.className = 'btn';
+            btn.textContent = '批准';
+            btn.style.width = 'auto';
+            btn.style.marginLeft = '8px';
+            btn.onclick = () => approveTask(entry, data.task_id, btn);
+            entry.appendChild(btn);
+            STATE.pendingApprovals[data.task_id] = entry;
+        }
+    } else if (data.status && data.task_id) {
+        // task_update event
+        addStatusUpdate(data.task_id, data.status);
+    }
+}
+async function approveTask(logEntry, taskId, btn) {
+    try {
+        const res = await api(`/api/cluster/tasks/${taskId}/approve`, { method: 'POST' });
+        if (res.success) {
+            showToast('任务已批准');
+            btn.disabled = true;
+            btn.textContent = '已批准';
+        } else {
+            showToast(res.error || '批准失败', true);
+        }
+    } catch (e) {
+        showToast('批准请求失败', true);
+    }
+}
+
+// 页面加载完成
+window.addEventListener('DOMContentLoaded', init);
+</script>
+</body>
+</html>

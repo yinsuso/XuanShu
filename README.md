@@ -1,4 +1,4 @@
-# 🤖 玄枢 (XuanShu) v5.0
+# 🤖 玄枢 (XuanShu) v5.3.0.0
 
 **一个具备自进化能力的本地AI智能体集群系统**
 
@@ -37,7 +37,7 @@ pip install --upgrade pip
 pip install -r requirements.txt
 
 # 4. 启动项目
-python launcher.py
+python xuan_cli.py
 ```
 
 
@@ -46,7 +46,7 @@ python launcher.py
 chmod +x setup_mac.sh
 ./setup_mac.sh
 source venv/bin/activate
-python3 launcher.py
+python3 xuan_cli.py
 ```
 
 **Linux 用户：**
@@ -54,7 +54,7 @@ python3 launcher.py
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
-python3 launcher.py
+python3 xuan_cli.py
 ```
 
 ## 🛠️ 技术栈
@@ -62,6 +62,45 @@ python3 launcher.py
 - **Frontend**: HTML5, CSS3, JavaScript (Vanilla)
 - **LLM**: Ollama / OpenAI / DeepSeek / Moonshot (适配多种 Provider)
 
+
+## 🗺️ 集群协作（实验性）
+
+玄枢支持多节点协作模式，通过内网发现与 TCP 连接实现任务分发与负载均衡。
+
+### 角色
+
+- **Manager**：负责房间创建、节点管理、任务调度。启动时设置 `CLUSTER_ROLE=manager`。
+- **Worker**：执行任务，向 Manager 注册能力。设置 `CLUSTER_ROLE=worker` 及 `CLUSTER_MANAGER_HOST`、`CLUSTER_MANAGER_PORT`。
+
+### 快速启动
+
+1. 配置环境变量（可从 `.env.example` 复制），至少启用 `CLUSTER_ENABLED=true`，并设置角色及网络参数。
+2. 启动 Manager 节点（默认监听 0.0.0.0:30001）。
+3. 启动 Worker 节点，填入 Manager 的 IP 与端口，即可自动加入房间。
+4. 通过 Web 控制面板 (`/static/index.html`) 查看集群状态、节点负载与任务队列。
+
+### 调度策略
+
+默认使用 **能力优先**（Capability），根据模型基准分、硬件算力、实时负载、历史表现和网络质量进行综合评估。可在 `config.py` 中调整 `SCHEDULER_STRATEGY` 为 `load`（负载均衡）、`round_robin`（轮询）或 `affinity`（亲和性匹配）。
+
+### 安全特性
+
+- Manager 可设置房间密码（最大 32 字符），通过 bcrypt 加密存储。
+- 所有集群 API 需验证 `X-Cluster-Token`（与 `CLUSTER_API_TOKEN` 一致）。
+
+### 监控与日志
+
+- Manager 自动监控任务超时并重派。
+- 通过 `LOG_LEVEL` 控制日志详细程度。
+
+### 前端交互
+
+- 访问 `/static/index.html` 进入主界面。
+- 集群控制面板提供：
+  - 房间状态、成员列表
+  - 节点实时负载（CPU、内存、GPU）
+  - 任务队列与完成状态
+  - 一键启停协作任务
 
 ## AI声明：
 本项目由 qwen3.5 、step-3.5-flash 与 gemma 4 模型提供技术辅助，部分代码由这两个代码编写并审核。

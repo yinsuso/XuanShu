@@ -6,10 +6,14 @@ import time
 import uuid
 import asyncio
 from enum import Enum
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List, TYPE_CHECKING
 from logger import logger
-from .protocol import MessageType, ClusterMessage, create_capability_advertisement, create_leave_notification
+from .protocol import MessageType, ClusterMessage, create_capability_advertisement, create_leave_notification, create_auth_response
 from .discovery import ClusterDiscovery
+
+if TYPE_CHECKING:
+    from .scheduler import TaskScheduler
+    from .capability import CapabilityAssessor
 
 # 临时能力评估（Phase 1简易版）
 # Phase 3 将被 capability.py 替代
@@ -65,9 +69,11 @@ class ClusterNode:
         self.mode = mode # auto 或 manual (人工干预)
         self.status = "online"
         self.capability_score = capability_score  # 能力评估分 (0.0-1.0)
+        self.auth_responses = {}
         self.last_heartbeat = time.time()
         self.connection: Optional[socket.socket] = None  # 持久TCP连接
         self.pending_tasks = []  # 待处理任务队列
+        self.manual_tasks: Dict[str, dict] = {}  # 手动模式待批准任务 {task_id: task_dict}
         self.tasks = {}
         self._task_lock = threading.Lock()
         self.ws_connections = []
@@ -152,7 +158,7 @@ class ClusterNode:
         """接收来自 manager 的任务分配"""
         with self._task_lock:
             if task_id not in self.tasks:
-                self.tasks[task_id] = {
+                task = {
                     "task_id": task_id,
                     "task_type": task_type,
                     "description": description,
@@ -164,7 +170,13 @@ class ClusterNode:
                     "result": None,
                     "error": None
                 }
-                self.pending_tasks.append(task_id)
+                self.tasks[task_id] = task
+                if self.mode == "manual":
+                    self.manual_tasks[task_id] = task
+                else:
+                    self.pending_tasks.append(task_id)
+        # 通知本地 WebSocket 客户端（UI）
+        self._notify_new_task(task_id)
 
     def send_task_result(self, task_id: str, status: str, result=None, error=None):
         """向 manager 发送任务执行结果"""
@@ -195,17 +207,53 @@ class ClusterManager:
     
     # Phase 3 扩展：智能调度能力
     """
+
+    def approve_task(self, task_id: str) -> bool:
+        """手动批准任务：从 manual_tasks 移到 pending_tasks"""
+        with self._task_lock:
+            if task_id in self.manual_tasks:
+                self.manual_tasks.pop(task_id)
+                if task_id not in self.pending_tasks:
+                    self.pending_tasks.append(task_id)
+                logger.info(f"[ClusterNode] 任务 {task_id[:8]} 已手动批准")
+                return True
+            else:
+                logger.warning(f"[ClusterNode] 任务 {task_id} 不在待批准列表中")
+                return False
+
+
+
+    def _notify_new_task(self, task_id: str):
+        """通知本地 WebSocket 客户端有新任务到达"""
+        if task_id in self.tasks:
+            task = self.tasks[task_id]
+            event = {
+                "type": "task_assigned",
+                "task_id": task_id,
+                "task_type": task["task_type"],
+                "description": task["description"],
+                "parameters": task["parameters"]
+            }
+            for ws in self.ws_connections:
+                try:
+                    asyncio.create_task(ws.send_json(event))
+                except:
+                    pass
+
     def __init__(self):
         self.nodes: Dict[str, ClusterNode] = {}
+        self.room_members: Dict[str, Dict[str, Any]] = {}  # node_id -> member info
         self.current_project = "Unnamed Project"
         self.room_id = str(uuid.uuid4())
         self.room_name = "Default-Room"
+        self.room_password_hash = None  # 房间密码哈希
         self.discovery = None
         self._server: Optional["ClusterServer"] = None
         
         # 调度器与评估器（Phase 3 动态注入）
         self.scheduler: Optional[TaskScheduler] = None
         self.assessor: Optional[CapabilityAssessor] = None
+        self.broadcast_node: Optional["ClusterNode"] = None  # 用于向前端广播事件的节点
         
         # 任务分配追踪
         self.task_assignments: Dict[str, str] = {}   # task_id -> node_id
@@ -255,7 +303,7 @@ class ClusterManager:
     # ============================================
     # Phase 3: 调度器管理
     # ============================================
-    def set_scheduler(self, scheduler: TaskScheduler, assessor: CapabilityAssessor):
+    def set_scheduler(self, scheduler: 'TaskScheduler', assessor: 'CapabilityAssessor'):
         """
         注入调度器和评估器（由 web_app.py startup 调用）
         
@@ -294,84 +342,29 @@ class ClusterManager:
             except Exception as e:
                 logger.error("[ClusterManager] 监控循环异常", error=str(e))
     
-    def assign_task(self, task_type: str, description: str, parameters: Dict[str, Any] = None) -> Optional[str]:
-        """
-        Manager 分配任务给最优节点（核心调度逻辑）
-        
-        流程：
-        1. 调用 scheduler 选择最优节点
-        2. 发送 TaskAssignment 消息（通过 TCP）
-        3. 记录任务分配关系与超时
-        4. 记录任务元数据备用
-        
-        Returns:
-            task_id 或 None（若无可用节点）
-        """
-        if not self.scheduler:
-            logger.error("❌ [ClusterManager] Scheduler 未初始化，无法分配任务")
-            return None
-        
-        # 生成任务 ID
-        task_id = str(uuid.uuid4())
-        parameters = parameters or {}
-        
-        # 选择节点
-        task = {
-            "task_type": task_type,
-            "description": description,
-            "parameters": parameters
-        }
-        node = self.scheduler.schedule(task)
-        
-        if not node:
-            logger.error("❌ [ClusterManager] 无可用节点接受任务", task_type=task_type)
-            return None
-        
-        # 发送 TaskAssignment 消息（通过节点的连接）
-        try:
-            from .protocol import create_task_assignment
-            message = create_task_assignment(
-                sender_id=self.current_project or "manager",
-                target_id=node.node_id,
-                task_id=task_id,
-                task_type=task_type,
-                description=description,
-                parameters=parameters
-            )
-            # 通过节点连接发送（假设 node.connection 已建立）
-            if node.connection:
-                node.connection.sendall(message.to_json().encode('utf-8'))
-                logger.info(
-                    "📨 [ClusterManager] 任务已分配",
-                    task_id=task_id,
-                    node=node.node_id,
-                    model=node.model,
-                    task_type=task_type
-                )
-            else:
-                logger.error(f"❌ [ClusterManager] 节点 {node.node_id} 无活跃连接，无法发送任务")
+    def assign_task(self, task_type: str, description: str, parameters: Dict = None, node: ClusterNode = None, task_id: str = None) -> Optional[str]:
+        """向指定节点或最优节点分配任务"""
+        # 1. 选择目标节点
+        if node is None:
+            if not self.scheduler:
+                logger.error("无可用调度器，无法分配任务")
                 return None
-        except Exception as e:
-            logger.error("❌ [ClusterManager] 发送任务分配消息失败", task_id=task_id, error=str(e))
-            return None
-        
-        # 记录分配关系
-        self.task_assignments[task_id] = node.node_id
-        self.task_timeouts[task_id] = time.time() + 300  # 5 分钟超时
-        self.task_metadata[task_id] = {
-            "task_type": task_type,
-            "description": description,
-            "parameters": parameters
-        }
-        
-        logger.info(
-            "✅ [ClusterManager] 任务分配完成",
-            task_id=task_id,
-            node=node.node_id,
-            timeout=300
-        )
+            # 确保节点池最新
+            self.node_pool = list(self.nodes.values())
+            target = self.scheduler.select(self.node_pool)
+            if not target:
+                logger.warning("无节点满足条件", task_type=task_type)
+                return None
+        else:
+            target = node
+        # 2. 生成或使用提供的 task_id
+        if task_id is None:
+            task_id = str(uuid.uuid4())
+        # 3. 在目标节点创建任务
+        target.create_task(task_type, description, parameters)
+        # 4. 发送分配指令
+        self._send_task_assignment(target, task_id, task_type, description, parameters)
         return task_id
-    
     def monitor_tasks(self):
         """
         后台监控：检查任务超时与失败状态
@@ -497,6 +490,172 @@ class ClusterManager:
     
     
 
+
+    # ============================================
+    # 房间管理（Phase 4 协作功能）
+    # ============================================
+    
+    def create_room(self, room_name: str, owner_name: str, model: str, owner_node_id: str = None, password_hash: str = None) -> str:
+        """
+        创建房间（由房主调用）
+        
+        Args:
+            owner_node_id: 房主节点的 node_id（用于广播）
+            
+        Returns:
+            room_id
+        """
+        self.room_name = room_name
+        self.owner_name = owner_name
+        self.owner_model = model
+        self.room_id = str(uuid.uuid4())
+        self.room_password_hash = password_hash
+        self.owner_node_id = owner_node_id
+        
+        # 房主自动成为第一个成员
+        effective_owner_id = owner_node_id or self.current_project or "manager"
+        self.room_members[effective_owner_id] = {
+            "node_id": effective_owner_id,
+            "name": owner_name,
+            "mode": "auto",  # 房主默认为 auto
+            "model": model,
+            "joined_at": time.time(),
+            "is_owner": True
+        }
+        logger.info(f"🏠 [ClusterManager] 房间已创建: {room_name} (ID: {self.room_id})")
+        return self.room_id
+    
+    def join_room(self, node_info: Dict[str, Any]) -> bool:
+        """
+        节点加入房间（由 ClusterServer 调用）
+        
+        Args:
+            node_info: 包含 node_id, name, mode, model 等
+            
+        Returns:
+            True 表示加入成功
+        """
+        node_id = node_info['node_id']
+        if node_id not in self.nodes:
+            logger.warning(f"❌ 节点 {node_id} 不存在，无法加入房间")
+            return False
+        
+        self.room_members[node_id] = {
+            "node_id": node_id,
+            "name": node_info.get('name', node_id),
+            "mode": node_info.get('mode', 'auto'),
+            "model": node_info.get('model', 'unknown'),
+            "joined_at": time.time(),
+            "is_owner": False
+        }
+        logger.info(f"👥 [ClusterManager] 成员 {node_info.get('name', node_id)} 已加入房间")
+        return True
+    
+    def leave_room(self, node_id: str):
+        """成员离开房间"""
+        if node_id in self.room_members:
+            del self.room_members[node_id]
+            logger.info(f"🚪 [ClusterManager] 成员 {node_id} 已离开房间")
+    
+    def get_room_info(self) -> Dict[str, Any]:
+        """获取房间信息（用于前端展示）"""
+        return {
+            "room_id": self.room_id,
+            "room_name": self.room_name,
+            "owner_name": self.owner_name,
+            "owner_model": self.owner_model,
+            "members": list(self.room_members.values()),
+            "has_password": self.room_password_hash is not None,
+            "total_members": len(self.room_members)
+        }
+    
+    def broadcast_to_room(self, room_id: str, event: Dict[str, Any]) -> int:
+        """
+        向房间内所有成员广播事件（通过 WebSocket）
+        
+        Returns:
+            成功推送的连接数
+        """
+        count = 0
+        
+        # 1. 向所有 Worker 节点广播
+        for node in self.nodes.values():
+            for ws in node.ws_connections:
+                try:
+                    asyncio.create_task(ws.send_json(event))
+                    count += 1
+                except:
+                    pass
+        
+        # 2. 向 Manager 自身（浏览器连接）广播
+        if self.own_node:
+            for ws in self.own_node.ws_connections:
+                try:
+                    asyncio.create_task(ws.send_json(event))
+                    count += 1
+                except:
+                    pass
+        
+        return count
+    
+    def start_collaborative_task(self, task_type: str, description: str, parameters: Dict = None):
+        """使用调度器启动协作任务（智能分配）"""
+        task_id = self.assign_task(task_type, description, parameters)
+        return task_id
+    def handle_collaborative_task_accept(self, node_id: str, task_id: str) -> bool:
+        """
+        处理成员接受协作任务（人工模式）
+        
+        逻辑：
+        - 检查任务是否存在且属于协作任务
+        - 记录该节点接受任务
+        - 如果所有成员都已接受，开始执行（或仅记录）
+        """
+        if task_id not in self.task_metadata:
+            logger.warning(f"❌ 任务 {task_id} 不存在")
+            return False
+        
+        meta = self.task_metadata[task_id]
+        if not meta.get("is_collaborative"):
+            logger.warning(f"❌ 任务 {task_id} 不是协作任务")
+            return False
+        
+        # 记录接受状态（需要扩展 task_assignments 结构）
+        # 临时方案：task_assignments 记录 node_id -> task_id 的多值映射
+        if task_id not in self.task_assignments:
+            self.task_assignments[task_id] = []
+        if node_id not in self.task_assignments[task_id]:
+            self.task_assignments[task_id].append(node_id)
+        
+        logger.info(f"✅ [ClusterManager] 节点 {node_id} 接受了协作任务 {task_id}")
+        return True
+    
+    def get_member_info(self) -> list:
+        """获取房间成员详细信息（包含能力分、负载等）"""
+        members = []
+        for node_id, member in self.room_members.items():
+            node = self.nodes.get(node_id)
+            if node:
+                members.append({
+                    **member,
+                    "node_id": node_id,
+                    "status": node.status,
+                    "capability_score": node.capability_score,
+                    "load_cpu": node.load_cpu,
+                    "load_memory": node.load_memory,
+                    "model": node.model
+                })
+            else:
+                members.append({
+                    **member,
+                    "node_id": node_id,
+                    "status": "offline",
+                    "capability_score": 0,
+                    "load_cpu": 0,
+                    "load_memory": 0
+                })
+        return members
+
     def handle_heartbeat(self, node_id: str, load_info: Dict[str, Any]):
         node = self.nodes.get(node_id)
         if node:
@@ -518,8 +677,23 @@ class ClusterManager:
             self.task_assignments.pop(task_id, None)
             self.task_timeouts.pop(task_id, None)
             self.task_metadata.pop(task_id, None)
-            # 通知前端
+            # 通知前端（该节点的 ws 连接，通常没有）
             node.notify_status_change(task_id)
+            
+            # 额外：转发到 broadcast_node（所有浏览器连接）
+            if self.broadcast_node:
+                for ws in self.broadcast_node.ws_connections:
+                    try:
+                        asyncio.create_task(ws.send_json({
+                            "type": "task_update",
+                            "task_id": task_id,
+                            "status": status,
+                            "result": result if status == "completed" else None,
+                            "error": error if status == "failed" else None,
+                            "node_id": node_id
+                        }))
+                    except:
+                        pass
         else:
             logger.warning("任务状态更新来自未知节点", node_id=node_id, task_id=task_id)
 
@@ -533,6 +707,8 @@ class ClusterManager:
                 self.discovery = ClusterDiscovery(room_name=self.room_name, host_port=port)
             self.discovery.start_hosting()
             logger.info(f"🌐 [Cluster] 房主服务器已启动: {host}:{port}")
+            # 设置广播节点为自身（用于事件推送）
+            self.broadcast_node = self
         else:
             logger.warning("[Cluster] 房主服务器已在运行")
 
@@ -543,6 +719,17 @@ class ClusterManager:
             self._server = None
 
 
+    def broadcast(self, message: Dict[str, Any], exclude: List[str] = None):
+        """向所有节点广播消息（通过已建立的 TCP 连接）"""
+        exclude_set = set(exclude or [])
+        for node in self.nodes.values():
+            if node.node_id in exclude_set:
+                continue
+            if node.connection:
+                try:
+                    node.connection.sendall(json.dumps(message).encode('utf-8'))
+                except Exception as e:
+                    logger.error(f"广播消息到节点 {node.node_id} 失败: {e}")
 class ClusterServer:
     """房主端 TCP 服务器：接收客户端加入请求"""
     def __init__(self, manager: ClusterManager, host: str = "0.0.0.0", port: int = 30001):
@@ -622,6 +809,15 @@ class ClusterServer:
                 node.ip = addr[0]
             response = {"type": "ack", "status": "ok", "reason": "加入成功"}
             conn.sendall(json.dumps(response).encode('utf-8'))
+            
+            # 将节点加入房间管理（房主模式）
+            if self.manager.room_id:
+                self.manager.join_room({
+                    "node_id": node_info['node_id'],
+                    "name": node_info.get('name', node_info['node_id']),
+                    "mode": node_info.get('mode', 'auto'),
+                    "model": node_info.get('model', 'unknown')
+                })
 
             # 进入消息循环，处理心跳和任务状态更新
             while True:
@@ -654,6 +850,8 @@ class ClusterServer:
             if node:
                 node.connection = None
                 node.status = "offline"
+                # 离开房间
+                self.manager.leave_room(node.node_id)
             try:
                 conn.close()
             except:
@@ -675,7 +873,7 @@ class ClusterClient:
         self.timeout = timeout
         self.socket: Optional[socket.socket] = None  # 保存持久连接
 
-    def join(self, host: str, port: int, node_info: Dict[str, Any]) -> bool:
+    def join(self, host: str, port: int, node_info: Dict[str, Any], password: str = "") -> bool:
         """
         连接到房主服务器并发送加入请求，保持连接打开
         
@@ -683,6 +881,7 @@ class ClusterClient:
             host: 房主IP地址
             port: 房主监听端口（默认30001）
             node_info: 节点信息字典，应包含 node_id, model, role, mode, gpu(可选), vram(可选)
+            password: 房间密码（可选）
         
         Returns:
             True 表示加入成功，False 表示失败
@@ -700,7 +899,8 @@ class ClusterClient:
                 "role": node_info.get("role", "worker"),
                 "mode": node_info.get("mode", "auto"),
                 "gpu": node_info.get("gpu"),  # 可选
-                "vram": node_info.get("vram")   # 可选 GB
+                "vram": node_info.get("vram"),   # 可选 GB
+                "password": password  # 可选密码
             }
             sock.sendall(json.dumps(msg).encode('utf-8'))
 

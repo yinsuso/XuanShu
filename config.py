@@ -147,7 +147,7 @@ ENABLE_MEMORY = True
 WEB_HOST = os.getenv("WEB_HOST", "0.0.0.0")
 
 # Web服务端口：Web界面监听的端口
-WEB_PORT = int(os.getenv("WEB_PORT", 30001))
+WEB_PORT = int(os.getenv("WEB_PORT", 30000))
 
 # 是否启用调试模式：控制Web应用是否以调试模式运行
 WEB_DEBUG = os.getenv("WEB_DEBUG", "false").lower() == "true"
@@ -271,7 +271,7 @@ ENABLE_EVOLUTION = os.getenv("ENABLE_EVOLUTION", "false").lower() == "true"
 # =============================================================================
 
 # 版本号
-VERSION = "5.1.0"
+VERSION = "5.3.0"
 
 # =============================================================================
 # 集群协作配置（Phase 2 新增）
@@ -280,11 +280,13 @@ VERSION = "5.1.0"
 CLUSTER_ENABLED = os.getenv("CLUSTER_ENABLED", "false").lower() == "true"
 CLUSTER_ROLE = os.getenv("CLUSTER_ROLE", "worker")
 CLUSTER_MANAGER_HOST = os.getenv("CLUSTER_MANAGER_HOST", "127.0.0.1")
-CLUSTER_MANAGER_PORT = int(os.getenv("CLUSTER_MANAGER_PORT", 30002))
+CLUSTER_MANAGER_PORT = int(os.getenv("CLUSTER_MANAGER_PORT", 30001))
 CLUSTER_NODE_ID = os.getenv("CLUSTER_NODE_ID", None)
 CLUSTER_NODE_NICKNAME = os.getenv("CLUSTER_NODE_NICKNAME", "玄枢成员")
 CLUSTER_WORKER_THREADS = int(os.getenv("CLUSTER_WORKER_THREADS", 1))
 CLUSTER_API_TOKEN = os.getenv("CLUSTER_API_TOKEN", None)
+# Worker 节点对外 API 端口（统一为30002）
+CLUSTER_API_PORT = int(os.getenv("CLUSTER_API_PORT", 30002))
 
 # =============================================================================
 # Phase 3 智能调度配置（能力评估器 + 任务调度器）
@@ -316,14 +318,3 @@ SCHEDULER_TASK_TIMEOUT = int(os.getenv("SCHEDULER_TASK_TIMEOUT", "300"))  # 秒
 # Manager 监控配置
 MANAGER_MONITOR_INTERVAL = int(os.getenv("MANAGER_MONITOR_INTERVAL", "5"))  # 监控间隔（秒）
 MANAGER_MAX_RETRIES = int(os.getenv("MANAGER_MAX_RETRIES", "3"))  # 最大重试次数
-
-# Docker sandbox isolation (Phase 3)
-DOCKER_SANDBOX_ENABLED = os.getenv("DOCKER_SANDBOX_ENABLED", "false").lower() == "true"
-DOCKER_IMAGE = os.getenv("DOCKER_IMAGE", "python:3.11-slim")
-DOCKER_NETWORK_MODE = os.getenv("DOCKER_NETWORK_MODE", "none")
-DOCKER_READ_ONLY = True
-DOCKER_MEM_LIMIT = os.getenv("DOCKER_MEM_LIMIT", "512m")
-DOCKER_CPU_QUOTA = int(os.getenv("DOCKER_CPU_QUOTA", "50000"))
-DOCKER_SECURITY_PROFILE = os.getenv("DOCKER_SECURITY_PROFILE", None)
-WHITELIST_DOMAINS = os.getenv("WHITELIST_DOMAINS", "").split(",") if os.getenv("WHITELIST_DOMAINS") else []
-DNS_LEAK_PROTECTION = os.getenv("DNS_LEAK_PROTECTION", "true").lower() == "true"

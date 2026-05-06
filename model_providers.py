@@ -54,7 +54,7 @@ PRESET_CONFIGS: List[Dict[str, Any]] = [
     {
         "name": "Ollama (本地)",
         "provider": "ollama",
-        "model_name": "qwen2.5-coder:7b",
+        "model_name": "qwen3.5:9b",
         "api_base": "http://localhost:11434",
         "api_key": ""
     },
