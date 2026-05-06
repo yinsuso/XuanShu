@@ -141,12 +141,15 @@
             <button class="btn" onclick="showView('room-list')">🏠 房间列表</button>
             <button class="btn" onclick="showView('create-room')">➕ 创建房间</button>
             <button class="btn" onclick="showView('join-room')">🔗 加入房间</button>
+            <button class="btn" onclick="showView('model-manage')">⚙️ 模型管理</button>
+            <button class="btn" onclick="showView('conversation-history')">📚 对话历史</button>
             <hr style="margin: 12px 0; border: none; border-top: 1px solid #eee;">
             <div id="current-room-info" class="hidden">
                 <strong>当前房间</strong>
                 <p id="room-name-display" style="font-size:13px;color:#007bff;"></p>
                 <button class="btn btn-danger" onclick="leaveRoom()">🚪 退出房间</button>
             </div>
+
         </div>
 
         <!-- 中间主视图 -->
@@ -250,6 +253,45 @@
                     <button class="btn btn-danger" onclick="closeRoom()">🔒 结束协作</button>
                 </div>
             </div>
+            <!-- ==================== 模型管理视图 ==================== -->
+            <div id='view-model-manage' class='hidden'>
+                <div class='panel-title'>⚙️ 模型管理</div>
+                <div id='model-list' style='max-height:400px;overflow-y:auto;margin-bottom:16px;'></div>
+                <div>
+                    <h4>添加 / 编辑 模型</h4>
+                    <div class='form-group'>
+                        <label>名称</label>
+                        <input type='text' id='model-name' placeholder='例如：MyModel'>
+                    </div>
+                    <div class='form-group'>
+                        <label>提供商</label>
+                        <select id='model-provider'>
+                            <option value='ollama'>Ollama</option>
+                            <option value='openai_compatible'>OpenAI 兼容</option>
+                            <option value='custom'>自定义</option>
+                        </select>
+                    </div>
+                    <div class='form-group'>
+                        <label>模型名称</label>
+                        <input type='text' id='model-model-name' placeholder='例如：qwen2.5:7b'>
+                    </div>
+                    <div class='form-group'>
+                        <label>API 地址</label>
+                        <input type='text' id='model-api-base' placeholder='http://localhost:11434'>
+                    </div>
+                    <div class='form-group'>
+                        <label>API 密钥（可选）</label>
+                        <input type='password' id='model-api-key' placeholder=''>
+                    </div>
+                    <button class='btn' onclick='saveModel()'>保存</button>
+                </div>
+            </div>
+
+            <!-- ==================== 对话历史视图 ==================== -->
+            <div id='view-conversation-history' class='hidden'>
+                <div class='panel-title'>📚 对话历史</div>
+                <div id='conversation-list' style='max-height:400px;overflow-y:auto;'></div>
+            </div>
         </div>
 
         <!-- 右侧信息面板 -->
@@ -266,6 +308,12 @@
                 <strong>🔐 待审批</strong>
                 <div id="pending-list" style="margin-top:8px;font-size:13px;"></div>
             </div>
+            <hr style="margin:12px 0; border:none; border-top:1px solid #eee;">
+            <div>
+                <strong>📚 当前对话</strong>
+                <div id="current-conversation" style="font-size:13px;margin-top:8px;">未选择</div>
+                <button class="btn" id="btn-new-conversation" onclick="createNewConversation()" style="margin-top:8px;">➕ 新建对话</button>
+            </div>
         </div>
     </div>
 
@@ -278,7 +326,8 @@ const STATE = {
     nodeId: null,
     ws: null,
     apiBase: window.location.origin,
-    pendingApprovals: {} // task_id -> DOM element container
+    pendingApprovals: {}, // task_id -> DOM element container
+    currentConversationId: null
 };
 
 // ==================== 工具 ====================
@@ -293,6 +342,12 @@ function showView(viewName) {
     document.querySelectorAll('[id^="view-"]').forEach(el => el.classList.add('hidden'));
     document.getElementById(`view-${viewName}`).classList.remove('hidden');
     STATE.currentView = viewName;
+    // 视图初始化
+    if (viewName === 'model-manage') {
+        loadModelList();
+    } else if (viewName === 'conversation-history') {
+        loadConversationList();
+    }
 }
 async function api(endpoint, options = {}) {
     const res = await fetch(`${STATE.apiBase}${endpoint}`, {
@@ -561,5 +616,6 @@ async function approveTask(logEntry, taskId, btn) {
 // 页面加载完成
 window.addEventListener('DOMContentLoaded', init);
 </script>
+        <script src="/static/conversation.js"></script>
 </body>
 </html>

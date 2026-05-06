@@ -556,7 +556,16 @@ class Launcher:
     def run(self):
         """运行启动器"""
         self.print_banner()
-
+        
+        # ==================== 跨平台兼容性处理 ====================
+        # Windows 环境自动检测 Docker 可用性，不可用则降级到 subprocess
+        if sys.platform == 'win32':
+            try:
+                subprocess.run(['docker', '--version'], capture_output=True, check=True, timeout=2)
+            except (FileNotFoundError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+                os.environ['SANDBOX_ENABLED'] = 'false'
+                print("⚠️ 检测到Windows环境但Docker不可用，已自动禁用Docker沙箱模式，降级到subprocess执行。", file=sys.stderr)
+        
         try:
             ok = self.check_python_version()
             if not ok:

@@ -32,6 +32,19 @@ ALLOWED_DIR = PROJECT_ROOT
 MEMORY_DB_PATH = os.path.join(PROJECT_ROOT, "agent_memory.db")
 
 # =============================================================================
+# 端口统一管理
+# =============================================================================
+
+# Web服务端口（统一入口）
+PORT_WEB = int(os.getenv("WEB_PORT", 30000))
+
+# 集群管理端口（Manager监听）
+PORT_CLUSTER_MANAGER = int(os.getenv("CLUSTER_MANAGER_PORT", 30001))
+
+# 集群Worker API端口
+PORT_CLUSTER_API = int(os.getenv("CLUSTER_API_PORT", 30002))
+
+# =============================================================================
 # Ollama 配置
 # =============================================================================
 
@@ -146,8 +159,8 @@ ENABLE_MEMORY = True
 # Web服务主机：Web界面监听的主机地址
 WEB_HOST = os.getenv("WEB_HOST", "0.0.0.0")
 
-# Web服务端口：Web界面监听的端口
-WEB_PORT = int(os.getenv("WEB_PORT", 30000))
+# Web服务端口：Web界面监听的端口（统一使用PORT_WEB）
+WEB_PORT = PORT_WEB
 
 # 是否启用调试模式：控制Web应用是否以调试模式运行
 WEB_DEBUG = os.getenv("WEB_DEBUG", "false").lower() == "true"
@@ -270,8 +283,16 @@ ENABLE_EVOLUTION = os.getenv("ENABLE_EVOLUTION", "false").lower() == "true"
 #
 # =============================================================================
 
-# 版本号
-VERSION = "5.3.0"
+# 版本号（从VERSION文件读取）
+def _read_version():
+    version_file = os.path.join(PROJECT_ROOT, "VERSION")
+    try:
+        with open(version_file, 'r', encoding='utf-8') as f:
+            return f.read().strip()
+    except Exception:
+        return "0.0.0"
+
+VERSION = _read_version()
 
 # =============================================================================
 # 集群协作配置（Phase 2 新增）
@@ -280,13 +301,13 @@ VERSION = "5.3.0"
 CLUSTER_ENABLED = os.getenv("CLUSTER_ENABLED", "false").lower() == "true"
 CLUSTER_ROLE = os.getenv("CLUSTER_ROLE", "worker")
 CLUSTER_MANAGER_HOST = os.getenv("CLUSTER_MANAGER_HOST", "127.0.0.1")
-CLUSTER_MANAGER_PORT = int(os.getenv("CLUSTER_MANAGER_PORT", 30001))
+CLUSTER_MANAGER_PORT = PORT_CLUSTER_MANAGER
 CLUSTER_NODE_ID = os.getenv("CLUSTER_NODE_ID", None)
 CLUSTER_NODE_NICKNAME = os.getenv("CLUSTER_NODE_NICKNAME", "玄枢成员")
 CLUSTER_WORKER_THREADS = int(os.getenv("CLUSTER_WORKER_THREADS", 1))
 CLUSTER_API_TOKEN = os.getenv("CLUSTER_API_TOKEN", None)
-# Worker 节点对外 API 端口（统一为30002）
-CLUSTER_API_PORT = int(os.getenv("CLUSTER_API_PORT", 30002))
+# Worker 节点对外 API 端口（使用PORT_CLUSTER_API）
+CLUSTER_API_PORT = PORT_CLUSTER_API
 
 # =============================================================================
 # Phase 3 智能调度配置（能力评估器 + 任务调度器）

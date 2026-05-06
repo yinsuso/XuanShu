@@ -5,7 +5,10 @@
 现在有了 **智能启动器**，你只需要运行：
 
 ```bash
+# 两种等价方式
 python launcher.py
+# 或
+python xuan_cli.py
 ```
 
 启动器会自动：
@@ -36,20 +39,12 @@ python agent_v3_1.py
 python web_app.py
 ```
 
-然后打开浏览器访问：`http://localhost:8000`
+然后打开浏览器访问：`http://localhost:30000`
 
-### 使用启动脚本
+### 注意事项
 
-```bash
-# CLI界面
-python start_skill_agent.py --cli
-
-# Web界面
-python start_skill_agent.py --web
-
-# 启用向量记忆
-python start_skill_agent.py --cli --vector
-```
+- 目前推荐使用 `launcher.py` 或 `xuan_cli.py` 作为统一启动入口
+- 直接运行 `agent.py` 或 `web_app.py` 也是有效的，但缺少自动环境检测
 
 ## 前置准备
 

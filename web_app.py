@@ -14,6 +14,14 @@ from config import WEB_APP_URL,  APPROVAL_API_TOKEN,  APPROVAL_DB_PATH,  PROJECT
 from evolution.cluster.capability import CapabilityAssessor
 from evolution.cluster.scheduler import TaskScheduler
 
+# ==================== 新增依赖：模型管理与对话历史 ====================
+from fastapi import Form
+from model_providers import config_manager, ModelConfig, ProviderType
+from conversation_manager import get_global_conversation_manager
+
+# 全局对话管理器实例（用于 API 处理）
+conv_manager = get_global_conversation_manager()
+
 app = FastAPI(title="玄枢智能体", version="5.3.0")
 
 # CORS 支持
@@ -435,5 +443,147 @@ async def startup_cluster():
         mgr_thread = threading.Thread(target=manager.start_server, kwargs={"host":"0.0.0.0", "port":CLUSTER_MANAGER_PORT}, daemon=True)
         mgr_thread.start()
         app.state.cluster_manager = manager
+
+# ==================== API：模型管理 ====================
+@app.get("/api/models")
+async def list_models():
+    """列出所有模型配置"""
+    try:
+        configs = config_manager.configs
+        current = config_manager.current_config
+        return {
+            "success": True,
+            "models": [cfg.to_dict() for cfg in configs],
+            "current_config": current.name if current else None
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@app.post("/api/save_model")
+async def save_model(
+    name: str = Form(...),
+    provider: str = Form(...),
+    model_name: str = Form(...),
+    api_base: str = Form(...),
+    api_key: str = Form("")
+):
+    """新增或更新模型配置"""
+    try:
+        provider_type = ProviderType(provider) if isinstance(provider, str) else provider
+        config = ModelConfig(
+            provider=provider_type,
+            name=name,
+            model_name=model_name,
+            api_base=api_base,
+            api_key=api_key
+        )
+        existing = config_manager.get_config(name)
+        if existing:
+            config_manager.update_config(config)
+        else:
+            config_manager.add_config(config)
+        return {"success": True}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@app.post("/api/switch_model")
+async def switch_model(name: str = Form(...)):
+    """切换当前模型"""
+    try:
+        config = config_manager.get_config(name)
+        if not config:
+            raise HTTPException(status_code=404, detail="配置不存在")
+        config_manager.set_current(name)
+        return {"success": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@app.post("/api/delete_model")
+async def delete_model(request: Request):
+    """删除模型配置"""
+    try:
+        data = await request.json()
+        name = data.get("name")
+        if not name:
+            raise HTTPException(status_code=400, detail="缺少配置名称")
+        configs = config_manager.configs
+        new_configs = [cfg for cfg in configs if cfg.name != name]
+        if len(new_configs) == len(configs):
+            raise HTTPException(status_code=404, detail="配置不存在")
+        config_manager.configs = new_configs
+        config_manager.save_configs()
+        if config_manager.current_config and config_manager.current_config.name == name:
+            if new_configs:
+                config_manager.set_current(new_configs[0].name)
+            else:
+                config_manager.current_config = None
+        return {"success": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+# ==================== API：对话历史管理 ====================
+@app.get("/api/conversations")
+async def list_conversations(limit: int = 20):
+    """列出对话历史"""
+    try:
+        convs = conv_manager.list_conversations(limit=limit)
+        return {"success": True, "conversations": convs}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@app.get("/api/conversation/{conversation_id}")
+async def get_conversation(conversation_id: str):
+    """获取对话详情"""
+    try:
+        conv = conv_manager.load_conversation(conversation_id)
+        if conv is None:
+            raise HTTPException(status_code=404, detail="对话不存在")
+        return {"success": True, "conversation": conv.to_dict()}
+    except HTTPException:
+        raise
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@app.post("/api/conversation")
+async def create_or_load_conversation(request: Request):
+    """创建新对话或加载现有对话"""
+    try:
+        data = await request.json()
+        conversation_id = data.get("conversation_id")
+        if conversation_id:
+            conv = conv_manager.load_conversation(conversation_id)
+            if conv is None:
+                raise HTTPException(status_code=404, detail="对话不存在")
+            return {"success": True, "conversation": conv.to_dict(), "action": "loaded"}
+        else:
+            new_id = conv_manager.new_conversation()
+            conv = conv_manager.current_conversation
+            return {"success": True, "conversation": conv.to_dict(), "action": "created", "conversation_id": new_id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@app.delete("/api/conversation/{conversation_id}")
+async def delete_conversation_endpoint(conversation_id: str):
+    """删除整个对话"""
+    try:
+        conv_manager.delete_conversation(conversation_id)
+        return {"success": True}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@app.post("/api/conversation/clear")
+async def clear_current_conversation():
+    """清空当前对话（创建新对话）"""
+    try:
+        new_id = conv_manager.clear_conversation()
+        return {"success": True, "conversation_id": new_id}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
 
 app.on_event("startup")(startup_cluster)

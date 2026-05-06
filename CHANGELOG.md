@@ -1,6 +1,20 @@
+## [v5.3.1] - 2026-05-06
+
+### Added
+- **模型管理 API**：新增 `/api/models` 端点，支持模型配置的列表、保存、切换、删除。
+- **对话历史管理 API**：新增 `/api/conversations`、`/api/conversation`、`/api/conversation/clear`、`/api/conversation/{id}`、`DELETE /api/conversation/{id}` 等接口，实现对话历史的增删查。
+- **统一配置**：将版本号统一提升至 5.3.1，并使用 VERSION 文件管理。
+- **前端界面计划**：后续将在 Web 界面添加模型配置页面和对话历史列表页面。
+
+---
+
 ## [v5.3.0] - 2026-05-06
 
 ### Added
+- **启动脚本别名**：新增 `xuan_cli.py` 作为 `launcher.py` 的快捷入口
+- **版本文件**：新增 `VERSION` 文件统一版本号管理
+- **跨平台Docker自动检测**：Windows环境自动检测Docker可用性，不可用则降级到subprocess模式
+- **启动文档更新**：`QUICKSTART.md` 更新为推荐使用 launcher/xuan_cli，修正Web界面端口为30000
 - **房间密码保护**：创建房间时可设置密码，加入需验证（bcrypt加密，32字符限制）
 - **能力评估器**：动态计算节点综合能力分（模型40%+硬件20%+负载15%+历史15%+网络10%）
 - **智能任务调度器**：支持4种策略（能力优先、负载均衡、亲和性匹配、轮询）
