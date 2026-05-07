@@ -38,10 +38,10 @@ _APP_VERSION = _get_app_version()
 async def lifespan(app: FastAPI):
     """FastAPI 生命周期管理器：替代废弃的 on_event"""
     # 启动时：执行初始化（目前为空，因为集群已改为懒加载）
-    logger.info("🚀 玄枢 Web 服务启动中...")
+    print("🚀 玄枢 Web 服务启动中...")
     yield
     # 关闭时：执行清理工作（如有）
-    logger.info("🛑 玄枢 Web 服务关闭中...")
+    print("🛑 玄枢 Web 服务关闭中...")
 
 app = FastAPI(title="玄枢智能体", version=_APP_VERSION, lifespan=lifespan)
 
