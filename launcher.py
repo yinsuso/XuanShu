@@ -11,7 +11,7 @@ if str(_current_root) not in sys.path:
 
 
 """
-智能启动器 - Local Agent v4.0
+智能启动器 - 玄枢 Agent
 功能：
 - 自动检测环境问题
 - 自动安装依赖
@@ -44,7 +44,7 @@ class Launcher:
         """打印启动横幅"""
         print(Fore.CYAN + Style.BRIGHT + r"""
 ╔═══════════════════════════════════════════════════════════════╗
-║                   🧠  XuanShu AGENT v4.0  🧠                      ║
+║                   🧠  XuanShu AGENT  🧠                      ║
 ║                  玄枢 AI助手 - 启动器                         ║
 ╚═══════════════════════════════════════════════════════════════╝
 """)
