@@ -176,4 +176,4 @@
 | 参数 | 类型 | 默认值 | 环境变量 | 说明 |
 |------|------|--------|----------|------|
 | ENABLE_EVOLUTION | bool | `false` | ENABLE_EVOLUTION |  |
-| VERSION | str | `"5.3.0"` |  |  |
+| VERSION | str | `"5.4.1"` |  |  |

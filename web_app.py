@@ -22,7 +22,18 @@ from conversation_manager import get_global_conversation_manager
 # 全局对话管理器实例（用于 API 处理）
 conv_manager = get_global_conversation_manager()
 
-app = FastAPI(title="玄枢智能体", version="5.3.0")
+
+# ============ 版本统一管理 ============
+def _get_app_version():
+    version_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'VERSION')
+    try:
+        with open(version_file, 'r', encoding='utf-8') as f:
+            return f.read().strip()
+    except Exception:
+        return "0.0.0"
+_APP_VERSION = _get_app_version()
+
+app = FastAPI(title="玄枢智能体", version=_APP_VERSION)
 
 # CORS 支持
 app.add_middleware(
@@ -207,6 +218,12 @@ async def create_room(request: Request):
     verify_token(request)
     if CLUSTER_ROLE != "manager":
         raise HTTPException(status_code=403, detail="仅 Manager 可创建房间")
+
+    # 懒加载集群组件
+    if CLUSTER_ENABLED:
+        success = await ensure_cluster_initialized()
+        if not success:
+            raise HTTPException(status_code=500, detail="集群未就绪，无法执行操作")
     data = await request.json()
     room_name = data.get("room_name")
     owner_name = data.get("owner_name")
@@ -231,6 +248,12 @@ async def get_current_room(request: Request):
     verify_token(request)
     if CLUSTER_ROLE != "manager":
         raise HTTPException(status_code=403, detail="仅 Manager 可查看")
+
+    # 懒加载集群组件
+    if CLUSTER_ENABLED:
+        success = await ensure_cluster_initialized()
+        if not success:
+            raise HTTPException(status_code=500, detail="集群未就绪，无法执行操作")
     manager = app.state.cluster_manager
     info = manager.get_room_info()
     info["members_detail"] = manager.get_member_info()
@@ -239,6 +262,12 @@ async def get_current_room(request: Request):
 @app.post("/api/rooms/join")
 async def join_room(request: Request):
     """Worker 加入房间（触发 ClusterClient 连接）"""
+
+    # 懒加载集群组件
+    if CLUSTER_ENABLED:
+        success = await ensure_cluster_initialized()
+        if not success:
+            raise HTTPException(status_code=500, detail="集群未就绪，无法执行操作")
     data = await request.json()
     host = data.get("host")
     port = data.get("port", 30001)
@@ -295,6 +324,12 @@ async def join_room(request: Request):
 @app.post("/api/rooms/leave")
 async def leave_room(request: Request):
     """Worker 离开房间"""
+
+    # 懒加载集群组件
+    if CLUSTER_ENABLED:
+        success = await ensure_cluster_initialized()
+        if not success:
+            raise HTTPException(status_code=500, detail="集群未就绪，无法执行操作")
     node = getattr(app.state, "cluster_node", None)
     if node and node.connection:
         try:
@@ -311,6 +346,12 @@ async def start_task(request: Request):
     verify_token(request)
     if CLUSTER_ROLE != "manager":
         raise HTTPException(status_code=403, detail="仅 Manager 可")
+
+    # 懒加载集群组件
+    if CLUSTER_ENABLED:
+        success = await ensure_cluster_initialized()
+        if not success:
+            raise HTTPException(status_code=500, detail="集群未就绪，无法执行操作")
     data = await request.json()
     task_type = data.get("task_type")
     description = data.get("description")
@@ -322,129 +363,180 @@ async def start_task(request: Request):
     return {"success": True, "task_id": task_id}
 
 async def startup_cluster():
-    if not CLUSTER_ENABLED:
-        return
-    node = ClusterNode(
-        node_id=CLUSTER_NODE_ID or str(uuid.uuid4()),
-        ip="0.0.0.0",
-        model=MODEL_NAME,
-        role=CLUSTER_ROLE,
-        mode="auto"
-    )
-    app.state.cluster_node = node
-    agent = UniversalAgent(auto_load_skills=True, enable_evolution=False)
-    app.state.agent = agent
+    # 集群初始化已改为懒加载，此处无需操作
+    pass
 
-    async def task_worker():
-        while True:
-            if node.pending_tasks:
-                task_id = node.pending_tasks.pop(0)
-                node.start_task(task_id)
-                task = node.tasks[task_id]
-                try:
-                    loop = asyncio.get_running_loop()
-                    result = await loop.run_in_executor(None, lambda: agent._execute_skill(task["task_type"], task["parameters"]))
-                    node.complete_task(task_id, result)
-                    # 发送完成状态给 manager
-                    if node.connection:
+
+async def ensure_cluster_initialized():
+    """
+    懒加载初始化集群组件。
+    根据 CLUSTER_ROLE 执行 manager 或 worker 的初始化。
+    返回 True 表示成功， False 表示失败（但不会阻塞启动）。
+    """
+    global _cluster_initialized
+    if '_cluster_initialized' not in globals():
+        globals()['_cluster_initialized'] = False
+        globals()['_cluster_lock'] = threading.Lock()
+    if globals()['_cluster_initialized']:
+        return True
+    lock = globals()['_cluster_lock']
+    if not lock.acquire(blocking=False):
+        import asyncio
+        await asyncio.sleep(0.2)
+        return await ensure_cluster_initialized()
+    try:
+        if not CLUSTER_ENABLED:
+            _cluster_initialized = True
+            return True
+        if CLUSTER_ROLE == "manager":
+            node = ClusterNode(
+                node_id=CLUSTER_NODE_ID or str(uuid.uuid4()),
+                ip="0.0.0.0",
+                model=MODEL_NAME,
+                role=CLUSTER_ROLE,
+                mode="auto"
+            )
+            app.state.cluster_node = node
+            manager = ClusterManager()
+            manager.own_node = node
+            manager.broadcast_node = node
+            assessor = CapabilityAssessor(CAPABILITY_MODEL_RANKINGS)
+            scheduler = TaskScheduler(assessor, strategy=SCHEDULER_STRATEGY)
+            manager.set_scheduler(scheduler, assessor)
+            manager.start_monitoring(interval=MANAGER_MONITOR_INTERVAL)
+            mgr_thread = threading.Thread(
+                target=manager.start_server,
+                kwargs={"host": "0.0.0.0", "port": CLUSTER_MANAGER_PORT},
+                daemon=True
+            )
+            mgr_thread.start()
+            app.state.cluster_manager = manager
+            logger.info("✅ [ClusterManager] 集群管理器已启动（懒加载）")
+            _cluster_initialized = True
+            return True
+        elif CLUSTER_ROLE == "worker":
+            node = ClusterNode(
+                node_id=CLUSTER_NODE_ID or str(uuid.uuid4()),
+                ip="0.0.0.0",
+                model=MODEL_NAME,
+                role=CLUSTER_ROLE,
+                mode="auto"
+            )
+            app.state.cluster_node = node
+            agent = UniversalAgent(auto_load_skills=True, enable_evolution=False)
+            app.state.agent = agent
+            async def task_worker():
+                while True:
+                    if node.pending_tasks:
+                        task_id = node.pending_tasks.pop(0)
+                        node.start_task(task_id)
+                        task = node.tasks[task_id]
                         try:
-                            update_msg = create_task_update(
-                                task_id=task_id,
-                                status="completed",
-                                result=result
+                            loop = asyncio.get_running_loop()
+                            result = await loop.run_in_executor(
+                                None,
+                                lambda: agent._execute_skill(task["task_type"], task["parameters"])
                             )
-                            node.connection.sendall(update_msg.serialize())
+                            node.complete_task(task_id, result)
+                            if node.connection:
+                                try:
+                                    update_msg = create_task_update(
+                                        task_id=task_id,
+                                        status="completed",
+                                        result=result
+                                    )
+                                    node.connection.sendall(update_msg.serialize())
+                                except Exception as e:
+                                    logger.error("发送任务完成状态失败", error=str(e))
                         except Exception as e:
-                            logger.error("发送任务完成状态失败", error=str(e))
-                except Exception as e:
-                    node.fail_task(task_id, str(e))
-                    if node.connection:
+                            node.fail_task(task_id, str(e))
+                            if node.connection:
+                                try:
+                                    update_msg = create_task_update(
+                                        task_id=task_id,
+                                        status="failed",
+                                        error=str(e)
+                                    )
+                                    node.connection.sendall(update_msg.serialize())
+                                except Exception as e2:
+                                    logger.error("发送任务失败状态失败", error=str(e2))
+                        node.notify_status_change(task_id)
+                    else:
+                        await asyncio.sleep(0.2)
+            asyncio.create_task(task_worker())
+            client = ClusterClient()
+            node_info = {{
+                "node_id": node.node_id,
+                "model": MODEL_NAME,
+                "role": "worker",
+                "mode": "auto"
+            }}
+            try:
+                loop = asyncio.get_event_loop()
+                success = await asyncio.wait_for(
+                    loop.run_in_executor(None, client.join, CLUSTER_MANAGER_HOST, CLUSTER_MANAGER_PORT, node_info),
+                    timeout=5.0
+                )
+            except asyncio.TimeoutError:
+                success = False
+                logger.warning("Worker 连接 manager 超时（5秒），集群功能不可用，将运行在单机模式")
+            except Exception as e:
+                success = False
+                logger.error(f"Worker 连接 manager 失败: {e}")
+            if success:
+                node.connection = client.socket
+                def listener():
+                    while True:
                         try:
-                            update_msg = create_task_update(
-                                task_id=task_id,
-                                status="failed",
-                                error=str(e)
-                            )
-                            node.connection.sendall(update_msg.serialize())
-                        except Exception as e2:
-                            logger.error("发送任务失败状态失败", error=str(e2))
-                node.notify_status_change(task_id)
-            else:
-                await asyncio.sleep(0.2)
-
-    asyncio.create_task(task_worker())
-
-    if CLUSTER_ROLE == "worker":
-        client = ClusterClient()
-        node_info = {
-            "node_id": node.node_id,
-            "model": MODEL_NAME,
-            "role": "worker",
-            "mode": "auto"
-        }
-        success = client.join(CLUSTER_MANAGER_HOST, CLUSTER_MANAGER_PORT, node_info)
-        if success:
-            node.connection = client.socket
-            def listener():
-                while True:
-                    try:
-                        data = node.connection.recv(4096)
-                        if not data:
+                            data = node.connection.recv(4096)
+                            if not data:
+                                break
+                            msg = json.loads(data.decode('utf-8'))
+                            msg_type = msg.get("type")
+                            if msg_type == "task_assignment":
+                                payload = msg.get("payload", {{}})
+                                node.receive_assignment(
+                                    task_id=payload["task_id"],
+                                    task_type=payload["task_type"],
+                                    description=payload["description"],
+                                    parameters=payload.get("parameters")
+                                )
+                            else:
+                                logger.debug("Worker 收到其他消息类型", type=msg_type)
+                        except Exception as e:
+                            logger.error("Worker 监听线程异常", error=str(e))
                             break
-                        msg = json.loads(data.decode('utf-8'))
-                        msg_type = msg.get("type")
-                        if msg_type == "task_assignment":
-                            payload = msg.get("payload", {})
-                            node.receive_assignment(
-                                task_id=payload["task_id"],
-                                task_type=payload["task_type"],
-                                description=payload["description"],
-                                parameters=payload.get("parameters")
-                            )
-                        else:
-                            logger.debug("Worker 收到其他消息类型", type=msg_type)
-                    except Exception as e:
-                        logger.error("Worker 监听线程异常", error=str(e))
-                        break
-            threading.Thread(target=listener, daemon=True).start()
-
-            def heartbeat_loop():
-                while True:
-                    try:
-                        if node.connection:
-                            hb = create_heartbeat(
-                                node.node_id,
-                                {
-                                    "load_cpu": node.load_cpu,
-                                    "load_memory": node.load_memory,
-                                    "queue_length": len(node.pending_tasks)
-                                }
-                            )
-                            node.connection.sendall(hb.serialize())
-                    except Exception as e:
-                        logger.error("心跳发送失败", error=str(e))
-                        break
-                    time.sleep(5)
-            threading.Thread(target=heartbeat_loop, daemon=True).start()
+                threading.Thread(target=listener, daemon=True).start()
+                def heartbeat_loop():
+                    while True:
+                        try:
+                            if node.connection:
+                                hb = create_heartbeat(
+                                    node.node_id,
+                                    {{
+                                        "load_cpu": node.load_cpu,
+                                        "load_memory": node.load_memory,
+                                        "queue_length": len(node.pending_tasks)
+                                    }}
+                                )
+                                node.connection.sendall(hb.serialize())
+                        except Exception as e:
+                            logger.error("心跳发送失败", error=str(e))
+                            break
+                        time.sleep(5)
+                threading.Thread(target=heartbeat_loop, daemon=True).start()
+                logger.info("✅ Worker 已加入集群（懒加载）")
+            else:
+                logger.error("Worker 加入集群失败（懒加载），将运行在单机模式")
+            _cluster_initialized = True
+            return success
         else:
-            logger.error("Worker 加入集群失败")
+            _cluster_initialized = True
+            return True
+    finally:
+        lock.release()
 
-    if CLUSTER_ROLE == "manager":
-        manager = ClusterManager()
-        # 注入节点引用以便广播
-        manager.own_node = node
-        manager.broadcast_node = node
-        # 初始化调度器与能力评估器
-        assessor = CapabilityAssessor(CAPABILITY_MODEL_RANKINGS)
-        scheduler = TaskScheduler(assessor, strategy=SCHEDULER_STRATEGY)
-        manager.set_scheduler(scheduler, assessor)
-        manager.start_monitoring(interval=MANAGER_MONITOR_INTERVAL)
-        logger.info("✅ [ClusterManager] 调度器已就绪", strategy=SCHEDULER_STRATEGY, assessor_model_rankings=CAPABILITY_MODEL_RANKINGS)
-        mgr_thread = threading.Thread(target=manager.start_server, kwargs={"host":"0.0.0.0", "port":CLUSTER_MANAGER_PORT}, daemon=True)
-        mgr_thread.start()
-        app.state.cluster_manager = manager
 
-# ==================== API：模型管理 ====================
 @app.get("/api/models")
 async def list_models():
     """列出所有模型配置"""
