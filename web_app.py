@@ -7,6 +7,7 @@ import json
 import time
 from threading import Lock
 from pathlib import Path
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -33,7 +34,16 @@ def _get_app_version():
         return "0.0.0"
 _APP_VERSION = _get_app_version()
 
-app = FastAPI(title="玄枢智能体", version=_APP_VERSION)
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """FastAPI 生命周期管理器：替代废弃的 on_event"""
+    # 启动时：执行初始化（目前为空，因为集群已改为懒加载）
+    logger.info("🚀 玄枢 Web 服务启动中...")
+    yield
+    # 关闭时：执行清理工作（如有）
+    logger.info("🛑 玄枢 Web 服务关闭中...")
+
+app = FastAPI(title="玄枢智能体", version=_APP_VERSION, lifespan=lifespan)
 
 # CORS 支持
 app.add_middleware(
@@ -362,11 +372,6 @@ async def start_task(request: Request):
     task_id = manager.start_collaborative_task(task_type, description, parameters)
     return {"success": True, "task_id": task_id}
 
-async def startup_cluster():
-    # 集群初始化已改为懒加载，此处无需操作
-    pass
-
-
 async def ensure_cluster_initialized():
     """
     懒加载初始化集群组件。
@@ -677,5 +682,3 @@ async def clear_current_conversation():
         return {"success": True, "conversation_id": new_id}
     except Exception as e:
         return {"success": False, "error": str(e)}
-
-app.on_event("startup")(startup_cluster)
