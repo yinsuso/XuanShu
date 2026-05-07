@@ -8,6 +8,10 @@ import time
 from threading import Lock
 from pathlib import Path
 from contextlib import asynccontextmanager
+from agent import UniversalAgent
+import threading
+from fastapi import Response
+from datetime import datetime
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -22,6 +26,20 @@ from conversation_manager import get_global_conversation_manager
 
 # 全局对话管理器实例（用于 API 处理）
 conv_manager = get_global_conversation_manager()
+
+# 全局 UniversalAgent 实例（懒加载）
+_agent = None
+_agent_lock = threading.Lock()
+
+def get_agent():
+    """获取全局 UniversalAgent 实例（线程安全懒加载）"""
+    global _agent
+    if _agent is None:
+        with _agent_lock:
+            if _agent is None:
+                _agent = UniversalAgent()
+    return _agent
+
 
 
 # ============ 版本统一管理 ============
@@ -680,6 +698,126 @@ async def clear_current_conversation():
     try:
         new_id = conv_manager.clear_conversation()
         return {"success": True, "conversation_id": new_id}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+# ==================== API：核心功能（新增） ====================
+
+@app.get("/api/skills")
+async def api_skills():
+    """获取已加载的技能列表"""
+    try:
+        agent = get_agent()
+        skills = []
+        if hasattr(agent, 'skills_registry') and agent.skills_registry:
+            if hasattr(agent.skills_registry, 'list_skills'):
+                for name, func in agent.skills_registry.list_skills().items():
+                    desc = func.__doc__ or ""
+                    skills.append({"name": name, "description": desc.strip()})
+            else:
+                # 回退：使用 get_openai_schemas
+                schemas = agent.skills_registry.get_openai_schemas()
+                for s in schemas:
+                    skills.append({
+                        "name": s["function"]["name"],
+                        "description": s["function"]["description"]
+                    })
+        return {"success": True, "skills": skills}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@app.post("/api/chat")
+async def api_chat(request: Request):
+    """处理用户消息，返回回复"""
+    try:
+        data = await request.json()
+        message = data.get('message', '').strip()
+        if not message:
+            raise HTTPException(status_code=400, detail="消息不能为空")
+        
+        agent = get_agent()
+        response = agent._process_simple(message)
+        return {"success": True, "response": response}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@app.get("/api/memory")
+async def api_memory():
+    """获取核心记忆列表"""
+    try:
+        agent = get_agent()
+        memories = []
+        if hasattr(agent, 'memory'):
+            if hasattr(agent.memory, 'get_all_core_memory'):
+                raw_memories = agent.memory.get_all_core_memory()
+                for key, value in raw_memories.items():
+                    memories.append({"key": key, "value": value})
+            elif hasattr(agent.memory, 'get_core_memory'):
+                raw = agent.memory.get_core_memory()
+                if isinstance(raw, dict):
+                    for key, value in raw.items():
+                        memories.append({"key": key, "value": value})
+        return {"success": True, "memories": memories}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@app.get("/api/token-stats")
+async def api_token_stats():
+    """获取 token 使用统计"""
+    try:
+        stats = {
+            "total": {"total_tokens": 0, "prompt_tokens": 0, "completion_tokens": 0},
+            "by_model": [],
+            "by_date": []
+        }
+        agent = get_agent()
+        if hasattr(agent, 'token_tracker'):
+            tracker = agent.token_tracker
+            if hasattr(tracker, 'get_total_usage'):
+                total = tracker.get_total_usage()
+                stats["total"] = {
+                    "total_tokens": total.get("total_tokens", 0),
+                    "prompt_tokens": total.get("prompt_tokens", 0),
+                    "completion_tokens": total.get("completion_tokens", 0)
+                }
+            if hasattr(tracker, 'get_usage_by_model'):
+                stats["by_model"] = tracker.get_usage_by_model()
+        return {"success": True, "data": stats}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@app.get("/api/export")
+async def api_export():
+    """导出当前对话为 Markdown"""
+    try:
+        conv = conv_manager.current_conversation
+        if not conv:
+            raise HTTPException(status_code=404, detail="当前无对话")
+        
+        lines_export = ["# 对话导出", ""]
+        for msg in conv.messages:
+            # 确定角色
+            if msg.role == "user":
+                role_name = "用户"
+            elif msg.role == "assistant":
+                role_name = "助手"
+            else:
+                role_name = msg.role
+            lines_export.append(f"## {role_name}\n")
+            content = getattr(msg, 'content', '') or ''
+            lines_export.append(content + "\n")
+            if hasattr(msg, 'tool_calls') and msg.tool_calls:
+                lines_export.append(f"**工具调用：** {msg.tool_calls}\n")
+            lines_export.append("")  # 空行分隔
+        
+        content = "\n".join(lines_export)
+        
+        return Response(
+            content=content,
+            media_type="text/markdown",
+            headers={"Content-Disposition": f"attachment; filename=conversation-{datetime.now().strftime('%Y%m%d-%H%M%S')}.md"}
+        )
     except Exception as e:
         return {"success": False, "error": str(e)}
 

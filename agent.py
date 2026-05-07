@@ -16,7 +16,7 @@ import re
 import json
 from typing import Dict, Any, List, Optional, Tuple
 
-from config import MODEL_NAME, MAX_CODE_EXECUTIONS
+from config import MODEL_NAME, MAX_CODE_EXECUTIONS, SYSTEM_CONTEXT_FILES
 from memory_core import memory_core
 from memory_enhanced import EnhancedMemorySystem
 from evolution_engine import EvolutionEngine
@@ -101,6 +101,24 @@ class UniversalAgent:
 
         # 整合统一记忆系统的上下文
         core_ctx = self.memory_system.get_full_context(query="")
+
+        # 读取系统上下文文件（如 MEMORY.md, SOUL.md）
+        context_files_content = []
+        for rel_path in SYSTEM_CONTEXT_FILES:
+            file_path = os.path.join(PROJECT_ROOT, rel_path) if not os.path.isabs(rel_path) else rel_path
+            try:
+                if os.path.exists(file_path):
+                    with open(file_path, 'r', encoding='utf-8') as f:
+                        content = f.read().strip()
+                        if content:
+                            context_files_content.append(f"【{rel_path}】\n{content}")
+                else:
+                    logger.warning(f"系统上下文文件不存在：{file_path}")
+            except Exception as e:
+                logger.warning(f"读取系统上下文文件失败 {file_path}: {e}")
+
+        if context_files_content:
+            system_prompt += "\n【系统背景文档】\n" + "\n\n".join(context_files_content) + "\n\n"
         
         # 使用常规字符串拼接避免 f-string 与 三引号的转义问题
         system_prompt = "你是一个智能 AI 助手，具备深度思考与自主进化能力。\n\n"
