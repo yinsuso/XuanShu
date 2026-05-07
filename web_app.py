@@ -682,3 +682,9 @@ async def clear_current_conversation():
         return {"success": True, "conversation_id": new_id}
     except Exception as e:
         return {"success": False, "error": str(e)}
+
+if __name__ == "__main__":
+    import uvicorn
+    from config import WEB_HOST, WEB_PORT
+    print(f"🚀 启动玄枢 Web 服务：http://{WEB_HOST}:{WEB_PORT}")
+    uvicorn.run("web_app:app", host=WEB_HOST, port=WEB_PORT, reload=False)
