@@ -16,7 +16,7 @@ import re
 import json
 from typing import Dict, Any, List, Optional, Tuple
 
-from config import MODEL_NAME, MAX_CODE_EXECUTIONS, SYSTEM_CONTEXT_FILES
+from config import MODEL_NAME, MAX_CODE_EXECUTIONS, SYSTEM_CONTEXT_FILES, PROJECT_ROOT
 from memory_core import memory_core
 from memory_enhanced import EnhancedMemorySystem
 from evolution_engine import EvolutionEngine
@@ -117,9 +117,6 @@ class UniversalAgent:
             except Exception as e:
                 logger.warning(f"读取系统上下文文件失败 {file_path}: {e}")
 
-        if context_files_content:
-            system_prompt += "\n【系统背景文档】\n" + "\n\n".join(context_files_content) + "\n\n"
-        
         # 使用常规字符串拼接避免 f-string 与 三引号的转义问题
         system_prompt = "你是一个智能 AI 助手，具备深度思考与自主进化能力。\n\n"
         system_prompt += "【核心认知/记忆】\n" + core_ctx + "\n\n"
@@ -127,10 +124,13 @@ class UniversalAgent:
         system_prompt += "【可用技能】\n" + "\n".join(skills_info[:20])
         if len(skills_info) > 20:
             system_prompt += "\n..."
-        
-        system_prompt += "\n\n【调用技能格式】\n```json\n{\n \"skill\": \"技能名称\",\n \"args\": { \"参数名\": \"参数值\" }\n}\n```\n\n"
+
+        if context_files_content:
+            system_prompt += "\n\n【系统背景文档】\n" + "\n\n".join(context_files_content) + "\n\n"
+
+        system_prompt += "\n【调用技能格式】\n```json\n{\n \"skill\": \"技能名称\",\n \"args\": { \"参数名\": \"参数值\" }\n}\n```\n\n"
         system_prompt += "【行为规则】\n- 简单任务直接回答。\n- 复杂任务必须先输出 <think> 标签进行步骤规划。\n- 遇到 URL 必须调用 `web_fetch`。\n- 诚实、准确、简洁。\n\n开始！"
-        
+
         return system_prompt
 
     def call_model(self, prompt: str, use_context: bool = True) -> Dict[str, Any]:
