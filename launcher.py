@@ -459,17 +459,28 @@ class Launcher:
 
             self.print_error("无效的选择，请重试")
 
-    def start_web_interface(self) -> bool:
-        """启动 Web 界面并等待健康检查。"""
+    def start_web_interface(self, background: bool = False) -> bool:
+        """启动 Web 界面。
+        Args:
+            background: 如果 True，启动后台线程并立即返回；如果 False，阻塞等待健康检查。
+        """
         self.print_step("启动 Web 界面", "正在启动 Web 服务...")
         proc = subprocess.Popen([sys.executable, 'web_app.py'], cwd=self.project_root)
+
+        if background:
+            # 后台模式：启动后立即返回
+            self.print_success(f"✅ Web 界面已在后台启动！请访问：http://{WEB_HOST}:{WEB_PORT}")
+            self.print_info("💡 Web 界面和 CLI 将同时运行，数据互通。")
+            return True
+
+        # 阻塞模式：等待健康检查（原有逻辑）
         self.print_info("等待 Web 服务启动...")
-        
+
         max_wait = 30
         waited = 0
         health_ok = False
         health_host = "127.0.0.1"
-        
+
         while waited < max_wait:
             try:
                 # 先检查根路径
@@ -484,18 +495,19 @@ class Launcher:
                             health_ok = True
                             break
                         else:
-                            self.print_warning(f"⚠️ /api/skills 返回失败: {data.get('error')}")
+                            error_msg = data.get("error", "未知错误")
+                            self.print_warning(f"⚠️ /api/skills 返回失败：{error_msg}")
                     else:
-                        self.print_warning(f"⚠️ /api/skills 状态码: {resp2.status_code}")
+                        self.print_warning(f"⚠️ /api/skills 状态码：{resp2.status_code}")
                 else:
-                    self.print_warning(f"⚠️ 根路径状态码: {resp.status_code}")
+                    self.print_warning(f"⚠️ 根路径状态码：{resp.status_code}")
             except requests.exceptions.ConnectionError:
                 pass
             except Exception as e:
-                self.print_warning(f"⚠️ 健康检查异常: {e}")
-            time.sleep(1)
-            waited += 1
-        
+                self.print_warning(f"⚠️ 健康检查异常：{e}")
+                time.sleep(1)
+                waited += 1
+
         if not health_ok:
             self.print_error(f"❌ Web 界面启动超时 ({max_wait}秒)，请检查日志或确保端口 {WEB_PORT} 未被占用。")
             try:
@@ -511,11 +523,11 @@ class Launcher:
                 proc.wait(timeout=5)
             except:
                 proc.kill()
-            input(f"{Fore.YELLOW}按回车键返回...")
+            input(Fore.YELLOW + "按回车键返回..." + Style.RESET_ALL)
             if proc.poll() is None:
                 proc.kill()
             return False
-        
+
         return True
 
     def select_cli_mode(self) -> str:
@@ -625,8 +637,7 @@ class Launcher:
                 # CLI 模式下选择更细粒度的运行模式
                 cli_mode = self.select_cli_mode()
                 if cli_mode == 'web':
-                    self.start_web_interface()
-                    return
+                    self.start_web_interface(background=True)
                 else:
                     # 单机模式运行
                     from agent import UniversalAgent
