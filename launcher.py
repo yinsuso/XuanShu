@@ -634,17 +634,12 @@ class Launcher:
                 return
 
             else:
-                # CLI 模式下选择更细粒度的运行模式
-                cli_mode = self.select_cli_mode()
-                if cli_mode == 'web':
-                    self.start_web_interface(background=True)
-                else:
-                    # 单机模式运行
-                    from agent import UniversalAgent
-                    agent = UniversalAgent()
-                    agent.run()
-
-        except KeyboardInterrupt:
+                # CLI 模式：先后台启动 Web 界面（同时运行）
+                self.start_web_interface(background=True)
+                # 直接进入 CLI 单机模式（agent.run() 会根据配置决定是否启用集群）
+                from agent import UniversalAgent
+                agent = UniversalAgent()
+                agent.run()
             print(f"\n\n{Fore.YELLOW}👋 已取消")
         except Exception as e:
             print(f"\n{Fore.RED}发生错误：{e}")
