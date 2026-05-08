@@ -1094,18 +1094,20 @@ async def api_export_json():
         if not conv:
             raise HTTPException(status_code=404, detail="当前无对话")
 
-        def format_timestamp(val):
+        def format_value(val):
             if val is None:
                 return None
             if isinstance(val, datetime):
                 return val.isoformat()
-            return str(val)
+            if isinstance(val, (datetime.date, datetime.time)):
+                return str(val)
+            return val
 
         export_data = {
             "conversation_id": conv.conversation_id,
             "title": getattr(conv, 'title', '未命名对话'),
-            "created_at": format_timestamp(getattr(conv, 'created_at', None)),
-            "updated_at": format_timestamp(getattr(conv, 'updated_at', None)),
+            "created_at": format_value(getattr(conv, 'created_at', None)),
+            "updated_at": format_value(getattr(conv, 'updated_at', None)),
             "messages": []
         }
 
@@ -1113,7 +1115,7 @@ async def api_export_json():
             msg_dict = {
                 "role": msg.role,
                 "content": getattr(msg, 'content', '') or '',
-                "timestamp": format_timestamp(getattr(msg, 'timestamp', None))
+                "timestamp": format_value(getattr(msg, 'timestamp', None))
             }
             if hasattr(msg, 'tool_calls') and msg.tool_calls:
                 msg_dict["tool_calls"] = msg.tool_calls
@@ -1127,9 +1129,10 @@ async def api_export_json():
             headers={"Content-Disposition": f"attachment; filename=conversation-{datetime.now().strftime('%Y%m%d-%H%M%S')}.json"}
         )
     except Exception as e:
+        logger.error(f"JSON导出失败: {e}", exc_info=True)
         return {"success": False, "error": str(e)}
 
-def find_available_port(start_port: int, max_attempts: int = 10) -> int:
+def find_available_port(start_port: int, max_attempts: int = 10, host: str = "0.0.0.0") -> int:
     """查找可用端口"""
     import socket
     for i in range(max_attempts):
@@ -1137,7 +1140,7 @@ def find_available_port(start_port: int, max_attempts: int = 10) -> int:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             try:
-                sock.bind(('localhost', port))
+                sock.bind((host, port))
                 return port
             except socket.error:
                 continue
@@ -1147,7 +1150,7 @@ if __name__ == "__main__":
     import uvicorn
     from config import WEB_HOST, WEB_PORT
 
-    available_port = find_available_port(WEB_PORT)
+    available_port = find_available_port(WEB_PORT, host=WEB_HOST)
     if available_port != WEB_PORT:
         print(f"⚠️ 端口 {WEB_PORT} 已被占用，自动切换到端口 {available_port}")
 

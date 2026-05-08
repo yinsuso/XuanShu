@@ -41,6 +41,4 @@
 
 ## 问题
 
-1. 下载json提示{"success":false,"error":"Object of type datetime is not JSON serializable"}
-2. 房间列表依旧提示：获取房间列表失败
-3. 创建房间后依旧没有后续的动作，应该是跳转房间页面才对，刚刚修改的逻辑呢？
+1. 任务页面

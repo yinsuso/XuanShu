@@ -246,6 +246,8 @@ class ClusterManager:
         self.current_project = "Unnamed Project"
         self.room_id = str(uuid.uuid4())
         self.room_name = "Default-Room"
+        self.owner_name = None  # 房主名称
+        self.owner_model = None  # 房主模型
         self.room_password_hash = None  # 房间密码哈希
         self.discovery = None
         self._server: Optional["ClusterServer"] = None
