@@ -294,16 +294,7 @@
                 <div class='panel-title'>📚 对话历史</div>
                 <div id='conversation-list' style='max-height:400px;overflow-y:auto;'></div>
             </div>
-            <!-- 单机对话视图 -->
-            <div id="view-chat" class="hidden">
-                <div class="chat-container">
-                    <div id="messages" class="messages" style="height: 400px; overflow-y: auto; border: 1px solid #ccc; padding: 8px; background: #f8f9fa;"></div>
-                    <div style="margin-top: 8px; display: flex; gap: 8px;">
-                        <textarea id="message-input" placeholder="输入消息..." style="flex:1; padding:8px; border:1px solid #ddd; border-radius:4px;"></textarea>
-                        <button id="send-btn" class="btn">发送</button>
-                    </div>
-                </div>
-            </div>
+
 
         </div>
 
@@ -327,16 +318,7 @@
                 <div id="current-conversation" style="font-size:13px;margin-top:8px;">未选择</div>
                 <button class="btn" id="btn-new-conversation" onclick="createNewConversation()" style="margin-top:8px;">➕ 新建对话</button>
             </div>
-            <!-- 单机对话视图 -->
-            <div id="view-chat" class="hidden">
-                <div class="chat-container">
-                    <div id="messages" class="messages" style="height: 400px; overflow-y: auto; border: 1px solid #ccc; padding: 8px; background: #f8f9fa;"></div>
-                    <div style="margin-top: 8px; display: flex; gap: 8px;">
-                        <textarea id="message-input" placeholder="输入消息..." style="flex:1; padding:8px; border:1px solid #ddd; border-radius:4px;"></textarea>
-                        <button id="send-btn" class="btn">发送</button>
-                    </div>
-                </div>
-            </div>
+
 
         </div>
     </div>
@@ -426,6 +408,61 @@ async function init() {
     if (STATE.role === 'manager' || (STATE.role === 'worker')) {
         connectWebSocket();
     }
+    // 绑定发送按钮事件
+    const sendBtn = document.getElementById('send-btn');
+    if (sendBtn) {
+        sendBtn.addEventListener('click', sendMessage);
+        const msgInput = document.getElementById('message-input');
+        if (msgInput) {
+            msgInput.addEventListener('keypress', (e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    sendMessage();
+                }
+            });
+        }
+    }
+}
+
+// ==================== 单机对话功能 ====================
+function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+function appendMessage(role, content) {
+    const container = document.getElementById('messages');
+    if (!container) return;
+    const div = document.createElement('div');
+    div.className = 'message ' + (role === 'user' ? 'user-message' : 'assistant-message');
+    div.innerHTML = `
+        <div class='avatar'>${role === 'user' ? '👤' : '🤖'}</div>
+        <div class='message-content'>${escapeHtml(content)}</div>
+    `;
+    container.appendChild(div);
+    container.scrollTop = container.scrollHeight;
+}
+async function sendMessage() {
+    const input = document.getElementById('message-input');
+    const text = input.value.trim();
+    if (!text) return;
+    appendMessage('user', text);
+    input.value = '';
+    try {
+        const res = await fetch('/api/chat', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ message: text })
+        });
+        const data = await res.json();
+        if (data.success) {
+            appendMessage('assistant', data.response);
+        } else {
+            appendMessage('assistant', '❌ ' + (data.error || '请求失败'));
+        }
+    } catch (e) {
+        appendMessage('assistant', '❌ 网络错误: ' + e.message);
+    }
 }
 
 // ==================== 房间管理（Manager） ====================
@@ -473,16 +510,7 @@ function renderMembers(members) {
             <div>
                 <span class="status-badge status-${m.status || 'offline'}">${m.status || '离线'}</span>
             </div>
-            <!-- 单机对话视图 -->
-            <div id="view-chat" class="hidden">
-                <div class="chat-container">
-                    <div id="messages" class="messages" style="height: 400px; overflow-y: auto; border: 1px solid #ccc; padding: 8px; background: #f8f9fa;"></div>
-                    <div style="margin-top: 8px; display: flex; gap: 8px;">
-                        <textarea id="message-input" placeholder="输入消息..." style="flex:1; padding:8px; border:1px solid #ddd; border-radius:4px;"></textarea>
-                        <button id="send-btn" class="btn">发送</button>
-                    </div>
-                </div>
-            </div>
+
 
         </div>
     `).join('');
