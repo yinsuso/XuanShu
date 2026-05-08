@@ -615,31 +615,23 @@ class Launcher:
                 self.print_error("未选择提供商")
                 return
 
-            print()
-            interface = self.select_interface()
-
+            # CLI 和 Web 界面始终同时启动，无需用户选择
             print(f"\n{Fore.GREEN}═══════════════════════════════════════════════════════════════")
             print(f"{Fore.GREEN}                        🚀 启动 Agent")
             print(f"{Fore.GREEN}═══════════════════════════════════════════════════════════════")
             from model_providers import config_manager
             current = config_manager.current_config
             print(f"{Fore.BLUE}模型: {current.name} ({current.model_name})")
-            print(f"{Fore.BLUE}界面: {'Web' if interface == 'web' else 'CLI'}")
+            print(f"{Fore.BLUE}界面: CLI + Web（同时启动）")
             print()
 
             time.sleep(1)
 
-            if interface == 'web':
-                self.start_web_interface()
-                return
-
-            else:
-                # CLI 模式：先后台启动 Web 界面（同时运行）
-                self.start_web_interface(background=True)
-                # 直接进入 CLI 单机模式（agent.run() 会根据配置决定是否启用集群）
-                from agent import UniversalAgent
-                agent = UniversalAgent()
-                agent.run()
+            # 先后台启动 Web 界面，然后进入 CLI 模式
+            self.start_web_interface(background=True)
+            from agent import UniversalAgent
+            agent = UniversalAgent()
+            agent.run()
             print(f"\n\n{Fore.YELLOW}👋 已取消")
         except Exception as e:
             print(f"\n{Fore.RED}发生错误：{e}")

@@ -225,15 +225,17 @@ MASKING_STATS_PATH = os.path.join(PROJECT_ROOT, "logs", "masking_stats.json")
 # 日志文件路径（增强）
 # =============================================================================
 
-# 结构化日志文件路径（覆盖 LOG_FILE，若 LOG_FORMAT=json）
-if LOG_FORMAT == "json":
-    if LOG_FILE:
+# 结构化日志文件路径（智能选择）
+# 文件日志始终使用 JSON 格式并支持按日期自动命名
+if LOG_FILE:
+    if LOG_FORMAT == "json":
         LOG_FILE_JSON = LOG_FILE.replace(".log", "_json.log")
     else:
-        date_str = datetime.datetime.now().strftime("%Y%m%d")
-        LOG_FILE_JSON = os.path.join(PROJECT_ROOT, "logs", f"{date_str}.jsonl")
+        LOG_FILE_JSON = LOG_FILE  # 内容为 JSON 格式，使用用户指定路径
 else:
-    LOG_FILE_JSON = None
+    # 默认按日期生成 JSON 日志文件（.jsonl 扩展名）
+    date_str = datetime.now().strftime("%Y%m%d")
+    LOG_FILE_JSON = os.path.join(PROJECT_ROOT, "logs", f"{date_str}.jsonl")
 
 # =============================================================================
 # 重试配置（新增）
