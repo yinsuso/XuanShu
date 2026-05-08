@@ -392,14 +392,28 @@
             <!-- 协作对话视图 -->
             <div id='view-collab-chat' class='hidden'>
                 <div class='panel-title'>🤝 协作对话 <button class="btn" style="float:right;font-size:12px;padding:2px 8px;width:auto;" onclick="showView('room-detail')">🔙 返回房间</button></div>
-                <div id='collab-messages' style='height:400px;overflow-y:auto;border:1px solid #ddd;border-radius:4px;padding:12px;margin-bottom:12px;background:#f8f9fa;'></div>
-                <div style='display:flex;gap:8px;margin-bottom:8px;'>
-                    <textarea id='collab-message-input' placeholder='向协作Agent发送指令...' style='flex:1;padding:8px;border:1px solid #ddd;border-radius:4px;resize:none;height:60px;'></textarea>
-                    <button id='collab-send-btn' class='btn' style='width:80px;' onclick="sendCollabMessage()">发送</button>
-                </div>
-                <div style='display:flex;gap:8px;'>
-                    <button class='btn' style='font-size:12px;padding:4px 8px;width:auto;' onclick='exportConversation("md")'>📥 导出Markdown</button>
-                    <button class='btn' style='font-size:12px;padding:4px 8px;width:auto;' onclick='exportConversation("json")'>📥 导出JSON</button>
+                
+                <div style="display:grid; grid-template-columns: 1fr 280px; gap:16px;">
+                    <!-- 对话区域 -->
+                    <div style="display:flex;flex-direction:column;">
+                        <div id='collab-messages' style='flex:1;min-height:400px;max-height:500px;overflow-y:auto;border:1px solid #ddd;border-radius:4px;padding:12px;background:#f8f9fa;'></div>
+                        <div style='display:flex;gap:8px;margin-top:12px;'>
+                            <textarea id='collab-message-input' placeholder='向协作Agent发送指令...' style='flex:1;padding:8px;border:1px solid #ddd;border-radius:4px;resize:none;height:60px;'></textarea>
+                            <button id='collab-send-btn' class='btn' style='width:80px;' onclick="sendCollabMessage()">发送</button>
+                        </div>
+                        <div style='display:flex;gap:8px;margin-top:8px;'>
+                            <button class='btn' style='font-size:12px;padding:4px 8px;width:auto;' onclick='exportConversation("md")'>📥 导出Markdown</button>
+                            <button class='btn' style='font-size:12px;padding:4px 8px;width:auto;' onclick='exportConversation("json")'>📥 导出JSON</button>
+                        </div>
+                    </div>
+                    
+                    <!-- 成员状态面板 -->
+                    <div style="border:1px solid #ddd;border-radius:8px;padding:12px;">
+                        <h4>👥 成员状态</h4>
+                        <div id="collab-members-panel" style="max-height:400px;overflow-y:auto;">
+                            <p>加载中...</p>
+                        </div>
+                    </div>
                 </div>
             </div>
 
@@ -991,6 +1005,64 @@ function initCollabChat() {
     if (chatContainer) {
         chatContainer.innerHTML = '<div class="system-message">🤖 欢迎进入协作对话模式！房主可以通过对话向主Agent发送指令。</div>';
     }
+    // 刷新成员状态
+    refreshCollabMembers();
+    // 定时刷新成员状态
+    if (STATE.collabMemberTimer) clearInterval(STATE.collabMemberTimer);
+    STATE.collabMemberTimer = setInterval(refreshCollabMembers, 5000);
+}
+
+// ==================== 刷新协作成员状态 ====================
+async function refreshCollabMembers() {
+    if (STATE.currentView !== 'collab-chat') {
+        if (STATE.collabMemberTimer) clearInterval(STATE.collabMemberTimer);
+        return;
+    }
+    try {
+        const data = await api('/api/rooms/current');
+        if (data.success && data.members_detail) {
+            renderCollabMembers(data.members_detail);
+        }
+    } catch (e) {
+        console.error('刷新成员状态失败:', e);
+    }
+}
+
+// ==================== 渲染协作成员列表 ====================
+function renderCollabMembers(members) {
+    const panel = document.getElementById('collab-members-panel');
+    if (!panel) return;
+    
+    if (!members || members.length === 0) {
+        panel.innerHTML = '<p style="color:#666;">暂无成员</p>';
+        return;
+    }
+    
+    panel.innerHTML = members.map(m => {
+        const statusText = m.status === 'active' ? '🟢 空闲' : m.status === 'busy' ? '🔴 忙碌中' : '⚪ 离线';
+        const statusClass = m.status === 'active' ? 'status-online' : m.status === 'busy' ? 'status-busy' : 'status-offline';
+        const isOwner = m.is_owner ? '<span style="font-size:10px;background:#ffc107;color:#333;padding:1px 4px;border-radius:4px;">房主</span>' : '';
+        
+        return `
+            <div style="padding:8px;border-bottom:1px solid #eee;display:flex;justify-content:space-between;align-items:center;">
+                <div>
+                    <div style="display:flex;align-items:center;gap:4px;">
+                        <strong>${m.name}</strong>
+                        ${isOwner}
+                    </div>
+                    <div style="font-size:12px;color:#666;">
+                        ${m.model} | ${m.mode}模式
+                    </div>
+                    <div style="font-size:11px;color:#888;margin-top:2px;">
+                        能力分: ${(m.capability_score || 0).toFixed(2)} | CPU: ${(m.load_cpu || 0).toFixed(1)}% | 内存: ${(m.load_memory || 0).toFixed(1)}%
+                    </div>
+                </div>
+                <div style="text-align:right;">
+                    <div class="${statusClass}" style="font-size:12px;">${statusText}</div>
+                </div>
+            </div>
+        `;
+    }).join('');
 }
 
 // ==================== 发送协作消息 ====================

@@ -1165,6 +1165,85 @@ async def api_export_json():
         logger.error(f"JSON导出失败: {e}", exc_info=True)
         return {"success": False, "error": str(e)}
 
+# API 统计类
+class ApiStatistics:
+    def __init__(self):
+        self.start_time = datetime.now()
+        self.requests = {}
+        self.total_requests = 0
+        self.total_errors = 0
+        self.response_times = {}
+        self.model_calls = {}
+    
+    def record_request(self, endpoint, status_code, response_time):
+        self.total_requests += 1
+        if endpoint not in self.requests:
+            self.requests[endpoint] = {"success": 0, "error": 0, "total_time": 0, "count": 0}
+        if status_code >= 200 and status_code < 400:
+            self.requests[endpoint]["success"] += 1
+        else:
+            self.requests[endpoint]["error"] += 1
+            self.total_errors += 1
+        self.requests[endpoint]["total_time"] += response_time
+        self.requests[endpoint]["count"] += 1
+    
+    def record_model_call(self, model_name, success, response_time):
+        if model_name not in self.model_calls:
+            self.model_calls[model_name] = {"success": 0, "error": 0, "total_time": 0, "count": 0}
+        if success:
+            self.model_calls[model_name]["success"] += 1
+        else:
+            self.model_calls[model_name]["error"] += 1
+        self.model_calls[model_name]["total_time"] += response_time
+        self.model_calls[model_name]["count"] += 1
+    
+    def get_stats(self):
+        uptime = (datetime.now() - self.start_time).total_seconds()
+        stats = {
+            "uptime": uptime,
+            "uptime_formatted": self.format_uptime(uptime),
+            "total_requests": self.total_requests,
+            "total_errors": self.total_errors,
+            "success_rate": (self.total_requests - self.total_errors) / max(self.total_requests, 1) * 100,
+            "requests_by_endpoint": {},
+            "model_calls": {}
+        }
+        
+        for endpoint, data in self.requests.items():
+            avg_time = data["total_time"] / max(data["count"], 1)
+            stats["requests_by_endpoint"][endpoint] = {
+                "count": data["count"],
+                "success": data["success"],
+                "error": data["error"],
+                "success_rate": data["success"] / max(data["count"], 1) * 100,
+                "avg_response_time_ms": avg_time * 1000
+            }
+        
+        for model, data in self.model_calls.items():
+            avg_time = data["total_time"] / max(data["count"], 1)
+            stats["model_calls"][model] = {
+                "count": data["count"],
+                "success": data["success"],
+                "error": data["error"],
+                "success_rate": data["success"] / max(data["count"], 1) * 100,
+                "avg_response_time_ms": avg_time * 1000
+            }
+        
+        return stats
+    
+    def format_uptime(self, seconds):
+        hours = int(seconds // 3600)
+        minutes = int((seconds % 3600) // 60)
+        secs = int(seconds % 60)
+        return f"{hours}小时{minutes}分钟{secs}秒"
+
+api_stats = ApiStatistics()
+
+@app.get("/api/stats")
+async def get_api_stats():
+    """获取API统计数据"""
+    return {"success": True, "data": api_stats.get_stats()}
+
 def find_available_port(start_port: int, max_attempts: int = 10, host: str = "0.0.0.0") -> int:
     """查找可用端口"""
     import socket
