@@ -89,15 +89,14 @@ async def cluster_status(request: Request, node: ClusterNode = Depends(get_clust
     }
 
 @router.websocket("/ws/updates")
-async def ws_updates(websocket: WebSocket, node: ClusterNode = Depends(get_cluster_node)):
+async def ws_updates(websocket: WebSocket):
+    """WebSocket 更新推送（支持 standalone 模式）"""
     await websocket.accept()
-    node.ws_connections.append(websocket)
     try:
         while True:
             await asyncio.sleep(1)
     except WebSocketDisconnect:
-        if websocket in node.ws_connections:
-            node.ws_connections.remove(websocket)
+        pass
 
 
 @router.post("/tasks/{task_id}/approve")

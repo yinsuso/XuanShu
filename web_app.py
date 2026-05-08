@@ -483,9 +483,9 @@ async def start_task(request: Request):
 
 @app.post("/api/rooms/dismiss")
 async def dismiss_room(request: Request):
-    """解散房间（仅 Manager）"""
-    verify_token(request)
-    if CLUSTER_ROLE != "manager":
+    """解散房间（Manager 或 standalone 模式）"""
+    # 支持 standalone 模式和解散房间
+    if CLUSTER_ENABLED and CLUSTER_ROLE != "manager":
         raise HTTPException(status_code=403, detail="仅 Manager 可解散房间")
 
     manager = getattr(app.state, "cluster_manager", None)
