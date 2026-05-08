@@ -8,7 +8,7 @@ import asyncio
 from .connection import ClusterNode, TaskStatus
 from config import CLUSTER_API_TOKEN
 
-router = APIRouter(prefix="/cluster", tags=["Cluster"])
+router = APIRouter(tags=["Cluster"])
 
 def verify_token(request: Request):
     if CLUSTER_API_TOKEN:

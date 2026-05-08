@@ -645,7 +645,8 @@ class ClusterManager:
                     "capability_score": node.capability_score,
                     "load_cpu": node.load_cpu,
                     "load_memory": node.load_memory,
-                    "model": node.model
+                    # 保留成员自己设置的模型，不被节点默认模型覆盖
+                    "model": member.get("model", node.model)
                 })
             else:
                 members.append({

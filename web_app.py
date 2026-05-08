@@ -78,7 +78,7 @@ app.add_middleware(
 # 集群 API 挂载
 from evolution.cluster import cluster_api
 from evolution.cluster.protocol import create_heartbeat, create_task_update
-app.include_router(cluster_api.router, prefix='/cluster')
+app.include_router(cluster_api.router, prefix='/api/cluster')
 
 # 静态文件服务 - 挂载前端页面
 from fastapi.staticfiles import StaticFiles
@@ -458,6 +458,39 @@ async def leave_room(request: Request):
         node.connection = None
         return {"success": True}
     return {"success": False, "error": "未连接"}
+
+@app.post("/api/rooms/update_member")
+async def update_member(request: Request):
+    """更新成员信息（花名、模型）"""
+    data = await request.json()
+    nickname = data.get("nickname")
+    model = data.get("model")
+    
+    if not nickname:
+        raise HTTPException(status_code=400, detail="花名不能为空")
+
+    manager = getattr(app.state, "cluster_manager", None)
+    node = getattr(app.state, "cluster_node", None)
+    
+    if manager:
+        # 更新房间成员信息 - 尝试多种可能的成员ID
+        member_id = None
+        if node and node.node_id in manager.room_members:
+            member_id = node.node_id
+        elif "manager" in manager.room_members:
+            member_id = "manager"
+        elif manager.current_project in manager.room_members:
+            member_id = manager.current_project
+        
+        if member_id:
+            manager.room_members[member_id]["name"] = nickname
+            if model:
+                manager.room_members[member_id]["model"] = model
+            logger.info(f"成员信息已更新: {member_id} -> {nickname}")
+        else:
+            logger.warning(f"未找到当前用户的成员记录")
+    
+    return {"success": True, "message": "信息已更新"}
 
 @app.post("/api/rooms/start_task")
 async def start_task(request: Request):

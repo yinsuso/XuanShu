@@ -1012,12 +1012,11 @@ async function sendCollabMessage() {
             payload.conversation_id = STATE.currentConversationId;
         }
 
-        const res = await fetch('/api/chat', {
+        // 使用 api() 函数保持一致性
+        const data = await api('/api/chat', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload)
         });
-        const data = await res.json();
         if (data.success) {
             appendCollabMessage('assistant', data.response);
             STATE.currentConversationId = data.conversation_id;
@@ -1026,6 +1025,7 @@ async function sendCollabMessage() {
         }
     } catch (e) {
         appendCollabMessage('assistant', '❌ 网络错误: ' + e.message);
+        console.error('协作对话错误:', e);
     } finally {
         sendBtn.disabled = false;
         sendBtn.textContent = '发送';
