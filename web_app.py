@@ -309,6 +309,7 @@ async def get_current_room(request: Request):
 
     info["members_detail"] = manager.get_member_info()
     info["success"] = True
+    logger.info(f"房间信息: owner_name={info['owner_name']}, members_detail={info['members_detail']}")
     return info
 
 @app.get("/api/rooms/list")
@@ -1134,6 +1135,9 @@ async def api_export_json():
                 return val.isoformat()
             if isinstance(val, (datetime.date, datetime.time)):
                 return str(val)
+            # 处理枚举类型
+            if hasattr(val, 'name'):
+                return val.name
             return val
 
         export_data = {

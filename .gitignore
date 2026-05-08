@@ -8,8 +8,8 @@ venv/
 
 # --- Local Agent Private Data ---
 config.json
-data/*
-logs/*
+data/
+logs/
 
 # 如果想保留 data 目录结构但忽略内容，可以用：
 # data/*

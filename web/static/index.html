@@ -322,8 +322,10 @@
                 <div style="margin-top:16px; padding:12px; background:#f8f9fa; border-radius:8px;">
                     <h4>📝 发起协作任务</h4>
                     <p style="font-size:12px;color:#666;margin-bottom:8px;">向房间内所有成员广播协作任务，成员将共同协作完成</p>
-                    <div style="display:flex; gap:8px; margin-bottom:8px;">
-                        <input type="text" id="collab-task-input" placeholder="输入需要协作完成的任务..." style="flex:1;padding:8px;border:1px solid #ddd;border-radius:4px;">
+                    <div style="margin-bottom:8px;">
+                        <input type="text" id="collab-task-input" placeholder="输入需要协作完成的任务..." style="width:100%;padding:8px;border:1px solid #ddd;border-radius:4px;box-sizing:border-box;">
+                    </div>
+                    <div>
                         <button class="btn" onclick="sendCollaborativeTask()">📤 发送任务</button>
                     </div>
                     <div id="collab-task-log" class="task-log" style="max-height:150px;"></div>
@@ -537,22 +539,40 @@ async function loadRoomModels(selectId) {
         { name: 'phi3:3.8b', desc: 'phi3:3.8b (轻量)' }
     ];
     
+    const models = [];
+    
     try {
-        const res = await api('/api/ollama_models');
-        if (res.success && res.models.length > 0) {
-            select.innerHTML = res.models.map(m => 
-                `<option value="${m.name}">${m.name}</option>`
-            ).join('');
-        } else {
-            select.innerHTML = defaultModels.map(m => 
-                `<option value="${m.name}">${m.desc}</option>`
-            ).join('');
+        const ollamaRes = await api('/api/ollama_models');
+        if (ollamaRes.success && ollamaRes.models.length > 0) {
+            ollamaRes.models.forEach(m => {
+                models.push({ name: m.name, desc: `${m.name} (本地)`, type: 'local' });
+            });
         }
     } catch (e) {
-        select.innerHTML = defaultModels.map(m => 
-            `<option value="${m.name}">${m.desc}</option>`
-        ).join('');
+        console.log('Ollama不可用，仅使用配置模型');
     }
+    
+    try {
+        const configRes = await api('/api/models');
+        if (configRes.success && configRes.models.length > 0) {
+            configRes.models.forEach(m => {
+                if (!models.some(existing => existing.name === m.name)) {
+                    const suffix = m.is_current ? ' (当前)' : '';
+                    models.push({ name: m.name, desc: `${m.name}${suffix} (云端)`, type: 'cloud' });
+                }
+            });
+        }
+    } catch (e) {
+        console.log('获取配置模型失败');
+    }
+    
+    if (models.length === 0) {
+        models.push(...defaultModels.map(m => ({ name: m.name, desc: m.desc, type: 'default' })));
+    }
+    
+    select.innerHTML = models.map(m => 
+        `<option value="${m.name}">${m.desc}</option>`
+    ).join('');
 }
 async function api(endpoint, options = {}) {
     const res = await fetch(`${STATE.apiBase}${endpoint}`, {
@@ -709,12 +729,11 @@ async function resendMessage(userMessage) {
                 payload.conversation_id = lastConversationId;
             }
 
-            const res = await fetch('/api/chat', {
+            // 使用api()函数保持一致性
+            const data = await api('/api/chat', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload)
             });
-            const data = await res.json();
             if (data.success) {
                 appendMessage('assistant', data.response);
                 STATE.currentConversationId = data.conversation_id;
