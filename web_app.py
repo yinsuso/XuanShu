@@ -315,20 +315,21 @@ async def list_rooms(request: Request):
         # 确保集群组件已初始化
         await ensure_cluster_initialized()
         manager = getattr(app.state, "cluster_manager", None)
-        
+
         if not manager:
             return {"success": True, "rooms": []}
-        
+
         # 获取当前房间信息（因为当前实现中一个manager只能管理一个房间）
         room_info = manager.get_room_info()
-        
+
         # 如果房间名称是默认值，说明没有创建房间
-        if room_info["room_name"] == "Default-Room" and room_info["owner_name"] is None:
+        # 使用 owner_name 是否为 None 或 "Default-Room" 的 owner_name 字段来判断
+        if room_info["room_name"] == "Default-Room" and room_info.get("owner_name") is None:
             return {"success": True, "rooms": []}
-        
+
         room_info["members_detail"] = manager.get_member_info()
         room_info["status"] = "active" if len(room_info["members"]) > 0 else "waiting"
-        
+
         return {"success": True, "rooms": [room_info]}
     except Exception as e:
         logger.error(f"获取房间列表失败: {e}", exc_info=True)
@@ -476,6 +477,57 @@ async def start_task(request: Request):
     manager = app.state.cluster_manager
     task_id = manager.start_collaborative_task(task_type, description, parameters)
     return {"success": True, "task_id": task_id}
+
+@app.post("/api/rooms/dismiss")
+async def dismiss_room(request: Request):
+    """解散房间（仅 Manager）"""
+    verify_token(request)
+    if CLUSTER_ROLE != "manager":
+        raise HTTPException(status_code=403, detail="仅 Manager 可解散房间")
+
+    manager = getattr(app.state, "cluster_manager", None)
+    if not manager:
+        raise HTTPException(status_code=500, detail="集群管理器未初始化")
+
+    try:
+        # 重置房间信息
+        manager.room_id = str(uuid.uuid4())
+        manager.room_name = "Default-Room"
+        manager.owner_name = None
+        manager.owner_model = None
+        manager.room_password_hash = None
+        manager.room_members.clear()
+        logger.info("房间已解散")
+        return {"success": True, "message": "房间已解散"}
+    except Exception as e:
+        logger.error(f"解散房间失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"解散房间失败: {str(e)}")
+
+@app.post("/api/cluster/tasks/{task_id}/error")
+async def report_task_error(task_id: str, request: Request):
+    """成员报告任务执行中的问题（转发给 Manager）"""
+    data = await request.json()
+    error_msg = data.get("error", "未知错误")
+    node = getattr(app.state, "cluster_node", None)
+    if not node:
+        raise HTTPException(status_code=503, detail="节点未初始化")
+
+    manager = getattr(app.state, "cluster_manager", None)
+    if manager:
+        logger.warning(f"任务 {task_id} 执行遇到问题: {error_msg}")
+        # 记录错误信息到任务日志
+        if task_id in manager.task_metadata:
+            manager.task_metadata[task_id]["error"] = error_msg
+            manager.task_metadata[task_id]["error_reported_at"] = time.time()
+        # 广播错误信息给所有成员
+        manager.broadcast_to_room(manager.room_id, {
+            "type": "task_error",
+            "task_id": task_id,
+            "error": error_msg,
+            "node_id": node.node_id
+        })
+        return {"success": True, "message": "问题已反馈"}
+    return {"success": False, "error": "Manager 未就绪"}
 
 async def ensure_cluster_initialized():
     """
@@ -1049,11 +1101,11 @@ def find_available_port(start_port: int, max_attempts: int = 10) -> int:
 if __name__ == "__main__":
     import uvicorn
     from config import WEB_HOST, WEB_PORT
-    
+
     available_port = find_available_port(WEB_PORT)
     if available_port != WEB_PORT:
         print(f"⚠️ 端口 {WEB_PORT} 已被占用，自动切换到端口 {available_port}")
-    
+
     print(f"🚀 启动玄枢 Web 服务：http://{WEB_HOST}:{available_port}")
     try:
         uvicorn.run("web_app:app", host=WEB_HOST, port=available_port, reload=False)

@@ -277,7 +277,7 @@ set USE_VECTOR_MEMORY=true
   - 一键启停协作任务
 
 ## AI声明：
-本项目由 qwen3.5 、step-3.5-flash 与 gemma 4 模型提供技术辅助，部分代码由这两个代码编写并审核。
+本项目由 qwen3.5 、step-3.5-flash 、kimi-k2.6 与 gemma 4 模型提供技术辅助，部分代码由这两个代码编写并审核。
 
 
 ## 📜 开源协议

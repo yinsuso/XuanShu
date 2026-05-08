@@ -297,6 +297,16 @@
                     </div>
                 </div>
 
+                <!-- 协作专区 -->
+                <div style="margin-top:16px; padding:12px; background:#f8f9fa; border-radius:8px;">
+                    <h4>🤝 协作专区</h4>
+                    <div style="display:flex; gap:8px; margin-bottom:8px;">
+                        <input type="text" id="collab-task-input" placeholder="输入协作任务描述..." style="flex:1;padding:8px;border:1px solid #ddd;border-radius:4px;">
+                        <button class="btn" onclick="sendCollaborativeTask()">发送任务</button>
+                    </div>
+                    <div id="collab-task-log" class="task-log" style="max-height:150px;"></div>
+                </div>
+
                 <div style="margin-top:16px; display:flex; gap:8px;">
                     <button class="btn" id="btn-start-task" onclick="startTask()">🚀 开始任务</button>
                     <button class="btn btn-danger" onclick="closeRoom()">🔒 结束协作</button>
@@ -506,7 +516,7 @@ async function init() {
         // 角色相关的 UI 调整
         const startBtn = document.getElementById('btn-start-task');
         const joinBtn = document.querySelector('button[onclick="showView(\'join-room\')"]');
-        
+
         // 单机模式下也允许创建和查看房间
         if (STATE.role === 'manager' || STATE.role === 'standalone') {
             if (startBtn) startBtn.style.display = 'inline-block';
@@ -546,6 +556,8 @@ async function init() {
         showView('room-list');
         refreshRooms();
     }
+    // 获取并显示当前模型
+    loadModelList();
     // 建立 WebSocket 连接（如有需要）
     if (STATE.role === 'manager' || STATE.role === 'worker' || STATE.role === 'standalone') {
         connectWebSocket();
@@ -640,27 +652,55 @@ async function enterRoom(roomId) {
             document.getElementById('detail-room-id').textContent = data.room_id;
             document.getElementById('detail-room-model').textContent = data.owner_model;
             document.getElementById('detail-my-mode').textContent = '房主模式';
-            
+
             // 显示成员列表
             if (data.members_detail && data.members_detail.length > 0) {
                 renderMembers(data.members_detail);
             } else {
                 document.getElementById('member-list').innerHTML = '<p>暂无其他成员</p>';
             }
-            
+
             // 显示协作模式徽章
             document.getElementById('cluster-badge').classList.remove('hidden');
-            
+
             // 更新当前房间信息显示
             document.getElementById('room-name-display').textContent = data.room_name;
             document.getElementById('current-room-info').classList.remove('hidden');
-            
+
             showView('room-detail');
+
+            // 定时刷新成员列表
+            startMemberRefresh(roomId);
         }
     } catch (e) {
         showToast('进入房间失败', true);
         console.error(e);
     }
+}
+
+// 定时刷新成员列表
+let memberRefreshTimer = null;
+function startMemberRefresh(roomId) {
+    if (memberRefreshTimer) {
+        clearInterval(memberRefreshTimer);
+    }
+    // 每5秒刷新一次成员列表
+    memberRefreshTimer = setInterval(async () => {
+        if (STATE.currentView === 'room-detail') {
+            try {
+                const data = await api('/api/rooms/current');
+                if (data && data.members_detail) {
+                    renderMembers(data.members_detail);
+                }
+            } catch (e) {
+                // 静默失败
+            }
+        } else {
+            // 不在房间详情页面，停止刷新
+            clearInterval(memberRefreshTimer);
+            memberRefreshTimer = null;
+        }
+    }, 5000);
 }
 function renderMembers(members) {
     const list = document.getElementById('member-list');
@@ -695,7 +735,8 @@ async function createRoom() {
         });
         if (res.success) {
             showToast('房间创建成功');
-            refreshRooms();
+            // 自动进入房间详情页面
+            enterRoom(res.room_id);
         } else {
             showToast(res.error || '创建失败', true);
         }
@@ -746,6 +787,28 @@ async function leaveRoom() {
     }
 }
 
+// ==================== 解散房间（Manager） ====================
+async function closeRoom() {
+    if (!confirm('确定要解散房间吗？解散后所有成员将被移除。')) return;
+    try {
+        const res = await api('/api/rooms/dismiss', { method: 'POST' });
+        if (res.success) {
+            showToast('房间已解散');
+            // 隐藏协作模式徽章
+            document.getElementById('cluster-badge').classList.add('hidden');
+            document.getElementById('current-room-info').classList.add('hidden');
+            // 返回房间列表
+            showView('room-list');
+            refreshRooms();
+        } else {
+            showToast(res.error || '解散失败', true);
+        }
+    } catch (e) {
+        showToast('解散房间请求失败', true);
+        console.error(e);
+    }
+}
+
 // ==================== 任务启动（Manager） ====================
 async function startTask() {
     const taskType = prompt('任务类型 (例如: code_generation, analysis):', 'code_generation');
@@ -766,6 +829,79 @@ async function startTask() {
     } catch (e) {
         showToast('启动任务请求失败', true);
         console.error(e);
+    }
+}
+
+// ==================== 协作任务管理 ====================
+let taskResultCallback = null;
+
+async function sendCollaborativeTask() {
+    const taskInput = document.getElementById('collab-task-input');
+    if (!taskInput) return;
+    const taskDescription = taskInput.value.trim();
+    if (!taskDescription) {
+        showToast('请输入任务描述', true);
+        return;
+    }
+
+    const taskType = 'collaborative_task';
+    try {
+        const res = await api('/api/rooms/start_task', {
+            method: 'POST',
+            body: JSON.stringify({ task_type: taskType, description: taskDescription })
+        });
+        if (res.success) {
+            showToast('协作任务已创建');
+            addCollabTaskLog(`[创建] ${taskDescription}`, res.task_id);
+            taskInput.value = '';
+            // 注册结果回调
+            registerTaskCallback(res.task_id);
+        } else {
+            showToast(res.error || '创建任务失败', true);
+        }
+    } catch (e) {
+        showToast('创建任务失败', true);
+        console.error(e);
+    }
+}
+
+function registerTaskCallback(taskId) {
+    const checkInterval = setInterval(async () => {
+        try {
+            const res = await api('/cluster/status');
+            if (res.tasks_count && res.tasks_count.completed > 0) {
+                clearInterval(checkInterval);
+                addCollabTaskLog(`[完成] 任务 ${taskId.slice(0, 8)} 已完成`, taskId);
+            }
+        } catch (e) {
+            clearInterval(checkInterval);
+        }
+    }, 2000);
+}
+
+function addCollabTaskLog(msg, taskId) {
+    const log = document.getElementById('collab-task-log');
+    if (!log) return;
+    const entry = document.createElement('div');
+    entry.className = 'log-entry';
+    entry.innerHTML = `<span class="time">${new Date().toLocaleTimeString()}</span> ${msg}`;
+    log.appendChild(entry);
+    log.scrollTop = log.scrollHeight;
+}
+
+// ==================== 任务错误反馈 ====================
+async function reportTaskError(taskId, errorMsg) {
+    try {
+        const res = await api('/api/cluster/tasks/' + taskId + '/error', {
+            method: 'POST',
+            body: JSON.stringify({ error: errorMsg })
+        });
+        if (res.success) {
+            addCollabTaskLog(`[问题反馈] ${errorMsg}`, taskId);
+            showToast('问题已反馈给房主');
+        }
+    } catch (e) {
+        showToast('反馈失败', true);
     }
 }
 
