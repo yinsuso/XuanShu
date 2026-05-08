@@ -292,20 +292,23 @@ async def create_room(request: Request):
 
 @app.get("/api/rooms/current")
 async def get_current_room(request: Request):
-    """获取当前房间信息（仅 Manager）"""
-    verify_token(request)
-    if CLUSTER_ROLE != "manager":
+    """获取当前房间信息（Manager 或 standalone 模式）"""
+    if CLUSTER_ROLE not in ("manager", "") and CLUSTER_ENABLED:
         raise HTTPException(status_code=403, detail="仅 Manager 可查看")
 
     # 懒加载集群组件
-    if CLUSTER_ENABLED:
-        success = await ensure_cluster_initialized()
-        if not success:
-            raise HTTPException(status_code=500, detail="集群未就绪，无法执行操作")
-    manager = app.state.cluster_manager
+    await ensure_cluster_initialized()
+    manager = getattr(app.state, "cluster_manager", None)
+
+    if not manager:
+        return {"success": False, "error": "房间管理器未初始化"}
+
     info = manager.get_room_info()
+    if info["room_name"] == "Default-Room" and info.get("owner_name") is None:
+        return {"success": False, "error": "当前没有房间"}
+
     info["members_detail"] = manager.get_member_info()
-    info["status"] = "active" if len(info["members"]) > 0 else "waiting"
+    info["success"] = True
     return info
 
 @app.get("/api/rooms/list")
@@ -1091,11 +1094,18 @@ async def api_export_json():
         if not conv:
             raise HTTPException(status_code=404, detail="当前无对话")
 
+        def format_timestamp(val):
+            if val is None:
+                return None
+            if isinstance(val, datetime):
+                return val.isoformat()
+            return str(val)
+
         export_data = {
             "conversation_id": conv.conversation_id,
             "title": getattr(conv, 'title', '未命名对话'),
-            "created_at": getattr(conv, 'created_at', datetime.now().isoformat()),
-            "updated_at": getattr(conv, 'updated_at', datetime.now().isoformat()),
+            "created_at": format_timestamp(getattr(conv, 'created_at', None)),
+            "updated_at": format_timestamp(getattr(conv, 'updated_at', None)),
             "messages": []
         }
 
@@ -1103,7 +1113,7 @@ async def api_export_json():
             msg_dict = {
                 "role": msg.role,
                 "content": getattr(msg, 'content', '') or '',
-                "timestamp": getattr(msg, 'timestamp', None)
+                "timestamp": format_timestamp(getattr(msg, 'timestamp', None))
             }
             if hasattr(msg, 'tool_calls') and msg.tool_calls:
                 msg_dict["tool_calls"] = msg.tool_calls
