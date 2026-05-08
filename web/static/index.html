@@ -143,6 +143,8 @@
             <button class="btn" onclick="showView('join-room')">🔗 加入房间</button>
             <button class="btn" onclick="showView('model-manage')">⚙️ 模型管理</button>
             <button class="btn" onclick="showView('conversation-history')">📚 对话历史</button>
+            <button class="btn" onclick="showView('chat')">💬 单机对话</button>
+
             <hr style="margin: 12px 0; border: none; border-top: 1px solid #eee;">
             <div id="current-room-info" class="hidden">
                 <strong>当前房间</strong>
@@ -292,6 +294,17 @@
                 <div class='panel-title'>📚 对话历史</div>
                 <div id='conversation-list' style='max-height:400px;overflow-y:auto;'></div>
             </div>
+            <!-- 单机对话视图 -->
+            <div id="view-chat" class="hidden">
+                <div class="chat-container">
+                    <div id="messages" class="messages" style="height: 400px; overflow-y: auto; border: 1px solid #ccc; padding: 8px; background: #f8f9fa;"></div>
+                    <div style="margin-top: 8px; display: flex; gap: 8px;">
+                        <textarea id="message-input" placeholder="输入消息..." style="flex:1; padding:8px; border:1px solid #ddd; border-radius:4px;"></textarea>
+                        <button id="send-btn" class="btn">发送</button>
+                    </div>
+                </div>
+            </div>
+
         </div>
 
         <!-- 右侧信息面板 -->
@@ -314,6 +327,17 @@
                 <div id="current-conversation" style="font-size:13px;margin-top:8px;">未选择</div>
                 <button class="btn" id="btn-new-conversation" onclick="createNewConversation()" style="margin-top:8px;">➕ 新建对话</button>
             </div>
+            <!-- 单机对话视图 -->
+            <div id="view-chat" class="hidden">
+                <div class="chat-container">
+                    <div id="messages" class="messages" style="height: 400px; overflow-y: auto; border: 1px solid #ccc; padding: 8px; background: #f8f9fa;"></div>
+                    <div style="margin-top: 8px; display: flex; gap: 8px;">
+                        <textarea id="message-input" placeholder="输入消息..." style="flex:1; padding:8px; border:1px solid #ddd; border-radius:4px;"></textarea>
+                        <button id="send-btn" class="btn">发送</button>
+                    </div>
+                </div>
+            </div>
+
         </div>
     </div>
 
@@ -449,6 +473,17 @@ function renderMembers(members) {
             <div>
                 <span class="status-badge status-${m.status || 'offline'}">${m.status || '离线'}</span>
             </div>
+            <!-- 单机对话视图 -->
+            <div id="view-chat" class="hidden">
+                <div class="chat-container">
+                    <div id="messages" class="messages" style="height: 400px; overflow-y: auto; border: 1px solid #ccc; padding: 8px; background: #f8f9fa;"></div>
+                    <div style="margin-top: 8px; display: flex; gap: 8px;">
+                        <textarea id="message-input" placeholder="输入消息..." style="flex:1; padding:8px; border:1px solid #ddd; border-radius:4px;"></textarea>
+                        <button id="send-btn" class="btn">发送</button>
+                    </div>
+                </div>
+            </div>
+
         </div>
     `).join('');
 }
@@ -616,6 +651,6 @@ async function approveTask(logEntry, taskId, btn) {
 // 页面加载完成
 window.addEventListener('DOMContentLoaded', init);
 </script>
-        <script src="/static/conversation.js"></script>
+
     </script>\n</body>
 </html>
