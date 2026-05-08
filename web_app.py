@@ -1057,10 +1057,9 @@ async def api_export():
         conv = conv_manager.current_conversation
         if not conv:
             raise HTTPException(status_code=404, detail="当前无对话")
-        
+
         lines_export = ["# 对话导出", ""]
         for msg in conv.messages:
-            # 确定角色
             if msg.role == "user":
                 role_name = "用户"
             elif msg.role == "assistant":
@@ -1072,14 +1071,50 @@ async def api_export():
             lines_export.append(content + "\n")
             if hasattr(msg, 'tool_calls') and msg.tool_calls:
                 lines_export.append(f"**工具调用：** {msg.tool_calls}\n")
-            lines_export.append("")  # 空行分隔
-        
+            lines_export.append("")
+
         content = "\n".join(lines_export)
-        
+
         return Response(
             content=content,
             media_type="text/markdown",
             headers={"Content-Disposition": f"attachment; filename=conversation-{datetime.now().strftime('%Y%m%d-%H%M%S')}.md"}
+        )
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@app.get("/api/export/json")
+async def api_export_json():
+    """导出当前对话为 JSON"""
+    try:
+        conv = conv_manager.current_conversation
+        if not conv:
+            raise HTTPException(status_code=404, detail="当前无对话")
+
+        export_data = {
+            "conversation_id": conv.conversation_id,
+            "title": getattr(conv, 'title', '未命名对话'),
+            "created_at": getattr(conv, 'created_at', datetime.now().isoformat()),
+            "updated_at": getattr(conv, 'updated_at', datetime.now().isoformat()),
+            "messages": []
+        }
+
+        for msg in conv.messages:
+            msg_dict = {
+                "role": msg.role,
+                "content": getattr(msg, 'content', '') or '',
+                "timestamp": getattr(msg, 'timestamp', None)
+            }
+            if hasattr(msg, 'tool_calls') and msg.tool_calls:
+                msg_dict["tool_calls"] = msg.tool_calls
+            export_data["messages"].append(msg_dict)
+
+        json_content = json.dumps(export_data, ensure_ascii=False, indent=2)
+
+        return Response(
+            content=json_content,
+            media_type="application/json",
+            headers={"Content-Disposition": f"attachment; filename=conversation-{datetime.now().strftime('%Y%m%d-%H%M%S')}.json"}
         )
     except Exception as e:
         return {"success": False, "error": str(e)}

@@ -357,9 +357,13 @@
             <div id='view-chat' class='hidden'>
                 <div class='panel-title'>💬 单机对话</div>
                 <div id='messages' style='height:400px;overflow-y:auto;border:1px solid #ddd;border-radius:4px;padding:12px;margin-bottom:12px;background:#f8f9fa;'></div>
-                <div style='display:flex;gap:8px;'>
+                <div style='display:flex;gap:8px;margin-bottom:8px;'>
                     <textarea id='message-input' placeholder='输入消息...' style='flex:1;padding:8px;border:1px solid #ddd;border-radius:4px;resize:none;height:60px;'></textarea>
                     <button id='send-btn' class='btn' style='width:80px;'>发送</button>
+                </div>
+                <div style='display:flex;gap:8px;'>
+                    <button class='btn' style='font-size:12px;padding:4px 8px;width:auto;' onclick='exportConversation("md")'>📥 导出Markdown</button>
+                    <button class='btn' style='font-size:12px;padding:4px 8px;width:auto;' onclick='exportConversation("json")'>📥 导出JSON</button>
                 </div>
             </div>
 
@@ -587,18 +591,99 @@ function escapeHtml(text) {
     div.textContent = text;
     return div.innerHTML;
 }
-function appendMessage(role, content) {
+function appendMessage(role, content, msgIndex = null) {
     const container = document.getElementById('messages');
     if (!container) return;
     const div = document.createElement('div');
     div.className = 'message ' + (role === 'user' ? 'user-message' : 'assistant-message');
     const renderedContent = role === 'assistant' ? markdownToHtml(content) : escapeHtml(content);
+    const index = msgIndex !== null ? msgIndex : container.children.length;
     div.innerHTML = `
         <div class='avatar'>${role === 'user' ? '👤' : '🤖'}</div>
-        <div class='message-content'>${renderedContent}</div>
+        <div class='message-content'>
+            ${renderedContent}
+            ${role === 'assistant' ? `
+                <div style="margin-top:8px;display:flex;gap:4px;">
+                    <button class="btn" style="font-size:11px;padding:2px 6px;width:auto;" onclick="copyMessage(this, ${index})">📋 复制</button>
+                    <button class="btn" style="font-size:11px;padding:2px 6px;width:auto;" onclick="regenerateMessage(${index})">🔄 重新回复</button>
+                </div>
+            ` : ''}
+        </div>
     `;
+    div.dataset.index = index;
+    div.dataset.content = content;
     container.appendChild(div);
     container.scrollTop = container.scrollHeight;
+}
+
+function copyMessage(btn, index) {
+    const msgDiv = document.querySelector(`.message[data-index="${index}"]`);
+    if (msgDiv) {
+        const content = msgDiv.dataset.content || msgDiv.querySelector('.message-content').textContent;
+        navigator.clipboard.writeText(content).then(() => {
+            showToast('已复制到剪贴板');
+        }).catch(() => {
+            showToast('复制失败', true);
+        });
+    }
+}
+
+let lastUserMessage = '';
+let lastConversationId = null;
+
+function regenerateMessage(index) {
+    const msgDiv = document.querySelector(`.message[data-index="${index}"]`);
+    if (msgDiv && lastUserMessage) {
+        const userMsgDiv = msgDiv.previousElementSibling;
+        if (userMsgDiv && userMsgDiv.classList.contains('user-message')) {
+            const userContent = userMsgDiv.dataset.content || userMsgDiv.querySelector('.message-content').textContent;
+            lastUserMessage = userContent;
+            lastConversationId = STATE.currentConversationId;
+            // 移除当前的助手消息
+            msgDiv.remove();
+            // 重新发送
+            resendMessage(userContent);
+        }
+    }
+}
+
+async function resendMessage(userMessage) {
+    const sendBtn = document.getElementById('send-btn');
+    if (sendBtn) {
+        sendBtn.disabled = true;
+        sendBtn.textContent = '重新生成中...';
+
+        try {
+            const payload = { message: userMessage };
+            if (lastConversationId) {
+                payload.conversation_id = lastConversationId;
+            }
+
+            const res = await fetch('/api/chat', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            const data = await res.json();
+            if (data.success) {
+                appendMessage('assistant', data.response);
+                STATE.currentConversationId = data.conversation_id;
+            } else {
+                appendMessage('assistant', '❌ ' + (data.error || '请求失败'));
+            }
+        } catch (e) {
+            appendMessage('assistant', '❌ 网络错误: ' + e.message);
+        } finally {
+            sendBtn.disabled = false;
+            sendBtn.textContent = '发送';
+        }
+    }
+}
+
+function exportConversation(format) {
+    const url = format === 'json' ? '/api/export/json' : '/api/export';
+    window.open(url, '_blank');
+    showToast('正在导出' + (format === 'json' ? 'JSON' : 'Markdown') + '文件...');
 }
 // ==================== 房间管理（Manager） ====================
 async function refreshRooms() {
@@ -1209,18 +1294,22 @@ async function sendMessage() {
     const sendBtn = document.getElementById('send-btn');
     const text = input.value.trim();
     if (!text) return;
-    
+
+    // 保存用户消息用于重新回复
+    lastUserMessage = text;
+    lastConversationId = STATE.currentConversationId;
+
     appendMessage('user', text);
     input.value = '';
     sendBtn.disabled = true;
     sendBtn.textContent = '思考中...';
-    
+
     try {
         const payload = { message: text };
         if (STATE.currentConversationId) {
             payload.conversation_id = STATE.currentConversationId;
         }
-        
+
         const res = await fetch('/api/chat', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
