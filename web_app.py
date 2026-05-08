@@ -1,5 +1,7 @@
-
 import os
+import sys
+import uuid
+import asyncio
 
 # === 安全审批模块（SQLite 持久化 + API 扩展） ===
 import sqlite3
@@ -16,6 +18,7 @@ from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from config import WEB_APP_URL,  APPROVAL_API_TOKEN,  APPROVAL_DB_PATH,  PROJECT_ROOT, CAPABILITY_MODEL_RANKINGS, SCHEDULER_STRATEGY, MANAGER_MONITOR_INTERVAL, CLUSTER_MANAGER_HOST, CLUSTER_MANAGER_PORT
+from logger import logger
 from evolution.cluster.capability import CapabilityAssessor
 from evolution.cluster.scheduler import TaskScheduler
 
@@ -205,14 +208,9 @@ async def api_approvals_create(request: Request):
 # =============================================================================
 # 集群协作启动事件（Phase 2 新增）
 # =============================================================================
-import uuid
-import time
-import threading
-from agent import UniversalAgent
 from config import CLUSTER_ENABLED, CLUSTER_ROLE, CLUSTER_NODE_ID, CLUSTER_NODE_NICKNAME, MODEL_NAME
 from evolution.cluster.connection import ClusterNode, ClusterManager, ClusterClient
 from evolution.cluster.cluster_api import verify_token, get_cluster_node
-import asyncio
 
 @app.get("/api/info")
 async def get_info():
@@ -242,33 +240,55 @@ async def get_info():
 
 @app.post("/api/rooms/create")
 async def create_room(request: Request):
-    """创建房间（仅 Manager）"""
-    verify_token(request)
-    if CLUSTER_ROLE != "manager":
-        raise HTTPException(status_code=403, detail="仅 Manager 可创建房间")
+    """创建房间（Manager 或单机模式）"""
+    try:
+        # 在单机模式下允许创建房间，集群模式下需要 manager 角色
+        if CLUSTER_ENABLED and CLUSTER_ROLE != "manager":
+            raise HTTPException(status_code=403, detail="仅 Manager 可创建房间")
 
-    # 懒加载集群组件
-    if CLUSTER_ENABLED:
+        # 懒加载集群组件
         success = await ensure_cluster_initialized()
         if not success:
             raise HTTPException(status_code=500, detail="集群未就绪，无法执行操作")
-    data = await request.json()
-    room_name = data.get("room_name")
-    owner_name = data.get("owner_name")
-    model = data.get("model")
-    password = data.get("password", "")  # 可选密码，默认空字符串
-    if len(password) > 32:
-        raise HTTPException(status_code=400, detail="密码长度不能超过32字符")
-    if not all([room_name, owner_name, model]):
-        raise HTTPException(status_code=400, detail="缺少必要参数")
-    manager = app.state.cluster_manager
-    node = getattr(app.state, "cluster_node", None)
-    owner_node_id = node.node_id if node else None
-    # 存储密码哈希（简化：内存存储，实际应加盐哈希）
-    import hashlib
-    password_hash = hashlib.sha256(password.encode()).hexdigest() if password else None
-    room_id = manager.create_room(room_name, owner_name, model, owner_node_id=owner_node_id, password_hash=password_hash)
-    return {"success": True, "room_id": room_id, "room_name": room_name}
+        
+        data = await request.json()
+        room_name = data.get("room_name")
+        owner_name = data.get("owner_name")
+        model = data.get("model")
+        password = data.get("password", "")  # 可选密码，默认空字符串
+        
+        # 参数验证
+        if not room_name or not isinstance(room_name, str) or len(room_name.strip()) == 0:
+            raise HTTPException(status_code=400, detail="房间名称不能为空")
+        if not owner_name or not isinstance(owner_name, str) or len(owner_name.strip()) == 0:
+            raise HTTPException(status_code=400, detail="房主名称不能为空")
+        if not model or not isinstance(model, str) or len(model.strip()) == 0:
+            raise HTTPException(status_code=400, detail="模型名称不能为空")
+        if len(password) > 32:
+            raise HTTPException(status_code=400, detail="密码长度不能超过32字符")
+        
+        manager = getattr(app.state, "cluster_manager", None)
+        if not manager:
+            logger.error("创建房间失败：集群管理器未初始化")
+            raise HTTPException(status_code=500, detail="集群管理器未初始化")
+        
+        node = getattr(app.state, "cluster_node", None)
+        owner_node_id = node.node_id if node else None
+        
+        # 存储密码哈希（使用 sha256）
+        import hashlib
+        password_hash = hashlib.sha256(password.encode()).hexdigest() if password else None
+        
+        room_id = manager.create_room(room_name, owner_name, model, owner_node_id=owner_node_id, password_hash=password_hash)
+        
+        logger.info(f"房间创建成功: room_id={room_id}, room_name={room_name}, owner={owner_name}, model={model}, has_password={password_hash is not None}")
+        return {"success": True, "room_id": room_id, "room_name": room_name}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"创建房间失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"创建房间失败: {str(e)}")
 
 @app.get("/api/rooms/current")
 async def get_current_room(request: Request):
@@ -285,7 +305,34 @@ async def get_current_room(request: Request):
     manager = app.state.cluster_manager
     info = manager.get_room_info()
     info["members_detail"] = manager.get_member_info()
+    info["status"] = "active" if len(info["members"]) > 0 else "waiting"
     return info
+
+@app.get("/api/rooms/list")
+async def list_rooms(request: Request):
+    """获取房间列表（支持单机模式和集群模式）"""
+    try:
+        # 确保集群组件已初始化
+        await ensure_cluster_initialized()
+        manager = getattr(app.state, "cluster_manager", None)
+        
+        if not manager:
+            return {"success": True, "rooms": []}
+        
+        # 获取当前房间信息（因为当前实现中一个manager只能管理一个房间）
+        room_info = manager.get_room_info()
+        
+        # 如果房间名称是默认值，说明没有创建房间
+        if room_info["room_name"] == "Default-Room" and room_info["owner_name"] is None:
+            return {"success": True, "rooms": []}
+        
+        room_info["members_detail"] = manager.get_member_info()
+        room_info["status"] = "active" if len(room_info["members"]) > 0 else "waiting"
+        
+        return {"success": True, "rooms": [room_info]}
+    except Exception as e:
+        logger.error(f"获取房间列表失败: {e}", exc_info=True)
+        return {"success": False, "error": str(e), "rooms": []}
 
 @app.post("/api/rooms/join")
 async def join_room(request: Request):
@@ -304,44 +351,84 @@ async def join_room(request: Request):
     model = data.get("model")
     if not all([host, name, model]):
         raise HTTPException(status_code=400, detail="缺少必要参数")
+
+    node = getattr(app.state, "cluster_node", None)
+    if node and node.connection:
+        return {"success": False, "error": "已经连接到一个房间，请先退出当前房间"}
+
+    # 解析 host:port
+    if ":" in host:
+        host_parts = host.split(":")
+        host = host_parts[0]
+        port = int(host_parts[1])
+
+    from evolution.cluster.connection import ClusterClient
+    client = ClusterClient()
+    node_info = {
+        "node_id": node.node_id if node else str(uuid.uuid4()),
+        "model": model,
+        "role": "worker",
+        "mode": mode,
+        "name": name
+    }
+    try:
+        loop = asyncio.get_event_loop()
+        success = await asyncio.wait_for(
+            loop.run_in_executor(None, client.join, host, port, node_info),
+            timeout=10.0
+        )
+    except asyncio.TimeoutError:
+        success = False
+        print("Worker 连接 manager 超时（10秒）")
+    except Exception as e:
+        success = False
+        print(f"Worker 连接 manager 失败: {e}")
+
+    if success:
+        if node:
+            node.connection = client.socket
         def listener():
             while True:
                 try:
-                    data = node.connection.recv(4096)
+                    if not client.socket:
+                        break
+                    data = client.socket.recv(4096)
                     if not data:
                         break
                     msg = json.loads(data.decode('utf-8'))
                     msg_type = msg.get("type")
                     if msg_type == "task_assignment":
                         payload = msg.get("payload", {})
-                        node.receive_assignment(
-                            task_id=payload["task_id"],
-                            task_type=payload["task_type"],
-                            description=payload["description"],
-                            parameters=payload.get("parameters")
-                        )
+                        if node:
+                            node.receive_assignment(
+                                task_id=payload["task_id"],
+                                task_type=payload["task_type"],
+                                description=payload["description"],
+                                parameters=payload.get("parameters")
+                            )
                     else:
-                        logger.debug("Worker 监听线程收到其他消息", type=msg_type)
+                        print(f"Worker 监听线程收到其他消息: {msg_type}")
                 except Exception as e:
-                    logger.error("Worker 监听线程异常", error=str(e))
+                    print(f"Worker 监听线程异常: {e}")
                     break
         threading.Thread(target=listener, daemon=True).start()
+
         def heartbeat_loop():
             while True:
                 try:
-                    if node.connection:
+                    if client.socket:
                         from evolution.cluster.protocol import create_heartbeat
                         hb = create_heartbeat(
-                            node.node_id,
+                            node_info["node_id"],
                             {
-                                "load_cpu": node.load_cpu,
-                                "load_memory": node.load_memory,
-                                "queue_length": len(node.pending_tasks)
+                                "load_cpu": 0.5,
+                                "load_memory": 0.5,
+                                "queue_length": 0
                             }
                         )
-                        node.connection.sendall(hb.serialize())
+                        client.socket.sendall(hb.serialize())
                 except Exception as e:
-                    logger.error("心跳发送失败", error=str(e))
+                    print(f"心跳发送失败: {e}")
                     break
                 time.sleep(5)
         threading.Thread(target=heartbeat_loop, daemon=True).start()
@@ -409,6 +496,24 @@ async def ensure_cluster_initialized():
         return await ensure_cluster_initialized()
     try:
         if not CLUSTER_ENABLED:
+            # 单机模式下也需要初始化集群管理器用于房间功能
+            node = ClusterNode(
+                node_id=str(uuid.uuid4()),
+                ip="127.0.0.1",
+                model=MODEL_NAME or "qwen2.5-coder:7b",
+                role="manager",
+                mode="auto"
+            )
+            app.state.cluster_node = node
+            manager = ClusterManager()
+            manager.own_node = node
+            manager.broadcast_node = node
+            assessor = CapabilityAssessor(CAPABILITY_MODEL_RANKINGS)
+            scheduler = TaskScheduler(assessor, strategy=SCHEDULER_STRATEGY)
+            manager.set_scheduler(scheduler, assessor)
+            manager.start_monitoring(interval=MANAGER_MONITOR_INTERVAL)
+            app.state.cluster_manager = manager
+            logger.info("✅ [ClusterManager] 单机模式集群管理器已初始化")
             _cluster_initialized = True
             return True
         if CLUSTER_ROLE == "manager":
@@ -434,7 +539,7 @@ async def ensure_cluster_initialized():
             )
             mgr_thread.start()
             app.state.cluster_manager = manager
-            logger.info("✅ [ClusterManager] 集群管理器已启动（懒加载）")
+            print("✅ [ClusterManager] 集群管理器已启动（懒加载）")
             _cluster_initialized = True
             return True
         elif CLUSTER_ROLE == "worker":
@@ -470,7 +575,7 @@ async def ensure_cluster_initialized():
                                     )
                                     node.connection.sendall(update_msg.serialize())
                                 except Exception as e:
-                                    logger.error("发送任务完成状态失败", error=str(e))
+                                    print(f"发送任务完成状态失败: {e}")
                         except Exception as e:
                             node.fail_task(task_id, str(e))
                             if node.connection:
@@ -482,18 +587,18 @@ async def ensure_cluster_initialized():
                                     )
                                     node.connection.sendall(update_msg.serialize())
                                 except Exception as e2:
-                                    logger.error("发送任务失败状态失败", error=str(e2))
+                                    print(f"发送任务失败状态失败: {e2}")
                         node.notify_status_change(task_id)
                     else:
                         await asyncio.sleep(0.2)
             asyncio.create_task(task_worker())
             client = ClusterClient()
-            node_info = {{
+            node_info = {
                 "node_id": node.node_id,
                 "model": MODEL_NAME,
                 "role": "worker",
                 "mode": "auto"
-            }}
+            }
             try:
                 loop = asyncio.get_event_loop()
                 success = await asyncio.wait_for(
@@ -502,10 +607,10 @@ async def ensure_cluster_initialized():
                 )
             except asyncio.TimeoutError:
                 success = False
-                logger.warning("Worker 连接 manager 超时（5秒），集群功能不可用，将运行在单机模式")
+                print("Worker 连接 manager 超时（5秒），集群功能不可用，将运行在单机模式")
             except Exception as e:
                 success = False
-                logger.error(f"Worker 连接 manager 失败: {e}")
+                print(f"Worker 连接 manager 失败: {e}")
             if success:
                 node.connection = client.socket
                 def listener():
@@ -517,7 +622,7 @@ async def ensure_cluster_initialized():
                             msg = json.loads(data.decode('utf-8'))
                             msg_type = msg.get("type")
                             if msg_type == "task_assignment":
-                                payload = msg.get("payload", {{}})
+                                payload = msg.get("payload", {})
                                 node.receive_assignment(
                                     task_id=payload["task_id"],
                                     task_type=payload["task_type"],
@@ -525,9 +630,9 @@ async def ensure_cluster_initialized():
                                     parameters=payload.get("parameters")
                                 )
                             else:
-                                logger.debug("Worker 收到其他消息类型", type=msg_type)
+                                print(f"Worker 收到其他消息类型: {msg_type}")
                         except Exception as e:
-                            logger.error("Worker 监听线程异常", error=str(e))
+                            print(f"Worker 监听线程异常: {e}")
                             break
                 threading.Thread(target=listener, daemon=True).start()
                 def heartbeat_loop():
@@ -536,21 +641,21 @@ async def ensure_cluster_initialized():
                             if node.connection:
                                 hb = create_heartbeat(
                                     node.node_id,
-                                    {{
+                                    {
                                         "load_cpu": node.load_cpu,
                                         "load_memory": node.load_memory,
                                         "queue_length": len(node.pending_tasks)
-                                    }}
+                                    }
                                 )
                                 node.connection.sendall(hb.serialize())
                         except Exception as e:
-                            logger.error("心跳发送失败", error=str(e))
+                            print(f"心跳发送失败: {e}")
                             break
                         time.sleep(5)
                 threading.Thread(target=heartbeat_loop, daemon=True).start()
-                logger.info("✅ Worker 已加入集群（懒加载）")
+                print("✅ Worker 已加入集群（懒加载）")
             else:
-                logger.error("Worker 加入集群失败（懒加载），将运行在单机模式")
+                print("Worker 加入集群失败（懒加载），将运行在单机模式")
             _cluster_initialized = True
             return success
         else:
@@ -561,14 +666,21 @@ async def ensure_cluster_initialized():
 
 
 @app.get("/api/models")
-async def list_models():
+async def list_models(force_reload: bool = False):
     """列出所有模型配置"""
     try:
-        configs = config_manager.configs
+        if force_reload:
+            config_manager.load_configs()
+        filtered_configs = []
+        for cfg in config_manager.configs:
+            cfg_dict = cfg.to_dict()
+            cfg_dict['is_current'] = config_manager.current_config and config_manager.current_config.name == cfg.name
+            cfg_dict['has_api_key'] = bool(cfg.api_key)
+            filtered_configs.append(cfg_dict)
         current = config_manager.current_config
         return {
             "success": True,
-            "models": [cfg.to_dict() for cfg in configs],
+            "models": filtered_configs,
             "current_config": current.name if current else None
         }
     except Exception as e:
@@ -580,31 +692,54 @@ async def save_model(
     provider: str = Form(...),
     model_name: str = Form(...),
     api_base: str = Form(...),
-    api_key: str = Form("")
+    api_key: str = Form(""),
+    original_name: str = Form("")
 ):
     """新增或更新模型配置"""
     try:
+        name = name.strip()
+        original_name = original_name.strip()
         provider_type = ProviderType(provider) if isinstance(provider, str) else provider
         config = ModelConfig(
             provider=provider_type,
             name=name,
-            model_name=model_name,
-            api_base=api_base,
-            api_key=api_key
+            model_name=model_name.strip(),
+            api_base=api_base.strip(),
+            api_key=api_key.strip()
         )
-        existing = config_manager.get_config(name)
-        if existing:
-            config_manager.update_config(config)
+        
+        # 如果提供了原始名称，先用原始名称查找现有配置
+        if original_name:
+            existing = config_manager.get_config(original_name)
+            if existing:
+                # 如果名称变了，先删除旧的，再添加新的
+                if original_name != name:
+                    config_manager.delete_config(original_name)
+                    config_manager.add_config(config)
+                else:
+                    config_manager.update_config(config)
+            else:
+                config_manager.add_config(config)
         else:
-            config_manager.add_config(config)
+            # 没有原始名称，用新名称查找
+            existing = config_manager.get_config(name)
+            if existing:
+                config_manager.update_config(config)
+            else:
+                config_manager.add_config(config)
+        
         return {"success": True}
     except Exception as e:
         return {"success": False, "error": str(e)}
 
 @app.post("/api/switch_model")
-async def switch_model(name: str = Form(...)):
+async def switch_model(request: Request):
     """切换当前模型"""
     try:
+        data = await request.json()
+        name = data.get("name")
+        if not name:
+            raise HTTPException(status_code=400, detail="缺少配置名称")
         config = config_manager.get_config(name)
         if not config:
             raise HTTPException(status_code=404, detail="配置不存在")
@@ -640,6 +775,69 @@ async def delete_model(request: Request):
     except Exception as e:
         return {"success": False, "error": str(e)}
 
+@app.get("/api/ollama_models")
+async def list_ollama_models():
+    """获取Ollama中已下载的模型列表"""
+    import requests
+    ollama_url = "http://localhost:11434/api/tags"
+    try:
+        response = requests.get(ollama_url, timeout=5)
+        response.raise_for_status()
+        data = response.json()
+        models = [{"name": m["name"], "model": m["name"], "modified_at": m.get("modified_at"), "size": m.get("size")} for m in data.get("models", [])]
+        return {"success": True, "models": models}
+    except Exception as e:
+        logger.warning(f"获取Ollama模型列表失败: {e}")
+        return {"success": False, "error": str(e), "models": []}
+
+@app.get("/api/all_models")
+async def list_all_models():
+    """获取所有可用的模型选项（包括Ollama本地模型和已配置的API模型）"""
+    try:
+        all_models = []
+        
+        # 获取Ollama本地模型
+        ollama_models = await list_ollama_models()
+        if ollama_models.get("success"):
+            for m in ollama_models["models"]:
+                all_models.append({
+                    "name": m["name"],
+                    "model": m["model"],
+                    "type": "ollama",
+                    "provider": "ollama",
+                    "has_api_key": False,
+                    "size": m.get("size"),
+                    "modified_at": m.get("modified_at")
+                })
+        
+        # 获取已配置的API模型（需要有api_key）
+        configs = config_manager.list_configs()
+        for cfg in configs:
+            if cfg.get("provider") != "ollama" and cfg.get("has_api_key"):
+                all_models.append({
+                    "name": cfg["name"],
+                    "model": cfg["model"],
+                    "type": "api",
+                    "provider": cfg["provider"],
+                    "has_api_key": True,
+                    "size": None,
+                    "modified_at": None
+                })
+        
+        # 获取当前配置
+        current = config_manager.current_config
+        current_name = current.name if current else None
+        
+        return {
+            "success": True,
+            "models": all_models,
+            "current_model": current_name,
+            "total_count": len(all_models)
+        }
+    except Exception as e:
+        logger.error(f"获取所有模型列表失败: {e}", exc_info=True)
+        return {"success": False, "error": str(e), "models": []}
+
 # ==================== API：对话历史管理 ====================
 @app.get("/api/conversations")
 async def list_conversations(limit: int = 20):
@@ -654,10 +852,10 @@ async def list_conversations(limit: int = 20):
 async def get_conversation(conversation_id: str):
     """获取对话详情"""
     try:
-        conv = conv_manager.load_conversation(conversation_id)
-        if conv is None:
+        success = conv_manager.load_conversation(conversation_id)
+        if not success or conv_manager.current_conversation is None:
             raise HTTPException(status_code=404, detail="对话不存在")
-        return {"success": True, "conversation": conv.to_dict()}
+        return {"success": True, "conversation": conv_manager.current_conversation.to_dict()}
     except HTTPException:
         raise
     except Exception as e:
@@ -670,10 +868,10 @@ async def create_or_load_conversation(request: Request):
         data = await request.json()
         conversation_id = data.get("conversation_id")
         if conversation_id:
-            conv = conv_manager.load_conversation(conversation_id)
-            if conv is None:
+            success = conv_manager.load_conversation(conversation_id)
+            if not success or conv_manager.current_conversation is None:
                 raise HTTPException(status_code=404, detail="对话不存在")
-            return {"success": True, "conversation": conv.to_dict(), "action": "loaded"}
+            return {"success": True, "conversation": conv_manager.current_conversation.to_dict(), "action": "loaded"}
         else:
             new_id = conv_manager.new_conversation()
             conv = conv_manager.current_conversation
@@ -733,13 +931,26 @@ async def api_chat(request: Request):
     try:
         data = await request.json()
         message = data.get('message', '').strip()
+        conversation_id = data.get('conversation_id')
         if not message:
             raise HTTPException(status_code=400, detail="消息不能为空")
         
+        if conversation_id:
+            conv_manager.load_conversation_or_create(conversation_id)
+        
+        conv_manager.add_user_message(message)
+        
         agent = get_agent()
-        response = agent._process_simple(message)
-        return {"success": True, "response": response}
+        # 使用异步执行模型调用，避免阻塞Web服务器
+        import asyncio
+        response = await asyncio.to_thread(agent._process_simple, message)
+        
+        conv_manager.add_assistant_message(response)
+        conv_manager.save_current()
+        
+        return {"success": True, "response": response, "conversation_id": conv_manager.current_conversation.conversation_id}
     except Exception as e:
+        logger.error(f"API chat error: {e}", exc_info=True)
         return {"success": False, "error": str(e)}
 
 @app.get("/api/memory")
@@ -821,8 +1032,30 @@ async def api_export():
     except Exception as e:
         return {"success": False, "error": str(e)}
 
+def find_available_port(start_port: int, max_attempts: int = 10) -> int:
+    """查找可用端口"""
+    import socket
+    for i in range(max_attempts):
+        port = start_port + i
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                sock.bind(('localhost', port))
+                return port
+            except socket.error:
+                continue
+    return start_port
+
 if __name__ == "__main__":
     import uvicorn
     from config import WEB_HOST, WEB_PORT
-    print(f"🚀 启动玄枢 Web 服务：http://{WEB_HOST}:{WEB_PORT}")
-    uvicorn.run("web_app:app", host=WEB_HOST, port=WEB_PORT, reload=False)
+    
+    available_port = find_available_port(WEB_PORT)
+    if available_port != WEB_PORT:
+        print(f"⚠️ 端口 {WEB_PORT} 已被占用，自动切换到端口 {available_port}")
+    
+    print(f"🚀 启动玄枢 Web 服务：http://{WEB_HOST}:{available_port}")
+    try:
+        uvicorn.run("web_app:app", host=WEB_HOST, port=available_port, reload=False)
+    except Exception as e:
+        print(f"❌ 启动失败: {e}")

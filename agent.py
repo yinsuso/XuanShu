@@ -101,15 +101,102 @@ class UniversalAgent:
         except Exception as e:
             logger.error(f"加载技能失败：{e}")
 
-    def _build_system_prompt(self) -> str:
+    def _build_system_prompt(self, query: str = "") -> str:
         skill_schemas = registry.get_openai_schemas()
         skills_info = [f"📌 {s['function']['name']}: {s['function']['description']}" for s in skill_schemas]
 
-        # 整合统一记忆系统的上下文
-        core_ctx = self.memory_system.get_full_context(query="")
+        # 整合统一记忆系统的上下文（带查询检索）
+        core_ctx = self.memory_system.get_full_context(query=query)
 
-        # 读取系统上下文文件（如 MEMORY.md, SOUL.md）
-        context_files_content = []
+        # 读取系统上下文文件（如 MEMORY.md, SOUL.md）并解析结构化内容
+        memory_sections = self._parse_memory_files()
+
+        # ========== 构建结构化系统提示词（参考 Hermes 模式）==========
+        
+        system_prompt = ""
+        
+        # 1. 角色定义（使用 XML 标签增强模型识别）
+        system_prompt += "<system_prompt>\n"
+        system_prompt += "<identity>\n"
+        system_prompt += "你是玄枢智能助手，一个具备深度思考、工具使用和自主进化能力的AI助手。\n"
+        system_prompt += "你的目标是帮助用户完成各种任务，从简单问答到复杂的代码编写和数据分析。\n"
+        system_prompt += "</identity>\n\n"
+        
+        # 2. 核心指令（结构化）
+        system_prompt += "<instructions>\n"
+        system_prompt += "<rule>始终使用中文进行思考和回复</rule>\n"
+        system_prompt += "<rule>对于简单问题，直接给出简洁准确的回答</rule>\n"
+        system_prompt += "<rule>对于复杂任务，使用 <think> 标签进行步骤规划</rule>\n"
+        system_prompt += "<rule>需要外部信息时，使用工具获取数据</rule>\n"
+        system_prompt += "<rule>保持诚实，对于不确定的问题要明确说明</rule>\n"
+        system_prompt += "<rule>回答要简洁明了，避免冗长</rule>\n"
+        system_prompt += "</instructions>\n\n"
+        
+        # 3. 身份认同（从 SOUL.md 解析）
+        if memory_sections.get('identity'):
+            system_prompt += "<identity_core>\n"
+            system_prompt += memory_sections['identity'] + "\n"
+            system_prompt += "</identity_core>\n\n"
+        
+        # 4. 核心记忆（从数据库）
+        if core_ctx:
+            system_prompt += "<memory_core>\n"
+            system_prompt += core_ctx + "\n"
+            system_prompt += "</memory_core>\n\n"
+        
+        # 5. 关键事实（从 MEMORY.md 解析）
+        if memory_sections.get('key_facts'):
+            system_prompt += "<key_facts>\n"
+            system_prompt += memory_sections['key_facts'] + "\n"
+            system_prompt += "</key_facts>\n\n"
+        
+        # 6. 用户偏好（从 MEMORY.md 解析）
+        if memory_sections.get('user_preferences'):
+            system_prompt += "<user_preferences>\n"
+            system_prompt += memory_sections['user_preferences'] + "\n"
+            system_prompt += "</user_preferences>\n\n"
+        
+        # 7. 历史经验（从 MEMORY.md 解析）
+        if memory_sections.get('historical_knowledge'):
+            system_prompt += "<historical_knowledge>\n"
+            system_prompt += memory_sections['historical_knowledge'] + "\n"
+            system_prompt += "</historical_knowledge>\n\n"
+        
+        # 8. 能力边界（从 SOUL.md 解析）
+        if memory_sections.get('capabilities'):
+            system_prompt += "<capabilities>\n"
+            system_prompt += memory_sections['capabilities'] + "\n"
+            system_prompt += "</capabilities>\n\n"
+        
+        # 9. 可用技能
+        system_prompt += "<available_skills>\n"
+        system_prompt += "\n".join(skills_info[:20])
+        if len(skills_info) > 20:
+            system_prompt += "\n..."
+        system_prompt += "\n</available_skills>\n\n"
+        
+        # 10. 工具调用格式
+        system_prompt += "<tool_format>\n"
+        system_prompt += "当需要使用工具时，请使用 JSON 格式输出：\n"
+        system_prompt += "```json\n"
+        system_prompt += "{ \"skill\": \"技能名称\", \"args\": { \"参数名\": \"参数值\" } }\n"
+        system_prompt += "```\n"
+        system_prompt += "</tool_format>\n\n"
+        
+        # 11. 输出格式偏好
+        if memory_sections.get('output_preferences'):
+            system_prompt += "<output_preferences>\n"
+            system_prompt += memory_sections['output_preferences'] + "\n"
+            system_prompt += "</output_preferences>\n\n"
+        
+        system_prompt += "</system_prompt>\n"
+        
+        return system_prompt
+
+    def _parse_memory_files(self) -> dict:
+        """解析记忆文件，提取结构化内容（参考 Hermes 记忆模式）"""
+        sections = {}
+        
         for rel_path in SYSTEM_CONTEXT_FILES:
             file_path = os.path.join(PROJECT_ROOT, rel_path) if not os.path.isabs(rel_path) else rel_path
             try:
@@ -117,27 +204,52 @@ class UniversalAgent:
                     with open(file_path, 'r', encoding='utf-8') as f:
                         content = f.read().strip()
                         if content:
-                            context_files_content.append(f"【{rel_path}】\n{content}")
+                            # 解析 Markdown 格式的章节
+                            sections.update(self._parse_markdown_sections(content, rel_path))
                 else:
                     logger.warning(f"系统上下文文件不存在：{file_path}")
             except Exception as e:
                 logger.warning(f"读取系统上下文文件失败 {file_path}: {e}")
+        
+        return sections
 
-        # 使用常规字符串拼接避免 f-string 与 三引号的转义问题
-        system_prompt = "你是一个智能 AI 助手，具备深度思考与自主进化能力。\n\n"
-        system_prompt += "【核心认知/记忆】\n" + core_ctx + "\n\n"
-        system_prompt += "【核心能力】\n1. 🗣️ 自然对话: 流畅理解上下文。\n2. 🛠️ 工具使用: 通过 JSON 格式调用技能。\n3. 🧠 自主思考: 面对复杂任务时使用 <think> 标签规划。\n4. ⚡ 自主进化: 通过任务复盘提升能力。\n\n"
-        system_prompt += "【可用技能】\n" + "\n".join(skills_info[:20])
-        if len(skills_info) > 20:
-            system_prompt += "\n..."
-
-        if context_files_content:
-            system_prompt += "\n\n【系统背景文档】\n" + "\n\n".join(context_files_content) + "\n\n"
-
-        system_prompt += "\n【调用技能格式】\n```json\n{\n \"skill\": \"技能名称\",\n \"args\": { \"参数名\": \"参数值\" }\n}\n```\n\n"
-        system_prompt += "【行为规则】\n- 简单任务直接回答。\n- 复杂任务必须先输出 <think> 标签进行步骤规划。\n- 遇到 URL 必须调用 `web_fetch`。\n- 诚实、准确、简洁。\n\n开始！"
-
-        return system_prompt
+    def _parse_markdown_sections(self, content: str, filename: str) -> dict:
+        """解析 Markdown 文件中的章节内容"""
+        import re
+        sections = {}
+        
+        if filename == "SOUL.md":
+            # SOUL.md 结构：身份认同、核心指令、能力边界、输出格式偏好、工作流程
+            patterns = {
+                'identity': r'##\s*1\.?\s*身份认同[\s\S]*?(?=##\s*2\.|$)',
+                'instructions': r'##\s*2\.?\s*核心指令[\s\S]*?(?=##\s*3\.|$)',
+                'capabilities': r'##\s*3\.?\s*能力边界[\s\S]*?(?=##\s*4\.|$)',
+                'output_preferences': r'##\s*4\.?\s*输出格式偏好[\s\S]*?(?=##\s*5\.|$)',
+                'workflow': r'##\s*5\.?\s*工作流程[\s\S]*?(?=##\s*6\.|$|$)'
+            }
+        elif filename == "MEMORY.md":
+            # MEMORY.md 结构：系统背景、关键事实、历史经验、用户偏好
+            patterns = {
+                'system_context': r'##\s*1\.?\s*系统背景[\s\S]*?(?=##\s*2\.|$)',
+                'key_facts': r'##\s*2\.?\s*关键事实[\s\S]*?(?=##\s*3\.|$)',
+                'historical_knowledge': r'##\s*3\.?\s*历史经验[\s\S]*?(?=##\s*4\.|$)',
+                'user_preferences': r'##\s*4\.?\s*用户偏好[\s\S]*?(?=##\s*5\.|$|$)'
+            }
+        else:
+            return sections
+        
+        for key, pattern in patterns.items():
+            match = re.search(pattern, content)
+            if match:
+                # 提取章节内容并清理格式
+                section_content = match.group(0)
+                # 移除标题行
+                section_content = re.sub(r'^##\s*\d+\.?\s*[^\n]+\n', '', section_content)
+                # 移除多余空行
+                section_content = '\n'.join(line.strip() for line in section_content.split('\n') if line.strip())
+                sections[key] = section_content.strip()
+        
+        return sections
 
     def call_model(self, prompt: str, use_context: bool = True) -> Dict[str, Any]:
         config = config_manager.current_config
@@ -150,7 +262,7 @@ class UniversalAgent:
         response_text = call_model(
             config=config,
             prompt=prompt,
-            system_prompt=self._build_system_prompt()
+            system_prompt=self._build_system_prompt(query=prompt)
         )
         return {"response": response_text}
 

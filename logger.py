@@ -24,6 +24,17 @@ from typing import Dict, Any, Optional, List
 import gzip
 import shutil
 
+# 设置控制台编码为UTF-8（解决Windows GBK编码问题）
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+        sys.stderr.reconfigure(encoding='utf-8')
+    except AttributeError:
+        # Python < 3.7
+        import codecs
+        sys.stdout = codecs.getwriter('utf-8')(sys.stdout.buffer)
+        sys.stderr = codecs.getwriter('utf-8')(sys.stderr.buffer)
+
 from config import (
     PROJECT_ROOT,
     LOG_LEVEL,

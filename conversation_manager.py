@@ -150,23 +150,33 @@ class ConversationManager:
         
         if os.path.exists(filepath):
             logger.debug(f"对话文件存在")
-            conversation = Conversation.load(conversation_id)
-            if conversation:
-                message_count = len(conversation.messages)
-                self.current_conversation = conversation
-                self.conversations[conversation_id] = conversation
-                logger.info(f"✅ 成功加载对话: {conversation_id}, 消息数: {message_count}")
-                return True
+            try:
+                conversation = Conversation.load(conversation_id)
+                if conversation:
+                    message_count = len(conversation.messages)
+                    self.current_conversation = conversation
+                    self.conversations[conversation_id] = conversation
+                    logger.info(f"✅ 成功加载对话: {conversation_id}, 消息数: {message_count}")
+                    return True
+            except Exception as e:
+                logger.error(f"加载对话失败: {e}", exc_info=True)
         
-        logger.info(f"❌ 对话文件不存在或加载失败，创建新对话: {conversation_id}")
-        self.current_conversation = Conversation(
-            conversation_id=conversation_id,
-            title="新对话",
-            messages=[],
-            created_at=datetime.now(),
-            updated_at=datetime.now()
-        )
-        self.conversations[conversation_id] = self.current_conversation
+        logger.info(f"❌ 对话文件不存在或加载失败")
+        self.current_conversation = None
+        return False
+
+    def load_conversation_or_create(self, conversation_id: str) -> bool:
+        """加载对话，如果不存在则创建新对话"""
+        if not self.load_conversation(conversation_id):
+            logger.info(f"创建新对话: {conversation_id}")
+            self.current_conversation = Conversation(
+                conversation_id=conversation_id,
+                title="新对话",
+                messages=[],
+                created_at=datetime.now(),
+                updated_at=datetime.now()
+            )
+            self.conversations[conversation_id] = self.current_conversation
         return True
 
     def save_current(self):
@@ -182,15 +192,58 @@ class ConversationManager:
     def add_assistant_message(self, content: str):
         if self.current_conversation:
             self.current_conversation.add_message(MessageRole.ASSISTANT, content)
+            self.update_title()
 
     def add_tool_message(self, content: str, tool_name: str, tool_args: Dict[str, Any] = None):
         if self.current_conversation:
             self.current_conversation.add_message(MessageRole.TOOL, content, tool_name, tool_args)
 
+    def _generate_title_by_model(self):
+        """调用模型生成对话标题"""
+        try:
+            from model_providers import config_manager, call_model
+            
+            config = config_manager.current_config
+            if not config:
+                config_manager.load_configs()
+                config = config_manager.current_config
+                if not config:
+                    return None
+            
+            history_text = self.current_conversation.get_history_as_text(limit=10)
+            prompt = f"""请为以下对话生成一个简洁的中文标题（不超过20个字符）：
+
+{history_text}
+
+标题："""
+            
+            response = call_model(config=config, prompt=prompt, system_prompt="你是一个专业的标题生成器，擅长为对话生成简洁准确的标题。")
+            title = response.strip()
+            
+            if title and len(title) > 0:
+                if len(title) > 30:
+                    title = title[:30] + "..."
+                return title
+        except Exception as e:
+            logger.error(f"生成对话标题失败: {e}")
+        
+        return None
+
     def update_title(self):
         if self.current_conversation and len(self.current_conversation.messages) > 0:
+            messages = self.current_conversation.messages
+            user_count = sum(1 for m in messages if m.role == MessageRole.USER)
+            
+            # 对话进行3轮后（用户消息达到3条），尝试使用模型生成标题
+            if user_count >= 3:
+                generated_title = self._generate_title_by_model()
+                if generated_title and generated_title != "新对话":
+                    self.current_conversation.title = generated_title
+                    return
+            
+            # 回退：使用第一条用户消息作为标题
             first_user_msg = next(
-                (m for m in self.current_conversation.messages if m.role == MessageRole.USER),
+                (m for m in messages if m.role == MessageRole.USER),
                 None
             )
             if first_user_msg:

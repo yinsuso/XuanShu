@@ -206,6 +206,16 @@ def call_model(config: ModelConfig, prompt: str, system_prompt: str = "", temper
     else:
         return _call_openai_compatible(config, prompt, system_prompt, temperature)
 
+async def call_model_async(config: ModelConfig, prompt: str, system_prompt: str = "", temperature: float = 0.7) -> str:
+    """异步版本的模型调用"""
+    import asyncio
+    if config.provider == ProviderType.OLLAMA:
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, _call_ollama, config, prompt, system_prompt, temperature)
+    else:
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, _call_openai_compatible, config, prompt, system_prompt, temperature)
+
 
 def _call_ollama(config: ModelConfig, prompt: str, system_prompt: str, temperature: float) -> str:
     # Ollama 使用 /api/generate 端点（兼容旧版）

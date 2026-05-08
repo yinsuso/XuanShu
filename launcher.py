@@ -87,6 +87,13 @@ class Launcher:
         missing = []
         required_packages = []
 
+        # 包名到模块名的映射（处理不一致的情况）
+        pkg_to_module = {
+            'beautifulsoup4': 'bs4',
+            'duckduckgo-search': 'duckduckgo_search',
+            'sentence-transformers': 'sentence_transformers',
+        }
+
         if os.path.exists(self.requirements_file):
             with open(self.requirements_file, 'r', encoding='utf-8') as f:
                 for line in f:
@@ -98,11 +105,13 @@ class Launcher:
 
         for pkg in required_packages:
             try:
-                __import__(pkg.replace('-', '_'))
+                # 获取实际的模块名，如果没有映射则使用替换后的包名
+                module_name = pkg_to_module.get(pkg, pkg.replace('-', '_'))
+                __import__(module_name)
                 self.print_success(f"{pkg}")
             except ImportError:
                 self.print_warning(f"{pkg} - 未安装")
-                missing.append(line)
+                missing.append(pkg)
 
         return missing
 
@@ -237,6 +246,17 @@ class Launcher:
         models = self.get_ollama_models()
         return any(m.get('name') == model_name for m in models)
 
+    def has_saved_ollama_config(self) -> bool:
+        """检查是否有已保存的Ollama模型配置"""
+        try:
+            from model_providers import config_manager, ProviderType
+            current = config_manager.current_config
+            if current and current.model_name and current.provider == ProviderType.OLLAMA:
+                return True
+        except:
+            pass
+        return False
+
     def setup_ollama(self) -> bool:
         """设置Ollama模型"""
         self.print_step("设置 Ollama", "配置本地模型")
@@ -278,7 +298,7 @@ class Launcher:
                 return False
 
         saved_model_available = False
-        if self.has_saved_model_config():
+        if self.has_saved_ollama_config():
             try:
                 from model_providers import config_manager
                 saved_model = config_manager.current_config.model_name
@@ -407,7 +427,37 @@ class Launcher:
 
         print(f"\n{Fore.CYAN}配置外部API模型:")
 
-        api_base = input(f"{Fore.GREEN}API地址: ").strip()
+        provider_map = {
+            'openai': ProviderType.OPENAI_COMPATIBLE,
+            'custom': ProviderType.CUSTOM
+        }
+        provider_type = provider_map.get(self.selected_provider, ProviderType.CUSTOM)
+
+        saved_configs = []
+        for cfg in config_manager.configs:
+            if cfg.provider == provider_type:
+                saved_configs.append(cfg)
+
+        if saved_configs:
+            print(f"\n{Fore.CYAN}已配置的{self.selected_provider}模型:")
+            for i, cfg in enumerate(saved_configs, 1):
+                print(f"  {i}. {cfg.name} ({cfg.model_name})")
+            print(f"  {len(saved_configs) + 1}. 添加新模型")
+
+            while True:
+                choice = input(f"\n{Fore.GREEN}请选择 [1-{len(saved_configs) + 1}]: ").strip()
+                if choice.isdigit():
+                    idx = int(choice) - 1
+                    if 0 <= idx < len(saved_configs):
+                        selected = saved_configs[idx]
+                        config_manager.set_current(selected.name)
+                        self.print_success(f"已选择模型: {selected.name}")
+                        return True
+                    elif idx == len(saved_configs):
+                        break
+                self.print_error("无效的选择，请重试")
+
+        api_base = input(f"\n{Fore.GREEN}API地址: ").strip()
         if not api_base:
             self.print_error("API地址不能为空")
             return False
@@ -419,24 +469,24 @@ class Launcher:
 
         api_key = input(f"{Fore.GREEN}API密钥 (可选): ").strip()
 
-        provider_map = {
-            'openai': ProviderType.OPENAI_COMPATIBLE,
-            'custom': ProviderType.CUSTOM
-        }
-
-        provider = self.selected_provider
-        provider_type = provider_map.get(provider, ProviderType.CUSTOM)
+        config_name = input(f"{Fore.GREEN}配置名称 (用于标识此配置): ").strip()
+        if not config_name:
+            config_name = f"{self.selected_provider}-{model_name}"
 
         config = ModelConfig(
             provider=provider_type,
-            name=f"{provider}-custom",
+            name=config_name,
             model_name=model_name,
             api_base=api_base,
             api_key=api_key
         )
 
-        config_manager.add_config(config)
-        config_manager.set_current(f"{provider}-custom")
+        existing = config_manager.get_config(config_name)
+        if existing:
+            config_manager.update_config(config)
+        else:
+            config_manager.add_config(config)
+        config_manager.set_current(config_name)
         self.print_success("配置已保存")
 
         return True

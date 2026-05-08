@@ -23,6 +23,47 @@
 - Python 3.10+
 - Ollama (本地模型运行环境)
 
+### 一键启动（推荐）
+
+现在有了 **智能启动器**，你只需要运行：
+
+```bash
+# 两种等价方式
+python launcher.py
+# 或
+python xuan_cli.py
+```
+
+启动器会自动：
+1. ✅ 检查Python版本
+2. ✅ 检查并自动安装依赖
+3. ✅ 检测Ollama状态
+4. ✅ 自动启动Ollama（如果需要）
+5. ✅ 列出已安装的模型
+6. ✅ 帮助你选择或下载模型
+7. ✅ 更新配置
+8. ✅ 启动你选择的界面
+
+### 传统启动方式
+
+#### 命令行界面
+
+```bash
+# 使用新版SkillAgent v4.0（推荐）
+python agent.py
+
+# 或使用旧版Agent v3.1（保留兼容）
+python agent_v3_1.py
+```
+
+#### Web界面
+
+```bash
+python web_app.py
+```
+
+然后打开浏览器访问：`http://localhost:30000`
+
 ### 安装部署
 **Windows 用户：**
 ```bash
@@ -37,7 +78,7 @@ pip install --upgrade pip
 pip install -r requirements.txt
 
 # 4. 启动项目
-python xuan_cli.py
+python launcher.py
 ```
 
 
@@ -46,7 +87,7 @@ python xuan_cli.py
 chmod +x setup_mac.sh
 ./setup_mac.sh
 source venv/bin/activate
-python3 xuan_cli.py
+python3 launcher.py
 ```
 
 **Linux 用户：**
@@ -54,13 +95,146 @@ python3 xuan_cli.py
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
-python3 xuan_cli.py
+python3 launcher.py
+```
+
+### 前置准备
+
+#### 1. 安装Ollama
+
+如果还没有安装Ollama，请先访问：
+- https://ollama.com/download
+
+下载并安装适合你系统的版本。
+
+#### 2. 拉取模型（可选）
+
+虽然启动器会帮你下载，但你也可以预先拉取：
+
+```bash
+# 推荐模型（代码能力强）
+ollama pull qwen2.5-coder:7b
+
+# 或更轻量的模型
+ollama pull phi3:3.8b
+
+# 或通用模型
+ollama pull qwen2.5:7b
+ollama pull llama3.1:8b
+```
+
+### 使用技巧
+
+#### 在交互界面中
+
+- 输入 `skills` - 查看所有可用技能
+- 输入 `clear` - 清空对话记忆
+- 输入 `exit` / `quit` - 退出
+
+#### 使用技能
+
+Agent会根据你的需要自动调用技能，例如：
+
+| 你说的话 | 可能调用的技能 |
+|---------|--------------|
+| "帮我列出当前目录" | list_dir |
+| "读取config.py文件" | read_file |
+| "搜索Python教程" | web_search |
+| "计算100以内的素数和" | run_code |
+
+### 故障排除
+
+#### Ollama无法启动
+
+检查Ollama是否安装：
+```bash
+ollama --version
+```
+
+手动启动Ollama：
+```bash
+ollama serve
+```
+
+#### 依赖安装失败
+
+尝试手动安装：
+```bash
+pip install -r requirements.txt
+```
+
+#### 模型下载慢
+
+你可以手动下载：
+```bash
+ollama pull qwen2.5-coder:7b
+```
+
+#### 端口被占用
+
+Web界面默认使用30000端口，你可以修改config.py或设置：
+```bash
+set WEB_PORT=8080  # Windows
+export WEB_PORT=8080  # Linux/Mac
 ```
 
 ## 🛠️ 技术栈
 - **Backend**: FastAPI, SQLite (WAL), Python 3.10
 - **Frontend**: HTML5, CSS3, JavaScript (Vanilla)
 - **LLM**: Ollama / OpenAI / DeepSeek / Moonshot (适配多种 Provider)
+
+## ⚙️ 配置参数说明
+
+所有配置都在 `config.py` 文件中，你可以通过环境变量覆盖：
+
+```bash
+# 更改模型
+set MODEL_NAME=phi3:3.8b  # Windows
+export MODEL_NAME=phi3:3.8b  # Linux/Mac
+
+# 启用向量记忆
+set USE_VECTOR_MEMORY=true
+```
+
+### 核心配置参数
+
+| 参数 | 类型 | 默认值 | 环境变量 | 说明 |
+|------|------|--------|----------|------|
+| **基础路径** |
+| PROJECT_ROOT | str | 自动检测 | - | 项目根目录 |
+| MEMORY_DB_PATH | str | `agent_memory.db` | - | SQLite数据库路径 |
+| **Ollama配置** |
+| OLLAMA_BASE_URL | str | `http://localhost:11434` | OLLAMA_BASE_URL | Ollama服务地址 |
+| MODEL_NAME | str | None | MODEL_NAME | 使用的模型名称 |
+| **Web服务** |
+| WEB_HOST | str | `0.0.0.0` | WEB_HOST | Web服务监听地址 |
+| WEB_PORT | int | `30000` | WEB_PORT | Web服务端口 |
+| **安全配置** |
+| MAX_CODE_EXECUTIONS | int | `10` | - | 单次对话最大代码执行次数 |
+| CODE_EXECUTION_TIMEOUT | int | `10` | - | 代码执行超时时间(秒) |
+| **Docker沙箱** |
+| SANDBOX_ENABLED | bool | `true` | SANDBOX_ENABLED | 是否启用Docker沙箱 |
+| SANDBOX_CPU_LIMIT | float | `0.5` | SANDBOX_CPU_LIMIT | CPU限制(0.0-1.0) |
+| SANDBOX_MEMORY_LIMIT | str | `256m` | SANDBOX_MEMORY_LIMIT | 内存限制 |
+| SANDBOX_TIMEOUT | int | `30` | SANDBOX_TIMEOUT | 沙箱执行超时(秒) |
+| **网络控制** |
+| NETWORK_ENABLED | bool | `true` | NETWORK_ENABLED | 是否启用网络访问控制 |
+| NETWORK_DEFAULT_ACTION | str | `deny` | NETWORK_DEFAULT_ACTION | 默认操作(allow/deny) |
+| NETWORK_WHITELIST | list | 见config.py | NETWORK_WHITELIST | 域名白名单(逗号分隔) |
+| **日志配置** |
+| LOG_LEVEL | str | `INFO` | LOG_LEVEL | 日志级别(DEBUG/INFO/WARNING/ERROR) |
+| LOG_FORMAT | str | `text` | LOG_FORMAT | 日志格式(text/json) |
+| LOG_FILE | str | None | LOG_FILE | 日志文件路径 |
+| **记忆系统** |
+| USE_VECTOR_MEMORY | bool | `false` | USE_VECTOR_MEMORY | 是否启用向量记忆 |
+| VECTOR_MODEL | str | `all-MiniLM-L6-v2` | VECTOR_MODEL | 向量模型名称 |
+| **进化功能** |
+| ENABLE_EVOLUTION | bool | `false` | ENABLE_EVOLUTION | 是否启用自进化功能 |
+| **集群协作** |
+| CLUSTER_ENABLED | bool | `false` | CLUSTER_ENABLED | 是否启用集群协作 |
+| CLUSTER_ROLE | str | `worker` | CLUSTER_ROLE | 角色(manager/worker) |
+| CLUSTER_MANAGER_HOST | str | `127.0.0.1` | CLUSTER_MANAGER_HOST | Manager地址 |
+| CLUSTER_MANAGER_PORT | int | `30001` | CLUSTER_MANAGER_PORT | Manager端口 |
 
 
 ## 🗺️ 集群协作（实验性）

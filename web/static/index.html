@@ -128,6 +128,45 @@
             background: #e9ecef;
             border-radius: 4px;
         }
+        /* 消息气泡样式 */
+        .message {
+            display: flex;
+            margin-bottom: 12px;
+            align-items: flex-start;
+        }
+        .message .avatar {
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            background: #007bff;
+            color: white;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 18px;
+            margin-right: 10px;
+            flex-shrink: 0;
+        }
+        .message.user-message .avatar {
+            background: #28a745;
+        }
+        .message.assistant-message .avatar {
+            background: #007bff;
+        }
+        .message-content {
+            background: white;
+            padding: 10px 14px;
+            border-radius: 12px;
+            max-width: 80%;
+            word-wrap: break-word;
+            box-shadow: 0 1px 2px rgba(0,0,0,0.1);
+        }
+        .message.user-message .message-content {
+            background: #d4edda;
+        }
+        .message.assistant-message .message-content {
+            background: #e3f2fd;
+        }
     </style>
 </head>
 <body>
@@ -173,11 +212,11 @@
             <!-- 创建房间视图 -->
             <div id="view-create-room" class="hidden">
                 <div class="form-group">
-                    <label>房间名称</label>
+                    <label>房间名称（必填）</label>
                     <input type="text" id="new-room-name" placeholder="例如：项目A协作室">
                 </div>
                 <div class="form-group">
-                    <label>房主名称（花名）</label>
+                    <label>房主名称（花名/必填）</label>
                     <input type="text" id="new-room-owner" placeholder="例如：玄枢居士">
                 </div>
                 <div class="form-group">
@@ -188,6 +227,10 @@
                         <option value="llama3:8b">llama3:8b</option>
                         <option value="phi3:3.8b">phi3:3.8b (轻量)</option>
                     </select>
+                </div>
+                <div class="form-group">
+                    <label>房间密码（可选）</label>
+                    <input type="password" id="new-room-password" placeholder="设置房间密码，最多32字符">
                 </div>
                 <button class="btn" onclick="createRoom()">✅ 创建房间</button>
             </div>
@@ -221,6 +264,10 @@
                         <option value="llama3:8b">llama3:8b</option>
                         <option value="phi3:3.8b">phi3:3.8b</option>
                     </select>
+                </div>
+                <div class="form-group">
+                    <label>房间密码（如果有）</label>
+                    <input type="password" id="join-room-password" placeholder="如果房间有密码请输入">
                 </div>
                 <button class="btn" onclick="joinRoom()">🔗 加入房间</button>
             </div>
@@ -257,10 +304,11 @@
             </div>
             <!-- ==================== 模型管理视图 ==================== -->
             <div id='view-model-manage' class='hidden'>
-                <div class='panel-title'>⚙️ 模型管理</div>
+                <div class='panel-title'>⚙️ 模型管理 <button class="btn" style="float:right;font-size:12px;padding:2px 8px;width:auto;" onclick="loadModelList(true)">🔄 刷新</button></div>
                 <div id='model-list' style='max-height:400px;overflow-y:auto;margin-bottom:16px;'></div>
                 <div>
                     <h4>添加 / 编辑 模型</h4>
+                    <input type='hidden' id='model-original-name' value=''>
                     <div class='form-group'>
                         <label>名称</label>
                         <input type='text' id='model-name' placeholder='例如：MyModel'>
@@ -282,7 +330,7 @@
                         <input type='text' id='model-api-base' placeholder='http://localhost:11434'>
                     </div>
                     <div class='form-group'>
-                        <label>API 密钥（可选）</label>
+                        <label>API 密钥（如果是ollama可留空）</label>
                         <input type='password' id='model-api-key' placeholder=''>
                     </div>
                     <button class='btn' onclick='saveModel()'>保存</button>
@@ -295,6 +343,15 @@
                 <div id='conversation-list' style='max-height:400px;overflow-y:auto;'></div>
             </div>
 
+            <!-- ==================== 单机对话视图 ==================== -->
+            <div id='view-chat' class='hidden'>
+                <div class='panel-title'>💬 单机对话</div>
+                <div id='messages' style='height:400px;overflow-y:auto;border:1px solid #ddd;border-radius:4px;padding:12px;margin-bottom:12px;background:#f8f9fa;'></div>
+                <div style='display:flex;gap:8px;'>
+                    <textarea id='message-input' placeholder='输入消息...' style='flex:1;padding:8px;border:1px solid #ddd;border-radius:4px;resize:none;height:60px;'></textarea>
+                    <button id='send-btn' class='btn' style='width:80px;'>发送</button>
+                </div>
+            </div>
 
         </div>
 
@@ -311,6 +368,12 @@
             <div id="auth-section" class="hidden">
                 <strong>🔐 待审批</strong>
                 <div id="pending-list" style="margin-top:8px;font-size:13px;"></div>
+            </div>
+            <hr style="margin:12px 0; border:none; border-top:1px solid #eee;">
+            <div>
+                <strong>🤖 当前模型</strong>
+                <div id="current-model" style="font-size:13px;margin-top:8px;color:#007bff;">未选择</div>
+                <button class="btn" id="btn-switch-model" onclick="showView('model-manage')" style="margin-top:8px;font-size:12px;padding:4px 8px;width:auto;">切换模型</button>
             </div>
             <hr style="margin:12px 0; border:none; border-top:1px solid #eee;">
             <div>
@@ -336,6 +399,46 @@ const STATE = {
     currentConversationId: null
 };
 
+// ==================== Markdown 渲染 ====================
+function markdownToHtml(text) {
+    if (!text) return '';
+    text = text
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+    
+    text = text.replace(/^### (.*$)/gim, '<h3>$1</h3>');
+    text = text.replace(/^## (.*$)/gim, '<h2>$1</h2>');
+    text = text.replace(/^# (.*$)/gim, '<h1>$1</h1>');
+    
+    text = text.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+    text = text.replace(/\*(.*?)\*/g, '<em>$1</em>');
+    text = text.replace(/`([^`]+)`/g, '<code>$1</code>');
+    
+    text = text.replace(/```(\w+)?\n([\s\S]*?)```/g, function(match, lang, code) {
+        return `<pre><code class="language-${lang || 'text'}">${code.trim()}</code></pre>`;
+    });
+    
+    text = text.replace(/^- (.*$)/gim, '<li>$1</li>');
+    text = text.replace(/(?:<li>.*<\/li>)+/g, function(match) {
+        return `<ul>${match}</ul>`;
+    });
+    
+    text = text.replace(/^\d+\. (.*$)/gim, '<li>$1</li>');
+    text = text.replace(/(?:<li>.*<\/li>)+/g, function(match) {
+        if (!match.includes('<ul>')) {
+            return `<ol>${match}</ol>`;
+        }
+        return match;
+    });
+    
+    text = text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank">$1</a>');
+    
+    text = text.replace(/\n/g, '<br>');
+    
+    return text;
+}
+
 // ==================== 工具 ====================
 function showToast(msg, isError = false) {
     const toast = document.getElementById('toast');
@@ -353,6 +456,38 @@ function showView(viewName) {
         loadModelList();
     } else if (viewName === 'conversation-history') {
         loadConversationList();
+    } else if (viewName === 'create-room') {
+        loadRoomModels('new-room-model');
+    } else if (viewName === 'join-room') {
+        loadRoomModels('join-model');
+    }
+}
+async function loadRoomModels(selectId) {
+    const select = document.getElementById(selectId);
+    if (!select) return;
+    
+    const defaultModels = [
+        { name: 'qwen2.5-coder:7b', desc: 'qwen2.5-coder:7b (代码专精)' },
+        { name: 'qwen2.5:7b', desc: 'qwen2.5:7b (通用)' },
+        { name: 'llama3:8b', desc: 'llama3:8b' },
+        { name: 'phi3:3.8b', desc: 'phi3:3.8b (轻量)' }
+    ];
+    
+    try {
+        const res = await api('/api/ollama_models');
+        if (res.success && res.models.length > 0) {
+            select.innerHTML = res.models.map(m => 
+                `<option value="${m.name}">${m.name}</option>`
+            ).join('');
+        } else {
+            select.innerHTML = defaultModels.map(m => 
+                `<option value="${m.name}">${m.desc}</option>`
+            ).join('');
+        }
+    } catch (e) {
+        select.innerHTML = defaultModels.map(m => 
+            `<option value="${m.name}">${m.desc}</option>`
+        ).join('');
     }
 }
 async function api(endpoint, options = {}) {
@@ -369,9 +504,11 @@ async function init() {
         const data = await api('/api/info');
         STATE.role = data.role;
         // 角色相关的 UI 调整
-        const startBtn = document.getElementById('start-task-btn');
-        const joinBtn = document.querySelector('button[onclick="showView('join-room')"]');
-        if (STATE.role === 'manager') {
+        const startBtn = document.getElementById('btn-start-task');
+        const joinBtn = document.querySelector('button[onclick="showView(\'join-room\')"]');
+        
+        // 单机模式下也允许创建和查看房间
+        if (STATE.role === 'manager' || STATE.role === 'standalone') {
             if (startBtn) startBtn.style.display = 'inline-block';
             if (joinBtn) joinBtn.style.display = 'none';
             STATE.room = data.room;
@@ -398,14 +535,19 @@ async function init() {
                 showView('join-room');
             }
         } else {
+            // 默认显示房间列表
             showView('room-list');
+            refreshRooms();
         }
     } catch (e) {
         showToast('获取节点信息失败', true);
         console.error(e);
+        // 出错时默认显示房间列表
+        showView('room-list');
+        refreshRooms();
     }
     // 建立 WebSocket 连接（如有需要）
-    if (STATE.role === 'manager' || (STATE.role === 'worker')) {
+    if (STATE.role === 'manager' || STATE.role === 'worker' || STATE.role === 'standalone') {
         connectWebSocket();
     }
     // 绑定发送按钮事件
@@ -422,6 +564,9 @@ async function init() {
             });
         }
     }
+    // 更新API状态显示
+    document.getElementById('api-status').textContent = '已连接';
+    document.getElementById('api-status').style.color = 'green';
 }
 
 // ==================== 单机对话功能 ====================
@@ -435,67 +580,85 @@ function appendMessage(role, content) {
     if (!container) return;
     const div = document.createElement('div');
     div.className = 'message ' + (role === 'user' ? 'user-message' : 'assistant-message');
+    const renderedContent = role === 'assistant' ? markdownToHtml(content) : escapeHtml(content);
     div.innerHTML = `
         <div class='avatar'>${role === 'user' ? '👤' : '🤖'}</div>
-        <div class='message-content'>${escapeHtml(content)}</div>
+        <div class='message-content'>${renderedContent}</div>
     `;
     container.appendChild(div);
     container.scrollTop = container.scrollHeight;
 }
-async function sendMessage() {
-    const input = document.getElementById('message-input');
-    const text = input.value.trim();
-    if (!text) return;
-    appendMessage('user', text);
-    input.value = '';
-    try {
-        const res = await fetch('/api/chat', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ message: text })
-        });
-        const data = await res.json();
-        if (data.success) {
-            appendMessage('assistant', data.response);
-        } else {
-            appendMessage('assistant', '❌ ' + (data.error || '请求失败'));
-        }
-    } catch (e) {
-        appendMessage('assistant', '❌ 网络错误: ' + e.message);
-    }
-}
-
 // ==================== 房间管理（Manager） ====================
 async function refreshRooms() {
-    if (STATE.role !== 'manager') return;
     try {
-        const data = await api('/api/rooms/current');
-        // 对于 manager, data 是 room 对象
-        if (!data || !data.room_id) {
+        const data = await api('/api/rooms/list');
+        if (!data.success) {
+            document.getElementById('room-list-container').innerHTML = '<p>获取房间列表失败</p>';
+            return;
+        }
+        
+        const rooms = data.rooms || [];
+        if (rooms.length === 0) {
             document.getElementById('room-list-container').innerHTML = '<p>尚未创建房间</p>';
             return;
         }
-        const room = data;
-        document.getElementById('room-list-container').innerHTML = `
-            <div class="room-card">
-                <h4>${room.room_name} <small>${room.room_id}</small></h4>
-                <p>房主: ${room.owner_name}</p>
-                <p>模型: ${room.owner_model}</p>
-                <p>成员数: ${room.total_members}</p>
-                <p>房间状态: ${room.status}</p>
+        
+        document.getElementById('room-list-container').innerHTML = rooms.map(room => `
+            <div class="room-card" onclick="enterRoom('${room.room_id}')">
+                <h4>${room.room_name} <small>${room.room_id.slice(-8)}</small></h4>
+                <p>房主: ${room.owner_name || '未知'}</p>
+                <p>模型: ${room.owner_model || '未知'}</p>
+                <p>成员数: ${room.total_members || 0}</p>
+                <p>房间状态: ${room.status === 'active' ? '🟢 活跃' : '🟡 等待中'}</p>
+                ${room.has_password ? '<p>🔒 已加密</p>' : ''}
             </div>
-        `;
-        // 填充成员列表
-        if (data.members_detail && data.members_detail.length > 0) {
-            renderMembers(data.members_detail);
-        } else {
-            document.getElementById('member-list').innerHTML = '<p>暂无其他成员</p>';
+        `).join('');
+        
+        // 如果有房间，显示第一个房间的成员列表
+        if (rooms.length > 0) {
+            const firstRoom = rooms[0];
+            if (firstRoom.members_detail && firstRoom.members_detail.length > 0) {
+                renderMembers(firstRoom.members_detail);
+                document.getElementById('online-count').textContent = firstRoom.members_detail.filter(m => m.status === 'online').length;
+            } else {
+                document.getElementById('member-list').innerHTML = '<p>暂无其他成员</p>';
+                document.getElementById('online-count').textContent = '1';
+            }
         }
-        // 更新在线人数
-        const members = data.members_detail || [];
-        document.getElementById('online-count').textContent = members.filter(m => m.status === 'online').length;
     } catch (e) {
         showToast('获取房间信息失败', true);
+        console.error(e);
+    }
+}
+
+async function enterRoom(roomId) {
+    try {
+        const data = await api('/api/rooms/current');
+        if (data && data.room_id === roomId) {
+            // 显示房间详情
+            document.getElementById('detail-room-name').textContent = data.room_name;
+            document.getElementById('detail-room-id').textContent = data.room_id;
+            document.getElementById('detail-room-model').textContent = data.owner_model;
+            document.getElementById('detail-my-mode').textContent = '房主模式';
+            
+            // 显示成员列表
+            if (data.members_detail && data.members_detail.length > 0) {
+                renderMembers(data.members_detail);
+            } else {
+                document.getElementById('member-list').innerHTML = '<p>暂无其他成员</p>';
+            }
+            
+            // 显示协作模式徽章
+            document.getElementById('cluster-badge').classList.remove('hidden');
+            
+            // 更新当前房间信息显示
+            document.getElementById('room-name-display').textContent = data.room_name;
+            document.getElementById('current-room-info').classList.remove('hidden');
+            
+            showView('room-detail');
+        }
+    } catch (e) {
+        showToast('进入房间失败', true);
         console.error(e);
     }
 }
@@ -520,6 +683,7 @@ async function createRoom() {
     const name = document.getElementById('new-room-name').value.trim();
     const owner = document.getElementById('new-room-owner').value.trim();
     const model = document.getElementById('new-room-model').value;
+    const password = document.getElementById('new-room-password').value;
     if (!name || !owner) {
         showToast('请填写房间名和房主名', true);
         return;
@@ -527,7 +691,7 @@ async function createRoom() {
     try {
         const res = await api('/api/rooms/create', {
             method: 'POST',
-            body: JSON.stringify({ room_name: name, owner_name: owner, model })
+            body: JSON.stringify({ room_name: name, owner_name: owner, model, password })
         });
         if (res.success) {
             showToast('房间创建成功');
@@ -547,6 +711,7 @@ async function joinRoom() {
     const name = document.getElementById('join-member-name').value.trim();
     const mode = document.getElementById('join-mode').value;
     const model = document.getElementById('join-model').value;
+    const password = document.getElementById('join-room-password').value;
     if (!host || !name || !model) {
         showToast('请填写房间地址、成员名称和模型', true);
         return;
@@ -554,7 +719,7 @@ async function joinRoom() {
     try {
         const res = await api('/api/rooms/join', {
             method: 'POST',
-            body: JSON.stringify({ host, name, mode, model })
+            body: JSON.stringify({ host, name, mode, model, password })
         });
         if (res.success) {
             showToast('已加入房间');
@@ -628,9 +793,15 @@ function connectWebSocket() {
     if (STATE.ws && STATE.ws.readyState === WebSocket.OPEN) return;
     const wsUrl = `ws://${window.location.host}/api/cluster/ws/updates`;
     STATE.ws = new WebSocket(wsUrl);
-    STATE.ws.onopen = () => console.log('WS connected');
+    STATE.ws.onopen = () => {
+        console.log('WS connected');
+        document.getElementById('ws-status').textContent = '已连接';
+        document.getElementById('ws-status').style.color = 'green';
+    };
     STATE.ws.onclose = () => {
         console.log('WS closed, reconnecting in 3s');
+        document.getElementById('ws-status').textContent = '未连接';
+        document.getElementById('ws-status').style.color = 'red';
         setTimeout(connectWebSocket, 3000);
     };
     STATE.ws.onerror = (e) => console.error('WS error', e);
@@ -673,6 +844,265 @@ async function approveTask(logEntry, taskId, btn) {
         }
     } catch (e) {
         showToast('批准请求失败', true);
+    }
+}
+
+// ==================== 模型管理功能 ====================
+async function loadModelList(forceReload = false) {
+    const container = document.getElementById('model-list');
+    try {
+        const url = forceReload ? '/api/models?force_reload=true' : '/api/models';
+        const res = await api(url);
+        if (res.success) {
+            container.innerHTML = res.models.map(m => `
+                <div class="room-card" onclick="selectModel('${m.name}')">
+                    <h4>${m.name} ${m.is_current ? '✓' : ''}</h4>
+                    <p>提供商: ${m.provider}</p>
+                    <p>模型: ${m.model_name}</p>
+                    <p>API: ${m.api_base}</p>
+                    <button class="btn" style="font-size:12px;padding:2px 8px;margin-right:4px;" onclick="event.stopPropagation();editModel('${m.name}')">编辑</button>
+                    <button class="btn btn-danger" style="font-size:12px;padding:2px 8px;" onclick="event.stopPropagation();deleteModel('${m.name}')">删除</button>
+                </div>
+            `).join('');
+            updateCurrentModel(res.current_config);
+        } else {
+            container.innerHTML = '<p>加载模型列表失败</p>';
+        }
+    } catch (e) {
+        console.error('加载模型列表失败', e);
+        container.innerHTML = '<p>加载模型列表失败</p>';
+    }
+}
+async function selectModel(name) {
+    try {
+        const res = await api('/api/switch_model', {
+            method: 'POST',
+            body: JSON.stringify({ name })
+        });
+        if (res.success) {
+            showToast('已切换到: ' + name);
+            updateCurrentModel(name);
+            loadModelList();
+        } else {
+            showToast(res.error || '切换失败', true);
+        }
+    } catch (e) {
+        showToast('切换模型失败', true);
+    }
+}
+async function editModel(name) {
+    try {
+        const res = await api('/api/models?force_reload=true');
+        if (res.success) {
+            const model = res.models.find(m => m.name === name);
+            if (model) {
+                document.getElementById('model-original-name').value = model.name;
+                document.getElementById('model-name').value = model.name;
+                document.getElementById('model-provider').value = model.provider;
+                document.getElementById('model-model-name').value = model.model_name;
+                document.getElementById('model-api-base').value = model.api_base;
+                showToast('已加载模型配置到表单');
+            }
+        }
+    } catch (e) {
+        showToast('加载模型配置失败', true);
+    }
+}
+async function deleteModel(name) {
+    if (!confirm(`确定删除模型配置: ${name}?`)) return;
+    try {
+        const res = await api('/api/delete_model', {
+            method: 'POST',
+            body: JSON.stringify({ name })
+        });
+        if (res.success) {
+            showToast('已删除');
+            loadModelList();
+        } else {
+            showToast(res.error || '删除失败', true);
+        }
+    } catch (e) {
+        showToast('删除失败', true);
+    }
+}
+async function saveModel() {
+    const name = document.getElementById('model-name').value.trim();
+    const originalName = document.getElementById('model-original-name').value.trim();
+    const provider = document.getElementById('model-provider').value;
+    const modelName = document.getElementById('model-model-name').value.trim();
+    const apiBase = document.getElementById('model-api-base').value.trim();
+    const apiKey = document.getElementById('model-api-key').value;
+    
+    if (!name || !provider || !modelName || !apiBase) {
+        showToast('请填写必填字段', true);
+        return;
+    }
+    
+    const formData = new FormData();
+    formData.append('name', name);
+    formData.append('original_name', originalName);
+    formData.append('provider', provider);
+    formData.append('model_name', modelName);
+    formData.append('api_base', apiBase);
+    formData.append('api_key', apiKey);
+    
+    try {
+        const res = await fetch(`${STATE.apiBase}/api/save_model`, {
+            method: 'POST',
+            body: formData
+        });
+        const data = await res.json();
+        if (data.success) {
+            showToast('保存成功');
+            document.getElementById('model-name').value = '';
+            document.getElementById('model-original-name').value = '';
+            document.getElementById('model-model-name').value = '';
+            document.getElementById('model-api-base').value = '';
+            document.getElementById('model-api-key').value = '';
+            loadModelList();
+        } else {
+            showToast(data.error || '保存失败', true);
+        }
+    } catch (e) {
+        showToast('保存失败', true);
+    }
+}
+function updateCurrentModel(modelName) {
+    document.getElementById('current-model').textContent = modelName || '未选择';
+}
+
+// ==================== 对话历史功能 ====================
+async function loadConversationList() {
+    const container = document.getElementById('conversation-list');
+    try {
+        const res = await api('/api/conversations');
+        if (res.success) {
+            if (res.conversations.length === 0) {
+                container.innerHTML = '<p>暂无对话历史</p>';
+            } else {
+                container.innerHTML = res.conversations.map(c => `
+                    <div class="room-card" onclick="loadConversation('${c.conversation_id}')">
+                        <h4>${c.title || '未命名对话'}</h4>
+                        <p>更新时间: ${formatTime(c.updated_at)}</p>
+                        <p>消息数: ${c.message_count}</p>
+                        <button class="btn btn-danger" style="font-size:12px;padding:2px 8px;" onclick="event.stopPropagation();deleteConversation('${c.conversation_id}')">删除</button>
+                    </div>
+                `).join('');
+            }
+        } else {
+            container.innerHTML = '<p>加载对话历史失败</p>';
+        }
+    } catch (e) {
+        console.error('加载对话历史失败', e);
+        container.innerHTML = '<p>加载对话历史失败</p>';
+    }
+}
+function formatTime(timeStr) {
+    try {
+        const date = new Date(timeStr);
+        return date.toLocaleString('zh-CN');
+    } catch {
+        return timeStr;
+    }
+}
+async function loadConversation(conversationId) {
+    try {
+        const res = await api(`/api/conversation/${conversationId}`);
+        if (res.success) {
+            STATE.currentConversationId = conversationId;
+            document.getElementById('current-conversation').textContent = res.conversation.title;
+            showView('chat');
+            renderConversation(res.conversation);
+        } else {
+            showToast('加载对话失败', true);
+        }
+    } catch (e) {
+        showToast('加载对话失败', true);
+    }
+}
+function renderConversation(conversation) {
+    const container = document.getElementById('messages');
+    container.innerHTML = '';
+    conversation.messages.forEach(msg => {
+        appendMessage(msg.role, msg.content);
+    });
+}
+async function deleteConversation(conversationId) {
+    if (!confirm('确定删除此对话?')) return;
+    try {
+        const res = await api(`/api/conversation/${conversationId}`, {
+            method: 'DELETE'
+        });
+        if (res.success) {
+            showToast('已删除');
+            if (STATE.currentConversationId === conversationId) {
+                STATE.currentConversationId = null;
+                document.getElementById('current-conversation').textContent = '未选择';
+            }
+            loadConversationList();
+        } else {
+            showToast(res.error || '删除失败', true);
+        }
+    } catch (e) {
+        showToast('删除失败', true);
+    }
+}
+async function createNewConversation() {
+    try {
+        const res = await api('/api/conversation', {
+            method: 'POST',
+            body: JSON.stringify({})
+        });
+        if (res.success) {
+            STATE.currentConversationId = res.conversation_id;
+            document.getElementById('current-conversation').textContent = res.conversation.title;
+            showView('chat');
+            document.getElementById('messages').innerHTML = '';
+            showToast('已创建新对话');
+        } else {
+            showToast(res.error || '创建失败', true);
+        }
+    } catch (e) {
+        showToast('创建对话失败', true);
+    }
+}
+
+// ==================== 单机对话增强功能 ====================
+async function sendMessage() {
+    const input = document.getElementById('message-input');
+    const sendBtn = document.getElementById('send-btn');
+    const text = input.value.trim();
+    if (!text) return;
+    
+    appendMessage('user', text);
+    input.value = '';
+    sendBtn.disabled = true;
+    sendBtn.textContent = '思考中...';
+    
+    try {
+        const payload = { message: text };
+        if (STATE.currentConversationId) {
+            payload.conversation_id = STATE.currentConversationId;
+        }
+        
+        const res = await fetch('/api/chat', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if (data.success) {
+            appendMessage('assistant', data.response);
+            STATE.currentConversationId = data.conversation_id;
+            document.getElementById('current-conversation').textContent = '当前对话';
+        } else {
+            appendMessage('assistant', '❌ ' + (data.error || '请求失败'));
+        }
+    } catch (e) {
+        appendMessage('assistant', '❌ 网络错误: ' + e.message);
+    } finally {
+        sendBtn.disabled = false;
+        sendBtn.textContent = '发送';
     }
 }
 

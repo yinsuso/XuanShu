@@ -1,0 +1,194 @@
+{"timestamp": "2026-05-08T03:53:50.258708Z", "level": "INFO", "component": "local_agent", "action": "✅ 日志文件处理器已初始化", "trace_id": null}
+{"timestamp": "2026-05-08T03:53:50.262353Z", "level": "INFO", "component": "local_agent", "action": "已加载 6 个模型配置", "trace_id": null}
+{"timestamp": "2026-05-08T03:53:53.384676Z", "level": "INFO", "component": "local_agent", "action": "✅ 统一记忆系统已初始化 (SQLite WAL 模式): J:\\XuanShu\\agent_memory.db", "trace_id": null}
+{"timestamp": "2026-05-08T03:53:53.451938Z", "level": "INFO", "component": "local_agent", "action": "创建新对话: 46141904-7668-44c9-84bd-ce3156ba7ddc", "trace_id": null}
+{"timestamp": "2026-05-08T03:53:53.452540Z", "level": "INFO", "component": "local_agent", "action": "✅ 成功加载对话: 961b7745-aadb-442b-adc3-13ba3c9df0e9, 消息数: 2", "trace_id": null}
+{"timestamp": "2026-05-08T03:53:53.452677Z", "level": "INFO", "component": "local_agent", "action": "自动加载最近对话: 961b7745...", "trace_id": null}
+{"timestamp": "2026-05-08T03:53:53.452823Z", "level": "INFO", "component": "local_agent", "action": "创建新对话: bab0e738-8d3f-4372-b1d3-bb6e5eeb3761", "trace_id": null}
+{"timestamp": "2026-05-08T03:53:53.457090Z", "level": "INFO", "component": "local_agent", "action": "🤖 UniversalAgent v5.0 (Cognitive Evolution) 初始化完成", "trace_id": null}
+{"timestamp": "2026-05-08T03:53:53.457466Z", "level": "INFO", "component": "local_agent", "action": "📦 实际运行模型: Ollama (本地) (qwen3.5:9b)", "trace_id": null}
+{"timestamp": "2026-05-08T03:53:53.457627Z", "level": "INFO", "component": "local_agent", "action": "🔧 技能数量: 6", "trace_id": null}
+{"timestamp": "2026-05-08T03:53:53.457762Z", "level": "INFO", "component": "local_agent", "action": "🧬 进化功能: 启用", "trace_id": null}
+{"timestamp": "2026-05-08T03:53:53.401368Z", "level": "INFO", "component": "code_utils", "action": "✅ 日志文件处理器已初始化", "trace_id": null}
+{"timestamp": "2026-05-08T03:53:53.463532Z", "level": "INFO", "component": "local_agent", "action": "✅ 日志文件处理器已初始化", "trace_id": null}
+{"timestamp": "2026-05-08T03:53:53.465724Z", "level": "INFO", "component": "local_agent", "action": "✅ 统一记忆系统已初始化 (SQLite WAL 模式): J:\\XuanShu\\agent_memory.db", "trace_id": null}
+{"timestamp": "2026-05-08T03:53:53.812848Z", "level": "INFO", "component": "local_agent", "action": "已加载 6 个模型配置", "trace_id": null}
+{"timestamp": "2026-05-08T03:53:53.938880Z", "level": "INFO", "component": "local_agent", "action": "创建新对话: fd25498e-709e-4cac-a32c-728ccdd6fdfd", "trace_id": null}
+{"timestamp": "2026-05-08T03:53:53.939363Z", "level": "INFO", "component": "local_agent", "action": "✅ 成功加载对话: 961b7745-aadb-442b-adc3-13ba3c9df0e9, 消息数: 2", "trace_id": null}
+{"timestamp": "2026-05-08T03:53:53.939842Z", "level": "INFO", "component": "local_agent", "action": "自动加载最近对话: 961b7745...", "trace_id": null}
+{"timestamp": "2026-05-08T03:53:53.818984Z", "level": "INFO", "component": "code_utils", "action": "✅ 日志文件处理器已初始化", "trace_id": null}
+{"timestamp": "2026-05-08T03:55:10.463143Z", "level": "INFO", "component": "local_agent", "action": "⚡ 执行简单对话模式...", "trace_id": null}
+{"timestamp": "2026-05-08T07:22:21.017030Z", "level": "INFO", "component": "local_agent", "action": "✅ 日志文件处理器已初始化", "trace_id": null}
+{"timestamp": "2026-05-08T07:22:21.020524Z", "level": "INFO", "component": "local_agent", "action": "已加载 6 个模型配置", "trace_id": null}
+{"timestamp": "2026-05-08T07:22:24.135672Z", "level": "INFO", "component": "local_agent", "action": "✅ 统一记忆系统已初始化 (SQLite WAL 模式): J:\\XuanShu\\agent_memory.db", "trace_id": null}
+{"timestamp": "2026-05-08T07:22:24.147631Z", "level": "INFO", "component": "code_utils", "action": "✅ 日志文件处理器已初始化", "trace_id": null}
+race_id": null}
+{"timestamp": "2026-05-08T07:22:24.204049Z", "level": "INFO", "component": "local_agent", "action": "✅ 成功加载对话: bab0e738-8d3f-4372-b1d3-bb6e5eeb3761, 消息数: 2", "trace_id": null}
+{"timestamp": "2026-05-08T07:22:24.204236Z", "level": "INFO", "component": "local_agent", "action": "自动加载最近对话: bab0e738...", "trace_id": null}
+{"timestamp": "2026-05-08T07:22:24.204416Z", "level": "INFO", "component": "local_agent", "action": "创建新对话: f1abec74-33c5-4632-8d69-9c8b07a63741", "trace_id": null}
+{"timestamp": "2026-05-08T07:22:24.229999Z", "level": "INFO", "component": "local_agent", "action": "🤖 UniversalAgent v5.0 (Cognitive Evolution) 初始化完成", "trace_id": null}
+{"timestamp": "2026-05-08T07:22:24.230551Z", "level": "INFO", "component": "local_agent", "action": "📦 实际运行模型: Ollama (本地) (qwen3.5:9b)", "trace_id": null}
+{"timestamp": "2026-05-08T07:22:24.230738Z", "level": "INFO", "component": "local_agent", "action": "🔧 技能数量: 6", "trace_id": null}
+{"timestamp": "2026-05-08T07:22:24.231071Z", "level": "INFO", "component": "local_agent", "action": "🧬 进化功能: 启用", "trace_id": null}
+{"timestamp": "2026-05-08T07:22:24.161305Z", "level": "INFO", "component": "local_agent", "action": "✅ 日志文件处理器已初始化", "trace_id": null}
+{"timestamp": "2026-05-08T07:22:24.163334Z", "level": "INFO", "component": "local_agent", "action": "✅ 统一记忆系统已初始化 (SQLite WAL 模式): J:\\XuanShu\\agent_memory.db", "trace_id": null}
+{"timestamp": "2026-05-08T07:22:24.454087Z", "level": "INFO", "component": "local_agent", "action": "已加载 6 个模型配置", "trace_id": null}
+{"timestamp": "2026-05-08T07:22:24.629522Z", "level": "INFO", "component": "local_agent", "action": "创建新对话: a4a0b047-4fc0-403d-9172-aa0ce615257b", "trace_id": null}
+{"timestamp": "2026-05-08T07:22:24.630146Z", "level": "INFO", "component": "local_agent", "action": "✅ 成功加载对话: bab0e738-8d3f-4372-b1d3-bb6e5eeb3761, 消息数: 2", "trace_id": null}
+{"timestamp": "2026-05-08T07:22:24.630251Z", "level": "INFO", "component": "local_agent", "action": "自动加载最近对话: bab0e738...", "trace_id": null}
+{"timestamp": "2026-05-08T07:22:24.459701Z", "level": "INFO", "component": "code_utils", "action": "✅ 日志文件处理器已初始化", "trace_id": null}
+{"timestamp": "2026-05-08T07:23:34.369181Z", "level": "INFO", "component": "local_agent", "action": "✅ 日志文件处理器已初始化", "trace_id": null}
+{"timestamp": "2026-05-08T07:23:34.371899Z", "level": "INFO", "component": "local_agent", "action": "✅ 统一记忆系统已初始化 (SQLite WAL 模式): J:\\XuanShu\\agent_memory.db", "trace_id": null}
+{"timestamp": "2026-05-08T07:23:34.665649Z", "level": "INFO", "component": "local_agent", "action": "已加载 6 个模型配置", "trace_id": null}
+{"timestamp": "2026-05-08T07:23:34.809816Z", "level": "INFO", "component": "local_agent", "action": "创建新对话: 67f56eb4-3a19-4593-9164-fbe68a199ac3", "trace_id": null}
+{"timestamp": "2026-05-08T07:23:34.811126Z", "level": "INFO", "component": "local_agent", "action": "✅ 成功加载对话: bab0e738-8d3f-4372-b1d3-bb6e5eeb3761, 消息数: 2", "trace_id": null}
+{"timestamp": "2026-05-08T07:23:34.811465Z", "level": "INFO", "component": "local_agent", "action": "自动加载最近对话: bab0e738...", "trace_id": null}
+{"timestamp": "2026-05-08T07:23:34.671757Z", "level": "INFO", "component": "code_utils", "action": "✅ 日志文件处理器已初始化", "trace_id": null}
+{"timestamp": "2026-05-08T08:29:46.329530Z", "level": "INFO", "component": "local_agent", "action": "✅ 日志文件处理器已初始化", "trace_id": null}
+{"timestamp": "2026-05-08T08:29:46.332546Z", "level": "INFO", "component": "local_agent", "action": "已加载 6 个模型配置", "trace_id": null}
+{"timestamp": "2026-05-08T08:29:49.856987Z", "level": "INFO", "component": "local_agent", "action": "✅ 统一记忆系统已初始化 (SQLite WAL 模式): J:\\XuanShu\\agent_memory.db", "trace_id": null}
+{"timestamp": "2026-05-08T08:29:49.945600Z", "level": "INFO", "component": "local_agent", "action": "创建新对话: be2500cc-ab01-4820-b76c-e667adbf4774", "trace_id": null}
+{"timestamp": "2026-05-08T08:29:49.946222Z", "level": "INFO", "component": "local_agent", "action": "✅ 成功加载对话: bab0e738-8d3f-4372-b1d3-bb6e5eeb3761, 消息数: 2", "trace_id": null}
+{"timestamp": "2026-05-08T08:29:49.946377Z", "level": "INFO", "component": "local_agent", "action": "自动加载最近对话: bab0e738...", "trace_id": null}
+{"timestamp": "2026-05-08T08:29:49.946584Z", "level": "INFO", "component": "local_agent", "action": "创建新对话: 756fa0c9-c2da-408a-9796-3f6597d1fc3b", "trace_id": null}
+{"timestamp": "2026-05-08T08:29:49.950970Z", "level": "INFO", "component": "local_agent", "action": "🤖 UniversalAgent v5.0 (Cognitive Evolution) 初始化完成", "trace_id": null}
+{"timestamp": "2026-05-08T08:29:49.951107Z", "level": "INFO", "component": "local_agent", "action": "📦 实际运行模型: Ollama (本地) (qwen3.5:9b)", "trace_id": null}
+{"timestamp": "2026-05-08T08:29:49.951251Z", "level": "INFO", "component": "local_agent", "action": "🔧 技能数量: 6", "trace_id": null}
+{"timestamp": "2026-05-08T08:29:49.951356Z", "level": "INFO", "component": "local_agent", "action": "🧬 进化功能: 启用", "trace_id": null}
+{"timestamp": "2026-05-08T08:29:49.886996Z", "level": "INFO", "component": "code_utils", "action": "✅ 日志文件处理器已初始化", "trace_id": null}
+{"timestamp": "2026-05-08T08:29:49.969987Z", "level": "INFO", "component": "local_agent", "action": "✅ 日志文件处理器已初始化", "trace_id": null}
+{"timestamp": "2026-05-08T08:29:49.972498Z", "level": "INFO", "component": "local_agent", "action": "✅ 统一记忆系统已初始化 (SQLite WAL 模式): J:\\XuanShu\\agent_memory.db", "trace_id": null}
+{"timestamp": "2026-05-08T08:29:50.224797Z", "level": "INFO", "component": "local_agent", "action": "已加载 6 个模型配置", "trace_id": null}
+{"timestamp": "2026-05-08T08:29:50.348100Z", "level": "INFO", "component": "local_agent", "action": "创建新对话: b4cc7db7-f7e0-4f37-b2d3-81998380cf71", "trace_id": null}
+{"timestamp": "2026-05-08T08:29:50.348609Z", "level": "INFO", "component": "local_agent", "action": "✅ 成功加载对话: bab0e738-8d3f-4372-b1d3-bb6e5eeb3761, 消息数: 2", "trace_id": null}
+{"timestamp": "2026-05-08T08:29:50.348731Z", "level": "INFO", "component": "local_agent", "action": "自动加载最近对话: bab0e738...", "trace_id": null}
+{"timestamp": "2026-05-08T08:29:50.229838Z", "level": "INFO", "component": "code_utils", "action": "✅ 日志文件处理器已初始化", "trace_id": null}
+{"timestamp": "2026-05-08T08:43:34.690691Z", "level": "INFO", "component": "local_agent", "action": "✅ 日志文件处理器已初始化", "trace_id": null}
+{"timestamp": "2026-05-08T08:43:34.759346Z", "level": "INFO", "component": "local_agent", "action": "✅ 统一记忆系统已初始化 (SQLite WAL 模式): J:\\XuanShu\\agent_memory.db", "trace_id": null}
+{"timestamp": "2026-05-08T08:43:35.068612Z", "level": "INFO", "component": "local_agent", "action": "已加载 6 个模型配置", "trace_id": null}
+{"timestamp": "2026-05-08T08:43:35.078528Z", "level": "INFO", "component": "code_utils", "action": "✅ 日志文件处理器已初始化", "trace_id": null}
+{"timestamp": "2026-05-08T08:44:18.049793Z", "level": "INFO", "component": "local_agent", "action": "✅ 日志文件处理器已初始化", "trace_id": null}
+{"timestamp": "2026-05-08T08:44:18.110345Z", "level": "INFO", "component": "local_agent", "action": "✅ 统一记忆系统已初始化 (SQLite WAL 模式): J:\\XuanShu\\agent_memory.db", "trace_id": null}
+{"timestamp": "2026-05-08T08:44:18.425473Z", "level": "INFO", "component": "local_agent", "action": "已加载 6 个模型配置", "trace_id": null}
+{"timestamp": "2026-05-08T08:44:18.611497Z", "level": "INFO", "component": "local_agent", "action": "创建新对话: b55f64b4-596a-4b60-88d5-f880a59f5e13", "trace_id": null}
+{"timestamp": "2026-05-08T08:44:18.612291Z", "level": "INFO", "component": "local_agent", "action": "✅ 成功加载对话: bab0e738-8d3f-4372-b1d3-bb6e5eeb3761, 消息数: 2", "trace_id": null}
+{"timestamp": "2026-05-08T08:44:18.612375Z", "level": "INFO", "component": "local_agent", "action": "自动加载最近对话: bab0e738...", "trace_id": null}
+{"timestamp": "2026-05-08T08:44:18.432047Z", "level": "INFO", "component": "code_utils", "action": "✅ 日志文件处理器已初始化", "trace_id": null}
+{"timestamp": "2026-05-08T08:46:09.499921Z", "level": "INFO", "component": "local_agent", "action": "✅ 日志文件处理器已初始化", "trace_id": null}
+{"timestamp": "2026-05-08T08:46:09.505405Z", "level": "INFO", "component": "local_agent", "action": "已加载 6 个模型配置", "trace_id": null}
+{"timestamp": "2026-05-08T08:46:12.631464Z", "level": "INFO", "component": "local_agent", "action": "✅ 统一记忆系统已初始化 (SQLite WAL 模式): J:\\XuanShu\\agent_memory.db", "trace_id": null}
+{"timestamp": "2026-05-08T08:46:12.690336Z", "level": "INFO", "component": "local_agent", "action": "创建新对话: b87cac91-9477-45a1-8ff0-cfcf63140632", "trace_id": null}
+{"timestamp": "2026-05-08T08:46:12.691203Z", "level": "INFO", "component": "local_agent", "action": "✅ 成功加载对话: bab0e738-8d3f-4372-b1d3-bb6e5eeb3761, 消息数: 2", "trace_id": null}
+{"timestamp": "2026-05-08T08:46:12.691461Z", "level": "INFO", "component": "local_agent", "action": "自动加载最近对话: bab0e738...", "trace_id": null}
+{"timestamp": "2026-05-08T08:46:12.691812Z", "level": "INFO", "component": "local_agent", "action": "创建新对话: d32c13c9-16b3-4f81-ae69-de4cef63218d", "trace_id": null}
+{"timestamp": "2026-05-08T08:46:12.696205Z", "level": "INFO", "component": "local_agent", "action": "🤖 UniversalAgent v5.0 (Cognitive Evolution) 初始化完成", "trace_id": null}
+{"timestamp": "2026-05-08T08:46:12.696527Z", "level": "INFO", "component": "local_agent", "action": "📦 实际运行模型: Ollama (本地) (qwen3.5:9b)", "trace_id": null}
+{"timestamp": "2026-05-08T08:46:12.696689Z", "level": "INFO", "component": "local_agent", "action": "🔧 技能数量: 6", "trace_id": null}
+{"timestamp": "2026-05-08T08:46:12.696823Z", "level": "INFO", "component": "local_agent", "action": "🧬 进化功能: 启用", "trace_id": null}
+{"timestamp": "2026-05-08T08:46:12.646805Z", "level": "INFO", "component": "code_utils", "action": "✅ 日志文件处理器已初始化", "trace_id": null}
+{"timestamp": "2026-05-08T08:46:12.741115Z", "level": "INFO", "component": "local_agent", "action": "✅ 日志文件处理器已初始化", "trace_id": null}
+{"timestamp": "2026-05-08T08:46:12.743399Z", "level": "INFO", "component": "local_agent", "action": "✅ 统一记忆系统已初始化 (SQLite WAL 模式): J:\\XuanShu\\agent_memory.db", "trace_id": null}
+{"timestamp": "2026-05-08T08:46:13.024909Z", "level": "INFO", "component": "local_agent", "action": "已加载 6 个模型配置", "trace_id": null}
+{"timestamp": "2026-05-08T08:46:13.158323Z", "level": "INFO", "component": "local_agent", "action": "创建新对话: 8ec24678-fbde-499c-9d4c-fc78e807e2c5", "trace_id": null}
+{"timestamp": "2026-05-08T08:46:13.158911Z", "level": "INFO", "component": "local_agent", "action": "✅ 成功加载对话: bab0e738-8d3f-4372-b1d3-bb6e5eeb3761, 消息数: 2", "trace_id": null}
+{"timestamp": "2026-05-08T08:46:13.159050Z", "level": "INFO", "component": "local_agent", "action": "自动加载最近对话: bab0e738...", "trace_id": null}
+{"timestamp": "2026-05-08T08:46:13.029890Z", "level": "INFO", "component": "code_utils", "action": "✅ 日志文件处理器已初始化", "trace_id": null}
+{"timestamp": "2026-05-08T09:00:10.367947Z", "level": "INFO", "component": "local_agent", "action": "✅ 日志文件处理器已初始化", "trace_id": null}
+{"timestamp": "2026-05-08T09:00:10.373339Z", "level": "INFO", "component": "local_agent", "action": "已加载 1 个模型配置", "trace_id": null}
+{"timestamp": "2026-05-08T09:00:13.452244Z", "level": "INFO", "component": "local_agent", "action": "✅ 统一记忆系统已初始化 (SQLite WAL 模式): J:\\XuanShu\\agent_memory.db", "trace_id": null}
+{"timestamp": "2026-05-08T09:00:13.507297Z", "level": "INFO", "component": "local_agent", "action": "创建新对话: d1520534-599a-451a-8f30-47365fd69ef9", "trace_id": null}
+{"timestamp": "2026-05-08T09:00:13.508072Z", "level": "INFO", "component": "local_agent", "action": "✅ 成功加载对话: 3cb4ebdb-3d15-4ee4-9075-4a2ccd7e0f31, 消息数: 4", "trace_id": null}
+{"timestamp": "2026-05-08T09:00:13.508281Z", "level": "INFO", "component": "local_agent", "action": "自动加载最近对话: 3cb4ebdb...", "trace_id": null}
+{"timestamp": "2026-05-08T09:00:13.508490Z", "level": "INFO", "component": "local_agent", "action": "创建新对话: 7dbec852-854f-4d0e-add5-58819323602b", "trace_id": null}
+{"timestamp": "2026-05-08T09:00:13.513159Z", "level": "INFO", "component": "local_agent", "action": "🤖 UniversalAgent v5.0 (Cognitive Evolution) 初始化完成", "trace_id": null}
+{"timestamp": "2026-05-08T09:00:13.513313Z", "level": "INFO", "component": "local_agent", "action": "📦 实际运行模型: Ollama (本地) (qwen3.5:9b)", "trace_id": null}
+{"timestamp": "2026-05-08T09:00:13.513429Z", "level": "INFO", "component": "local_agent", "action": "🔧 技能数量: 6", "trace_id": null}
+{"timestamp": "2026-05-08T09:00:13.513512Z", "level": "INFO", "component": "local_agent", "action": "🧬 进化功能: 启用", "trace_id": null}
+{"timestamp": "2026-05-08T09:00:13.461378Z", "level": "INFO", "component": "code_utils", "action": "✅ 日志文件处理器已初始化", "trace_id": null}
+{"timestamp": "2026-05-08T09:00:13.556432Z", "level": "INFO", "component": "local_agent", "action": "✅ 日志文件处理器已初始化", "trace_id": null}
+{"timestamp": "2026-05-08T09:00:13.558837Z", "level": "INFO", "component": "local_agent", "action": "✅ 统一记忆系统已初始化 (SQLite WAL 模式): J:\\XuanShu\\agent_memory.db", "trace_id": null}
+{"timestamp": "2026-05-08T09:00:13.818742Z", "level": "INFO", "component": "local_agent", "action": "已加载 1 个模型配置", "trace_id": null}
+{"timestamp": "2026-05-08T09:00:13.943119Z", "level": "INFO", "component": "local_agent", "action": "创建新对话: cc3efad1-c9f8-4e17-be2e-a4f44eb468e5", "trace_id": null}
+{"timestamp": "2026-05-08T09:00:13.943897Z", "level": "INFO", "component": "local_agent", "action": "✅ 成功加载对话: 3cb4ebdb-3d15-4ee4-9075-4a2ccd7e0f31, 消息数: 4", "trace_id": null}
+{"timestamp": "2026-05-08T09:00:13.944020Z", "level": "INFO", "component": "local_agent", "action": "自动加载最近对话: 3cb4ebdb...", "trace_id": null}
+{"timestamp": "2026-05-08T09:00:13.823704Z", "level": "INFO", "component": "code_utils", "action": "✅ 日志文件处理器已初始化", "trace_id": null}
+{"timestamp": "2026-05-08T09:19:42.762480Z", "level": "INFO", "component": "local_agent", "action": "✅ 日志文件处理器已初始化", "trace_id": null}
+{"timestamp": "2026-05-08T09:19:42.767577Z", "level": "INFO", "component": "local_agent", "action": "已加载 2 个模型配置", "trace_id": null}
+{"timestamp": "2026-05-08T09:20:00.783028Z", "level": "INFO", "component": "local_agent", "action": "已保存 3 个模型配置", "trace_id": null}
+{"timestamp": "2026-05-08T09:20:00.783643Z", "level": "INFO", "component": "local_agent", "action": "已保存 3 个模型配置", "trace_id": null}
+{"timestamp": "2026-05-08T09:20:00.783816Z", "level": "INFO", "component": "local_agent", "action": "已切换到模型: ollama-default", "trace_id": null}
+{"timestamp": "2026-05-08T09:20:01.826848Z", "level": "INFO", "component": "local_agent", "action": "✅ 统一记忆系统已初始化 (SQLite WAL 模式): J:\\XuanShu\\agent_memory.db", "trace_id": null}
+{"timestamp": "2026-05-08T09:20:01.879345Z", "level": "INFO", "component": "local_agent", "action": "创建新对话: 600f6e0e-258b-44ea-9b4a-074fb71290e8", "trace_id": null}
+{"timestamp": "2026-05-08T09:20:01.880001Z", "level": "INFO", "component": "local_agent", "action": "✅ 成功加载对话: e9c49bf8-d62e-42fd-b522-5c6f7f4c597c, 消息数: 2", "trace_id": null}
+{"timestamp": "2026-05-08T09:20:01.880165Z", "level": "INFO", "component": "local_agent", "action": "自动加载最近对话: e9c49bf8...", "trace_id": null}
+{"timestamp": "2026-05-08T09:20:01.880331Z", "level": "INFO", "component": "local_agent", "action": "创建新对话: 3b901f0e-50bc-4764-8725-2603c6725844", "trace_id": null}
+{"timestamp": "2026-05-08T09:20:01.884870Z", "level": "INFO", "component": "local_agent", "action": "🤖 UniversalAgent v5.0 (Cognitive Evolution) 初始化完成", "trace_id": null}
+{"timestamp": "2026-05-08T09:20:01.885050Z", "level": "INFO", "component": "local_agent", "action": "📦 实际运行模型: ollama-default (qwen3.5:4b)", "trace_id": null}
+{"timestamp": "2026-05-08T09:20:01.885218Z", "level": "INFO", "component": "local_agent", "action": "🔧 技能数量: 6", "trace_id": null}
+{"timestamp": "2026-05-08T09:20:01.885335Z", "level": "INFO", "component": "local_agent", "action": "🧬 进化功能: 启用", "trace_id": null}
+{"timestamp": "2026-05-08T09:20:01.838519Z", "level": "INFO", "component": "code_utils", "action": "✅ 日志文件处理器已初始化", "trace_id": null}
+{"timestamp": "2026-05-08T09:20:01.926822Z", "level": "INFO", "component": "local_agent", "action": "✅ 日志文件处理器已初始化", "trace_id": null}
+{"timestamp": "2026-05-08T09:20:01.928890Z", "level": "INFO", "component": "local_agent", "action": "✅ 统一记忆系统已初始化 (SQLite WAL 模式): J:\\XuanShu\\agent_memory.db", "trace_id": null}
+{"timestamp": "2026-05-08T09:20:02.210540Z", "level": "INFO", "component": "local_agent", "action": "已加载 3 个模型配置", "trace_id": null}
+{"timestamp": "2026-05-08T09:20:02.339715Z", "level": "INFO", "component": "local_agent", "action": "创建新对话: ab2ce5b5-1635-4699-9092-e2d7c38579a4", "trace_id": null}
+{"timestamp": "2026-05-08T09:20:02.341914Z", "level": "INFO", "component": "local_agent", "action": "✅ 成功加载对话: e9c49bf8-d62e-42fd-b522-5c6f7f4c597c, 消息数: 2", "trace_id": null}
+{"timestamp": "2026-05-08T09:20:02.342197Z", "level": "INFO", "component": "local_agent", "action": "自动加载最近对话: e9c49bf8...", "trace_id": null}
+{"timestamp": "2026-05-08T09:20:02.216037Z", "level": "INFO", "component": "code_utils", "action": "✅ 日志文件处理器已初始化", "trace_id": null}
+{"timestamp": "2026-05-08T09:44:09.058954Z", "level": "INFO", "component": "local_agent", "action": "✅ 日志文件处理器已初始化", "trace_id": null}
+{"timestamp": "2026-05-08T09:44:09.060368Z", "level": "INFO", "component": "local_agent", "action": "已加载 3 个模型配置", "trace_id": null}
+{"timestamp": "2026-05-08T09:47:11.427136Z", "level": "INFO", "component": "local_agent", "action": "✅ 日志文件处理器已初始化", "trace_id": null}
+{"timestamp": "2026-05-08T09:47:11.432326Z", "level": "INFO", "component": "local_agent", "action": "已加载 3 个模型配置", "trace_id": null}
+{"timestamp": "2026-05-08T09:47:13.979101Z", "level": "INFO", "component": "local_agent", "action": "已保存 3 个模型配置", "trace_id": null}
+{"timestamp": "2026-05-08T09:47:13.979891Z", "level": "INFO", "component": "local_agent", "action": "已保存 3 个模型配置", "trace_id": null}
+{"timestamp": "2026-05-08T09:47:13.980128Z", "level": "INFO", "component": "local_agent", "action": "已切换到模型: ollama-default", "trace_id": null}
+{"timestamp": "2026-05-08T09:47:15.011018Z", "level": "INFO", "component": "local_agent", "action": "✅ 统一记忆系统已初始化 (SQLite WAL 模式): J:\\XuanShu\\agent_memory.db", "trace_id": null}
+{"timestamp": "2026-05-08T09:47:15.027369Z", "level": "INFO", "component": "local_agent", "action": "创建新对话: f850c519-1d3c-479b-b59a-af071bfc809b", "trace_id": null}
+{"timestamp": "2026-05-08T09:47:15.028266Z", "level": "INFO", "component": "local_agent", "action": "✅ 成功加载对话: e9c49bf8-d62e-42fd-b522-5c6f7f4c597c, 消息数: 6", "trace_id": null}
+{"timestamp": "2026-05-08T09:47:15.028505Z", "level": "INFO", "component": "local_agent", "action": "自动加载最近对话: e9c49bf8...", "trace_id": null}
+{"timestamp": "2026-05-08T09:47:15.028757Z", "level": "INFO", "component": "local_agent", "action": "创建新对话: 269cd739-9565-405e-820b-344a3ed800fa", "trace_id": null}
+{"timestamp": "2026-05-08T09:47:15.034926Z", "level": "INFO", "component": "local_agent", "action": "🤖 UniversalAgent v5.0 (Cognitive Evolution) 初始化完成", "trace_id": null}
+{"timestamp": "2026-05-08T09:47:15.035144Z", "level": "INFO", "component": "local_agent", "action": "📦 实际运行模型: ollama-default (qwen3.5:4b)", "trace_id": null}
+{"timestamp": "2026-05-08T09:47:15.035353Z", "level": "INFO", "component": "local_agent", "action": "🔧 技能数量: 6", "trace_id": null}
+{"timestamp": "2026-05-08T09:47:15.035520Z", "level": "INFO", "component": "local_agent", "action": "🧬 进化功能: 启用", "trace_id": null}
+{"timestamp": "2026-05-08T09:47:15.107606Z", "level": "INFO", "component": "local_agent", "action": "✅ 日志文件处理器已初始化", "trace_id": null}
+{"timestamp": "2026-05-08T09:47:15.109848Z", "level": "INFO", "component": "local_agent", "action": "✅ 统一记忆系统已初始化 (SQLite WAL 模式): J:\\XuanShu\\agent_memory.db", "trace_id": null}
+{"timestamp": "2026-05-08T09:47:15.369279Z", "level": "INFO", "component": "local_agent", "action": "已加载 3 个模型配置", "trace_id": null}
+{"timestamp": "2026-05-08T09:47:15.493327Z", "level": "INFO", "component": "local_agent", "action": "创建新对话: 0b65571b-c7ad-4219-a56b-99890dc1582b", "trace_id": null}
+{"timestamp": "2026-05-08T09:47:15.494004Z", "level": "INFO", "component": "local_agent", "action": "✅ 成功加载对话: e9c49bf8-d62e-42fd-b522-5c6f7f4c597c, 消息数: 6", "trace_id": null}
+{"timestamp": "2026-05-08T09:47:15.494138Z", "level": "INFO", "component": "local_agent", "action": "自动加载最近对话: e9c49bf8...", "trace_id": null}
+{"timestamp": "2026-05-08T09:47:15.373770Z", "level": "INFO", "component": "code_utils", "action": "✅ 日志文件处理器已初始化", "trace_id": null}
+{"timestamp": "2026-05-08T09:59:51.514809Z", "level": "INFO", "component": "local_agent", "action": "✅ 日志文件处理器已初始化", "trace_id": null}
+{"timestamp": "2026-05-08T09:59:51.579531Z", "level": "INFO", "component": "local_agent", "action": "✅ 统一记忆系统已初始化 (SQLite WAL 模式): J:\\XuanShu\\agent_memory.db", "trace_id": null}
+{"timestamp": "2026-05-08T09:59:51.928319Z", "level": "INFO", "component": "local_agent", "action": "已加载 4 个模型配置", "trace_id": null}
+{"timestamp": "2026-05-08T09:59:52.123988Z", "level": "INFO", "component": "local_agent", "action": "创建新对话: cf398d3e-0104-497c-af80-a1514a4de194", "trace_id": null}
+{"timestamp": "2026-05-08T09:59:52.124998Z", "level": "INFO", "component": "local_agent", "action": "✅ 成功加载对话: 3ab18ff6-934d-4976-a68c-39efe57f170a, 消息数: 4", "trace_id": null}
+{"timestamp": "2026-05-08T09:59:52.125112Z", "level": "INFO", "component": "local_agent", "action": "自动加载最近对话: 3ab18ff6...", "trace_id": null}
+{"timestamp": "2026-05-08T09:59:51.942164Z", "level": "INFO", "component": "code_utils", "action": "✅ 日志文件处理器已初始化", "trace_id": null}
+{"timestamp": "2026-05-08T10:00:33.899348Z", "level": "INFO", "component": "local_agent", "action": "✅ 日志文件处理器已初始化", "trace_id": null}
+{"timestamp": "2026-05-08T10:00:33.900865Z", "level": "INFO", "component": "local_agent", "action": "已加载 4 个模型配置", "trace_id": null}
+{"timestamp": "2026-05-08T10:00:34.871678Z", "level": "INFO", "component": "local_agent", "action": "已保存 4 个模型配置", "trace_id": null}
+{"timestamp": "2026-05-08T10:00:34.872088Z", "level": "INFO", "component": "local_agent", "action": "已切换到模型: kimi-k2.6", "trace_id": null}
+{"timestamp": "2026-05-08T10:00:35.919616Z", "level": "INFO", "component": "local_agent", "action": "✅ 统一记忆系统已初始化 (SQLite WAL 模式): J:\\XuanShu\\agent_memory.db", "trace_id": null}
+{"timestamp": "2026-05-08T10:00:35.941072Z", "level": "INFO", "component": "local_agent", "action": "创建新对话: 7ee9302f-d1f9-4701-98c8-a8d8319052cf", "trace_id": null}
+{"timestamp": "2026-05-08T10:00:35.942222Z", "level": "INFO", "component": "local_agent", "action": "✅ 成功加载对话: 3ab18ff6-934d-4976-a68c-39efe57f170a, 消息数: 4", "trace_id": null}
+{"timestamp": "2026-05-08T10:00:35.942511Z", "level": "INFO", "component": "local_agent", "action": "自动加载最近对话: 3ab18ff6...", "trace_id": null}
+{"timestamp": "2026-05-08T10:00:35.942863Z", "level": "INFO", "component": "local_agent", "action": "创建新对话: bf84fa91-f63d-489c-8884-2eea18788642", "trace_id": null}
+{"timestamp": "2026-05-08T10:00:35.948900Z", "level": "INFO", "component": "local_agent", "action": "🤖 UniversalAgent v5.0 (Cognitive Evolution) 初始化完成", "trace_id": null}
+{"timestamp": "2026-05-08T10:00:35.949183Z", "level": "INFO", "component": "local_agent", "action": "📦 实际运行模型: kimi-k2.6 (moonshotai/kimi-k2.6)", "trace_id": null}
+{"timestamp": "2026-05-08T10:00:35.949400Z", "level": "INFO", "component": "local_agent", "action": "🔧 技能数量: 6", "trace_id": null}
+{"timestamp": "2026-05-08T10:00:35.949653Z", "level": "INFO", "component": "local_agent", "action": "🧬 进化功能: 启用", "trace_id": null}
+{"timestamp": "2026-05-08T10:00:35.930535Z", "level": "INFO", "component": "code_utils", "action": "✅ 日志文件处理器已初始化", "trace_id": null}
+{"timestamp": "2026-05-08T10:00:36.028391Z", "level": "INFO", "component": "local_agent", "action": "✅ 日志文件处理器已初始化", "trace_id": null}
+{"timestamp": "2026-05-08T10:00:36.030715Z", "level": "INFO", "component": "local_agent", "action": "✅ 统一记忆系统已初始化 (SQLite WAL 模式): J:\\XuanShu\\agent_memory.db", "trace_id": null}
+{"timestamp": "2026-05-08T10:00:36.319455Z", "level": "INFO", "component": "local_agent", "action": "已加载 4 个模型配置", "trace_id": null}
+{"timestamp": "2026-05-08T10:00:36.442413Z", "level": "INFO", "component": "local_agent", "action": "创建新对话: cbecee52-5c69-4483-859d-f0d5873bd00b", "trace_id": null}
+{"timestamp": "2026-05-08T10:00:36.443017Z", "level": "INFO", "component": "local_agent", "action": "✅ 成功加载对话: 3ab18ff6-934d-4976-a68c-39efe57f170a, 消息数: 4", "trace_id": null}
+{"timestamp": "2026-05-08T10:00:36.443137Z", "level": "INFO", "component": "local_agent", "action": "自动加载最近对话: 3ab18ff6...", "trace_id": null}
+{"timestamp": "2026-05-08T10:00:36.324009Z", "level": "INFO", "component": "code_utils", "action": "✅ 日志文件处理器已初始化", "trace_id": null}
+{"timestamp": "2026-05-08T10:12:07.450277Z", "level": "INFO", "component": "local_agent", "action": "✅ 日志文件处理器已初始化", "trace_id": null}
+{"timestamp": "2026-05-08T10:12:07.516476Z", "level": "INFO", "component": "local_agent", "action": "✅ 统一记忆系统已初始化 (SQLite WAL 模式): J:\\XuanShu\\agent_memory.db", "trace_id": null}
+{"timestamp": "2026-05-08T10:12:07.862088Z", "level": "INFO", "component": "local_agent", "action": "已加载 4 个模型配置", "trace_id": null}
+{"timestamp": "2026-05-08T10:12:08.044706Z", "level": "INFO", "component": "local_agent", "action": "创建新对话: 04193067-2422-41c8-b130-ec0d67075829", "trace_id": null}
+{"timestamp": "2026-05-08T10:12:08.046528Z", "level": "INFO", "component": "local_agent", "action": "✅ 成功加载对话: 3ab18ff6-934d-4976-a68c-39efe57f170a, 消息数: 4", "trace_id": null}
+{"timestamp": "2026-05-08T10:12:08.046654Z", "level": "INFO", "component": "local_agent", "action": "自动加载最近对话: 3ab18ff6...", "trace_id": null}
+{"timestamp": "2026-05-08T10:12:07.869021Z", "level": "INFO", "component": "code_utils", "action": "✅ 日志文件处理器已初始化", "trace_id": null}
