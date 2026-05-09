@@ -68,31 +68,45 @@ class Launcher:
         print(f"{Fore.BLUE}ℹ️ {msg}")
 
     def check_python_version(self) -> bool:
-        """检查Python版本"""
+        """检查Python版本并给出兼容性提示"""
         self.print_step("检查Python版本", "需要Python 3.8+")
         version = sys.version_info
+        py_ver_str = f"{version.major}.{version.minor}.{version.micro}"
 
         if version >= (3, 8):
-            self.print_success(f"Python {version.major}.{version.minor}.{version.micro}")
+            self.print_success(f"Python {py_ver_str}")
+            
+            # 针对 Python 3.13+ 给出 PyTorch 兼容性提示
+            if version >= (3, 13):
+                self.print_warning("检测到 Python 3.13+")
+                self.print_info("⚠️ PyTorch 生态对 Python 3.13+ 支持尚不完善")
+                self.print_info("核心功能可正常使用，但 sentence-transformers/chromadb 等可能遇到 DLL 问题")
+                self.print_info("推荐：如需向量检索完整功能，建议使用 Python 3.10 ~ 3.12")
+            
             return True
         else:
             self.print_error(f"Python版本过低: {version.major}.{version.minor}")
-            self.print_info("请更新Python到3.8或更高版本")
+            self.print_info("请更新Python到3.8或更高版本（推荐3.10~3.12）")
             return False
 
     def check_dependencies(self) -> List[str]:
-        """检查依赖是否已安装"""
+        """检查依赖是否已安装（智能区分必选和可选依赖）"""
         self.print_step("检查依赖", "验证所需的Python包")
 
         missing = []
         required_packages = []
+        optional_packages = []
 
         # 包名到模块名的映射（处理不一致的情况）
         pkg_to_module = {
             'beautifulsoup4': 'bs4',
             'duckduckgo-search': 'duckduckgo_search',
             'sentence-transformers': 'sentence_transformers',
+            'chromadb': 'chromadb',
         }
+
+        # 重型可选依赖列表（需要 PyTorch，在 Python 3.14 上可能有兼容性问题）
+        heavy_optional_pkgs = {'chromadb', 'sentence-transformers'}
 
         if os.path.exists(self.requirements_file):
             with open(self.requirements_file, 'r', encoding='utf-8') as f:
@@ -101,17 +115,38 @@ class Launcher:
                     if line and not line.startswith('#'):
                         pkg = line.split('>=')[0].split('==')[0].strip()
                         if pkg:
-                            required_packages.append(pkg)
+                            if pkg in heavy_optional_pkgs:
+                                optional_packages.append(pkg)
+                            else:
+                                required_packages.append(pkg)
 
+        # 先检查必选依赖
         for pkg in required_packages:
             try:
-                # 获取实际的模块名，如果没有映射则使用替换后的包名
                 module_name = pkg_to_module.get(pkg, pkg.replace('-', '_'))
                 __import__(module_name)
                 self.print_success(f"{pkg}")
             except ImportError:
                 self.print_warning(f"{pkg} - 未安装")
                 missing.append(pkg)
+
+        # 再检查可选依赖，智能捕获 PyTorch DLL 初始化错误
+        self.print_step("检查可选增强依赖", "语义检索/向量数据库（如遇错误可安全忽略）")
+        for pkg in optional_packages:
+            try:
+                module_name = pkg_to_module.get(pkg, pkg.replace('-', '_'))
+                __import__(module_name)
+                self.print_success(f"{pkg}")
+            except ImportError as e:
+                if "DLL" in str(e) or "c10.dll" in str(e):
+                    self.print_warning(f"{pkg} - 跳过（Python 3.14 PyTorch 兼容性问题，不影响核心功能）")
+                else:
+                    self.print_warning(f"{pkg} - 未安装（可选，核心功能仍可正常使用）")
+            except OSError as e:
+                if "WinError 1114" in str(e) or "DLL" in str(e):
+                    self.print_warning(f"{pkg} - 跳过（Windows DLL 初始化失败，Python 3.14 与 PyTorch 兼容问题）")
+                else:
+                    self.print_warning(f"{pkg} - 跳过（环境不兼容，核心功能仍可用）")
 
         return missing
 

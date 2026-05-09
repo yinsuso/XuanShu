@@ -99,9 +99,11 @@ class ClusterDiscovery:
                                 "room_id": msg.get("room_id"),
                                 "manager_port": msg.get("manager_port", 30001),
                                 "web_port": msg.get("web_port", 30000),
+                                "owner_name": msg.get("owner_name"),
+                                "owner_model": msg.get("owner_model"),
                                 "timestamp": msg.get("timestamp", time.time())
                             }
-                            logger.info(f"✨ [ClusterDiscovery] 发现局域网房间: {msg.get('room_name')} @ {addr[0]}")
+                            logger.info(f"✨ [ClusterDiscovery] 发现局域网房间: {msg.get('room_name')} @ {addr[0]}, 模型: {msg.get('owner_model')}")
                     except socket.timeout:
                         continue
                     except Exception as e:

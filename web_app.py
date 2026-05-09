@@ -395,37 +395,55 @@ async def get_current_room(request: Request):
         return {"success": False, "error": "房间管理器未初始化"}
 
     info = manager.get_room_info()
-    if info["room_name"] == "Default-Room" and info.get("owner_name") is None:
-        return {"success": False, "error": "当前没有房间"}
-
     info["members_detail"] = manager.get_member_info()
-    info["success"] = True
-    logger.info(f"房间信息: owner_name={info['owner_name']}, members_detail={info['members_detail']}")
+    info["success"] = True  # 总是返回 success，即使房间是 Default-Room
+    logger.info(f"房间信息: owner_name={info.get('owner_name')}, room_name={info.get('room_name')}, members_detail={info['members_detail']}")
     return info
 
 @app.get("/api/rooms/list")
 async def list_rooms(request: Request):
-    """获取房间列表（支持单机模式和集群模式）"""
+    """获取房间列表（支持单机模式和集群模式，包含扫描到的局域网其他主机房间）"""
     try:
         # 确保集群组件已初始化
         await ensure_cluster_initialized()
         manager = getattr(app.state, "cluster_manager", None)
 
+        final_rooms = []
         if not manager:
             return {"success": True, "rooms": []}
 
-        # 获取当前房间信息（因为当前实现中一个manager只能管理一个房间）
+        # 1. 把本地房间加入列表
         room_info = manager.get_room_info()
+        if not (room_info["room_name"] == "Default-Room" and room_info.get("owner_name") is None):
+            room_info["members_detail"] = manager.get_member_info()
+            room_info["status"] = "active" if len(room_info["members"]) > 0 else "waiting"
+            room_info["is_local"] = True
+            final_rooms.append(room_info)
 
-        # 如果房间名称是默认值，说明没有创建房间
-        # 使用 owner_name 是否为 None 或 "Default-Room" 的 owner_name 字段来判断
-        if room_info["room_name"] == "Default-Room" and room_info.get("owner_name") is None:
-            return {"success": True, "rooms": []}
+        # 2. 把通过 UDP 广播发现的局域网其他主机房间也加入列表
+        discovery = getattr(manager, "discovery", None) or globals().get('_discovery_instance')
+        if discovery:
+            found = discovery.get_available_rooms()
+            for r in found:
+                # 排除本地房间（通过 room_id 比对）
+                local_room_id = getattr(manager, 'room_id', None)
+                if r.get('room_id') != local_room_id:
+                    final_rooms.append({
+                        "room_id": r.get('room_id'),
+                        "room_name": r.get('room_name', 'Unnamed-Room'),
+                        "owner_name": r.get('owner_name', 'Unknown'),
+                        "owner_model": r.get('owner_model', 'unknown'),
+                        "ip": r.get('ip'),
+                        "manager_port": r.get('manager_port', 30001),
+                        "members": [],
+                        "members_detail": [],
+                        "has_password": False,
+                        "total_members": 0,
+                        "is_local": False,
+                        "status": "remote"
+                    })
 
-        room_info["members_detail"] = manager.get_member_info()
-        room_info["status"] = "active" if len(room_info["members"]) > 0 else "waiting"
-
-        return {"success": True, "rooms": [room_info]}
+        return {"success": True, "rooms": final_rooms}
     except Exception as e:
         logger.error(f"获取房间列表失败: {e}", exc_info=True)
         return {"success": False, "error": str(e), "rooms": []}
@@ -663,7 +681,7 @@ async def ensure_cluster_initialized():
     根据 CLUSTER_ROLE 执行 manager 或 worker 的初始化。
     返回 True 表示成功， False 表示失败（但不会阻塞启动）。
     """
-    global _cluster_initialized
+    global _cluster_initialized, _discovery_instance
     if '_cluster_initialized' not in globals():
         globals()['_cluster_initialized'] = False
         globals()['_cluster_lock'] = threading.Lock()
@@ -692,6 +710,12 @@ async def ensure_cluster_initialized():
             scheduler = TaskScheduler(assessor, strategy=SCHEDULER_STRATEGY)
             manager.set_scheduler(scheduler, assessor)
             manager.start_monitoring(interval=MANAGER_MONITOR_INTERVAL)
+            # 启动局域网扫描模式，支持发现其他主机的房间
+            if not globals().get('_discovery_instance'):
+                globals()['_discovery_instance'] = ClusterDiscovery()
+                globals()['_discovery_instance'].start_scanning()
+                manager.discovery = globals()['_discovery_instance']
+                logger.info("✅ [ClusterDiscovery] 单机模式局域网扫描已启动")
             app.state.cluster_manager = manager
             logger.info("✅ [ClusterManager] 单机模式集群管理器已初始化")
             _cluster_initialized = True

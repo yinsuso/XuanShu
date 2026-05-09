@@ -52,14 +52,14 @@ MODEL_RANKINGS = {
 }
 
 def _get_model_score_simple(model_name: str) -> float:
-    """简易子串匹配获取模型分数"""
+    """简易子串匹配获取模型分数 - 修复匹配逻辑"""
     model_lower = model_name.lower()
     
     # 精确匹配
     if model_name in MODEL_RANKINGS:
         return MODEL_RANKINGS[model_name]
     
-    # 子串匹配
+    # 子串匹配：优先长词匹配
     matched_scores = []
     for key, score in MODEL_RANKINGS.items():
         key_lower = key.lower()
@@ -70,22 +70,22 @@ def _get_model_score_simple(model_name: str) -> float:
         matched_scores.sort(reverse=True, key=lambda x: x[0])
         return matched_scores[0][1]
     
-    # 按参数量估算
+    # 按参数量估算：从大到小，避免误匹配
     if "72b" in model_lower or "70b" in model_lower:
         return 0.90
     elif "34b" in model_lower or "32b" in model_lower:
         return 0.85
     elif "14b" in model_lower or "12b" in model_lower:
         return 0.80
-    elif "9b" in model_lower or "8b" in model_lower or "7b" in model_lower:
+    elif "9b" in model_lower or "8b" in model_lower:
         return 0.75
     elif "7b" in model_lower:
         return 0.72
-    elif "3b" in model_lower or "2b" in model_lower:
+    elif "3b" in model_lower or "2b" in model_lower or "1.8b" in model_lower:
         return 0.60
     
     # 云端API默认0.85，本地未知模型0.7
-    if "api" in model_lower or "remote" in model_lower:
+    if "api" in model_lower or "remote" in model_lower or "glm" in model_lower or "gpt" in model_lower:
         return 0.85
     return 0.70
 
@@ -788,11 +788,17 @@ class ClusterManager:
         if self._server is None:
             self._server = ClusterServer(self, host, port)
             self._server.start()
-            # 启动房间广播服务
+            # 启动房间广播服务，同时也启动扫描模式监听局域网其他主机
             if not self.discovery:
-                self.discovery = ClusterDiscovery(room_name=self.room_name, host_port=port)
-            self.discovery.start_hosting()
-            logger.info(f"🌐 [Cluster] 房主服务器已启动: {host}:{port}")
+                self.discovery = ClusterDiscovery(room_name=self.room_name, room_id=self.room_id, host_port=port)
+            # 广播房主信息（包含模型名称等）
+            extra_info = {
+                "owner_name": self.owner_name,
+                "owner_model": self.owner_model
+            }
+            self.discovery.start_hosting(extra_info=extra_info)
+            self.discovery.start_scanning()  # 同时启动扫描，支持发现局域网其他房间
+            logger.info(f"🌐 [Cluster] 房主服务器已启动: {host}:{port}, 房主模型: {self.owner_model}")
             # 设置广播节点为自身（用于事件推送）
             self.broadcast_node = self
         else:
