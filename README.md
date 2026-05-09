@@ -30,8 +30,6 @@
 ```bash
 # 两种等价方式
 python launcher.py
-# 或
-python xuan_cli.py
 ```
 
 启动器会自动：
@@ -46,21 +44,11 @@ python xuan_cli.py
 
 ### 传统启动方式
 
-#### 命令行界面
-
 ```bash
-# 使用新版SkillAgent v4.0（推荐）
-python agent.py
-
-# 或使用旧版Agent v3.1（保留兼容）
-python agent_v3_1.py
+# 使用新版SkillAgent v5.4.2（推荐）
+python launcher.py
 ```
 
-#### Web界面
-
-```bash
-python web_app.py
-```
 
 然后打开浏览器访问：`http://localhost:30000`
 
@@ -112,14 +100,8 @@ python3 launcher.py
 虽然启动器会帮你下载，但你也可以预先拉取：
 
 ```bash
-# 推荐模型（代码能力强）
-ollama pull qwen2.5-coder:7b
-
-# 或更轻量的模型
+# 推荐轻量模型
 ollama pull phi3:3.8b
-
-# 或通用模型
-ollama pull qwen2.5:7b
 ollama pull llama3.1:8b
 ```
 
@@ -167,7 +149,7 @@ pip install -r requirements.txt
 
 你可以手动下载：
 ```bash
-ollama pull qwen2.5-coder:7b
+ollama pull phi3:3.8b
 ```
 
 #### 端口被占用

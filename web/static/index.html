@@ -177,18 +177,20 @@
         <!-- 左侧导航 -->
         <div class="panel">
             <div class="panel-title">协作导航</div>
+            <button id="nav-collab-chat" class="btn hidden" onclick="showView('collab-chat')">💬 协作对话</button>
             <button class="btn" onclick="showView('room-list')">🏠 房间列表</button>
             <button class="btn" onclick="showView('create-room')">➕ 创建房间</button>
             <button class="btn" onclick="showView('join-room')">🔗 加入房间</button>
             <button class="btn" onclick="showView('model-manage')">⚙️ 模型管理</button>
             <button class="btn" onclick="showView('conversation-history')">📚 对话历史</button>
+            <button class="btn" onclick="showView('stats')">📊 数据统计</button>
             <button class="btn" onclick="showView('chat')">💬 单机对话</button>
 
             <hr style="margin: 12px 0; border: none; border-top: 1px solid #eee;">
             <div id="current-room-info" class="hidden">
                 <strong>当前房间</strong>
                 <p id="room-name-display" style="font-size:13px;color:#007bff;"></p>
-                <button class="btn btn-danger" onclick="leaveRoom()">🚪 退出房间</button>
+                <button class="btn btn-danger" onclick="handleRoomExit()">🚪 退出房间</button>
             </div>
 
         </div>
@@ -377,6 +379,14 @@
                 <div id='conversation-list' style='max-height:400px;overflow-y:auto;'></div>
             </div>
 
+            <!-- ==================== 数据统计视图 ==================== -->
+            <div id='view-stats' class='hidden'>
+                <div class='panel-title'>📊 数据统计</div>
+                <div id='stats-container' style='padding:12px;'>
+                    <p>正在加载统计数据...</p>
+                </div>
+            </div>
+
             <!-- ==================== 单机对话视图 ==================== -->
             <div id='view-chat' class='hidden'>
                 <div class='panel-title'>💬 单机对话</div>
@@ -526,6 +536,8 @@ function showView(viewName) {
         loadRoomModels('new-room-model');
     } else if (viewName === 'join-room') {
         loadRoomModels('join-model');
+    } else if (viewName === 'stats') {
+        loadStats();
     }
 }
 async function loadRoomModels(selectId) {
@@ -797,6 +809,44 @@ async function refreshRooms() {
     }
 }
 
+async function loadStats() {
+    const container = document.getElementById('stats-container');
+    try {
+        const [statsRes, tokenStatsRes, convsRes] = await Promise.all([
+            api('/api/stats'),
+            api('/api/token-stats'),
+            api('/api/conversations?limit=100')
+        ]);
+        
+        const stats = statsRes.success ? statsRes.data : null;
+        const tokenStats = tokenStatsRes.success ? tokenStatsRes.data : null;
+        const convCount = convsRes.success ? (convsRes.conversations || []).length : 0;
+        
+        let html = '';
+        if (stats) {
+            html += `<div class="room-card"><h4>🚀 服务运行</h4>
+                <p>运行时长: ${stats.uptime_formatted || '0秒'}</p>
+                <p>总请求数: ${stats.total_requests || 0}</p>
+                <p>成功数: ${(stats.total_requests || 0) - (stats.total_errors || 0)}</p>
+                <p>失败数: ${stats.total_errors || 0}</p>
+                <p>成功率: ${stats.success_rate ? stats.success_rate.toFixed(1) : 0}%</p>
+            </div>`;
+        }
+        if (tokenStats) {
+            html += `<div class="room-card"><h4>🔢 Token 统计</h4>
+                <p>总 Token: ${(tokenStats.total || {}).total_tokens || 0}</p>
+                <p>Prompt: ${(tokenStats.total || {}).prompt_tokens || 0}</p>
+                <p>Completion: ${(tokenStats.total || {}).completion_tokens || 0}</p>
+            </div>`;
+        }
+        html += `<div class="room-card"><h4>💬 对话统计</h4><p>对话总数: ${convCount}</p></div>`;
+        container.innerHTML = html;
+    } catch (e) {
+        console.error('加载统计数据失败', e);
+        container.innerHTML = '<p>加载统计数据失败</p>';
+    }
+}
+
 async function enterRoom(roomId) {
     try {
         const data = await api('/api/rooms/current');
@@ -806,6 +856,9 @@ async function enterRoom(roomId) {
             document.getElementById('detail-room-id').textContent = data.room_id;
             document.getElementById('detail-room-model').textContent = data.owner_model;
             document.getElementById('detail-my-mode').textContent = '房主模式';
+            // 自动填充我的信息表单的花名（问题3修复）
+            document.getElementById('my-nickname').value = data.owner_name || '';
+            document.getElementById('my-model').value = data.owner_model || 'qwen2.5-coder:7b';
 
             // 显示成员列表
             if (data.members_detail && data.members_detail.length > 0) {
@@ -814,8 +867,9 @@ async function enterRoom(roomId) {
                 document.getElementById('member-list').innerHTML = '<p>暂无其他成员</p>';
             }
 
-            // 显示协作模式徽章
+            // 显示协作模式徽章和协作对话导航按钮（问题6修复）
             document.getElementById('cluster-badge').classList.remove('hidden');
+            document.getElementById('nav-collab-chat').classList.remove('hidden');
 
             // 更新当前房间信息显示
             document.getElementById('room-name-display').textContent = data.room_name;
@@ -858,19 +912,29 @@ function startMemberRefresh(roomId) {
 }
 function renderMembers(members) {
     const list = document.getElementById('member-list');
-    list.innerHTML = members.map(m => `
+    list.innerHTML = members.map(m => {
+        const modelType = (m.model || '').toLowerCase();
+        let modelTypeTag = '';
+        if ('api' in modelType || 'remote' in modelType || 'dashscope' in modelType || 'openai' in modelType) {
+            modelTypeTag = '<span style="font-size:10px;background:#2196f3;color:#fff;padding:1px 4px;border-radius:4px;margin-left:4px;">云端API</span>';
+        } else {
+            modelTypeTag = '<span style="font-size:10px;background:#4caf50;color:#fff;padding:1px 4px;border-radius:4px;margin-left:4px;">本地</span>';
+        }
+        const statusText = m.status === 'active' ? '空闲' : m.status === 'busy' ? '忙碌中' : (m.status || '离线');
+        return `
         <div class="member-item">
             <div>
-                <strong>${m.name}</strong> <small>(${m.model})</small><br>
-                模式: ${m.mode} | 状态: ${m.status || '未知'}
+                <strong>${m.name}</strong>
+                <div style="font-size:12px; color:#666; margin-top:4px; display:flex; align-items:center;">
+                    <span>${m.model}</span>
+                    ${modelTypeTag}
+                </div>
             </div>
             <div>
-                <span class="status-badge status-${m.status || 'offline'}">${m.status || '离线'}</span>
+                <span class="status-badge status-${m.status || 'offline'}">${statusText}</span>
             </div>
-
-
         </div>
-    `).join('');
+    `}).join('');
 }
 
 async function createRoom() {
@@ -972,41 +1036,45 @@ async function updateMyInfo() {
 
 // ==================== 处理退出房间 ====================
 async function handleRoomExit() {
-    if (STATE.role === 'manager' || STATE.role === 'standalone') {
-        // 房主：解散房间
-        if (!confirm('确定要解散房间吗？解散后所有成员将被移除。')) return;
-        try {
-            const res = await api('/api/rooms/dismiss', { method: 'POST' });
-            if (res.success) {
-                showToast('房间已解散');
-                document.getElementById('cluster-badge').classList.add('hidden');
-                document.getElementById('current-room-info').classList.add('hidden');
-                showView('room-list');
-                refreshRooms();
-            } else {
-                showToast(res.error || '解散失败', true);
+    // 房主/单机模式：解散房间，成员模式：退出房间
+    const confirmMsg = (STATE.role === 'manager' || STATE.role === 'standalone') 
+        ? '确定要解散房间吗？解散后所有成员将被移除。'
+        : '确定要退出房间吗？';
+    if (!confirm(confirmMsg)) return;
+    
+    try {
+        const endpoint = (STATE.role === 'manager' || STATE.role === 'standalone') 
+            ? '/api/rooms/dismiss' 
+            : '/api/rooms/leave';
+        
+        const res = await api(endpoint, { method: 'POST' });
+        
+        if (res.success) {
+            // 完全清理所有协作相关状态
+            showToast((STATE.role === 'manager' || STATE.role === 'standalone') ? '房间已解散' : '已退出房间');
+            document.getElementById('cluster-badge').classList.add('hidden');
+            document.getElementById('nav-collab-chat').classList.add('hidden');
+            document.getElementById('current-room-info').classList.add('hidden');
+            // 停止成员刷新定时器
+            if (memberRefreshTimer) {
+                clearInterval(memberRefreshTimer);
+                memberRefreshTimer = null;
             }
-        } catch (e) {
-            showToast('解散房间请求失败', true);
-            console.error(e);
-        }
-    } else {
-        // 成员：退出房间
-        if (!confirm('确定要退出房间吗？')) return;
-        try {
-            const res = await api('/api/rooms/leave', { method: 'POST' });
-            if (res.success) {
-                showToast('已退出房间');
-                document.getElementById('cluster-badge').classList.add('hidden');
-                document.getElementById('current-room-info').classList.add('hidden');
-                showView('join-room');
-            } else {
-                showToast(res.error || '退出失败', true);
+            // 停止协作对话成员刷新定时器
+            if (STATE.collabMemberTimer) {
+                clearInterval(STATE.collabMemberTimer);
+                STATE.collabMemberTimer = null;
             }
-        } catch (e) {
-            showToast('退出请求失败', true);
-            console.error(e);
+            // 重置当前房间相关状态
+            STATE.currentRoomId = null;
+            showView('room-list');
+            refreshRooms();
+        } else {
+            showToast(res.error || '操作失败', true);
         }
+    } catch (e) {
+        showToast('请求失败', true);
+        console.error(e);
     }
 }
 
@@ -1061,23 +1129,29 @@ function renderCollabMembers(members) {
         const statusText = m.status === 'active' ? '🟢 空闲' : m.status === 'busy' ? '🔴 忙碌中' : '⚪ 离线';
         const statusClass = m.status === 'active' ? 'status-online' : m.status === 'busy' ? 'status-busy' : 'status-offline';
         const isOwner = m.is_owner ? '<span style="font-size:10px;background:#ffc107;color:#333;padding:1px 4px;border-radius:4px;">房主</span>' : '';
+        // 标记模型类型
+        const modelType = (m.model || '').toLowerCase();
+        let modelTypeTag = '';
+        if ('api' in modelType || 'remote' in modelType || 'dashscope' in modelType || 'openai' in modelType) {
+            modelTypeTag = '<span style="font-size:10px;background:#2196f3;color:#fff;padding:1px 4px;border-radius:4px;margin-left:4px;">云端API</span>';
+        } else {
+            modelTypeTag = '<span style="font-size:10px;background:#4caf50;color:#fff;padding:1px 4px;border-radius:4px;margin-left:4px;">本地</span>';
+        }
         
         return `
-            <div style="padding:8px;border-bottom:1px solid #eee;display:flex;justify-content:space-between;align-items:center;">
+            <div style="padding:10px;border-bottom:1px solid #eee;display:flex;justify-content:space-between;align-items:center;">
                 <div>
                     <div style="display:flex;align-items:center;gap:4px;">
                         <strong>${m.name}</strong>
                         ${isOwner}
                     </div>
-                    <div style="font-size:12px;color:#666;">
-                        ${m.model} | ${m.mode}模式
-                    </div>
-                    <div style="font-size:11px;color:#888;margin-top:2px;">
-                        能力分: ${(m.capability_score || 0).toFixed(2)} | CPU: ${(m.load_cpu || 0).toFixed(1)}% | 内存: ${(m.load_memory || 0).toFixed(1)}%
+                    <div style="font-size:12px;color:#556;margin-top:4px;display:flex;align-items:center;">
+                        <span style="word-break:break-all;">${m.model}</span>
+                        ${modelTypeTag}
                     </div>
                 </div>
                 <div style="text-align:right;">
-                    <div class="${statusClass}" style="font-size:12px;">${statusText}</div>
+                    <div class="${statusClass}" style="font-size:13px;padding:4px 10px;border-radius:12px;">${statusText}</div>
                 </div>
             </div>
         `;

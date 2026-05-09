@@ -2,9 +2,6 @@ import os
 import sys
 import uuid
 import asyncio
-
-# === 安全审批模块（SQLite 持久化 + API 扩展） ===
-import sqlite3
 import json
 import time
 from threading import Lock
@@ -21,6 +18,16 @@ from config import WEB_APP_URL,  APPROVAL_API_TOKEN,  APPROVAL_DB_PATH,  PROJECT
 from logger import logger
 from evolution.cluster.capability import CapabilityAssessor
 from evolution.cluster.scheduler import TaskScheduler
+from evolution.cluster.discovery import ClusterDiscovery
+
+# === 安全审批模块：sqlite3 兼容层 ===
+_SQLITE_AVAILABLE = False
+try:
+    import sqlite3
+    _SQLITE_AVAILABLE = True
+    logger.info("✅ web_app.py: sqlite3 模块可用")
+except ImportError as e:
+    logger.warning(f"⚠️ web_app.py: sqlite3 模块不可用 ({e})，使用 JSON 文件存储审批数据")
 
 # ==================== 新增依赖：模型管理与对话历史 ====================
 from fastapi import Form
@@ -33,6 +40,7 @@ conv_manager = get_global_conversation_manager()
 # 全局 UniversalAgent 实例（懒加载）
 _agent = None
 _agent_lock = threading.Lock()
+_discovery_instance = None
 
 def get_agent():
     """获取全局 UniversalAgent 实例（线程安全懒加载）"""
@@ -94,64 +102,147 @@ if os.path.isdir(static_dir):
 
 class ApprovalStore:
     def __init__(self):
-        db_path = Path(APPROVAL_DB_PATH)
-        db_path.parent.mkdir(parents=True, exist_ok=True)
-        self.conn = sqlite3.connect(APPROVAL_DB_PATH, check_same_thread=False)
+        self._use_json_mode = not _SQLITE_AVAILABLE
         self.lock = Lock()
-        self._init_db()
+        if not self._use_json_mode:
+            db_path = Path(APPROVAL_DB_PATH)
+            db_path.parent.mkdir(parents=True, exist_ok=True)
+            self.conn = sqlite3.connect(APPROVAL_DB_PATH, check_same_thread=False)
+            self._init_sqlite_db()
+            logger.info("✅ ApprovalStore: 使用 SQLite 模式")
+        else:
+            json_dir = os.path.join(os.path.dirname(APPROVAL_DB_PATH), "approval_json")
+            os.makedirs(json_dir, exist_ok=True)
+            self.json_file = os.path.join(json_dir, "approvals.json")
+            self._init_json_store()
+            logger.info("✅ ApprovalStore: 使用 JSON 文件模式")
 
-    def _init_db(self):
-        with self.lock:
-            self.conn.execute('CREATE TABLE IF NOT EXISTS approvals (id INTEGER PRIMARY KEY AUTOINCREMENT, skill TEXT NOT NULL, args TEXT NOT NULL, risk TEXT NOT NULL, status TEXT NOT NULL DEFAULT "pending", created_at REAL NOT NULL, decided_at REAL, decision TEXT)')
-            self.conn.commit()
+    # --- SQLite 模式 ---
+    if _SQLITE_AVAILABLE:
+        def _init_sqlite_db(self):
+            with self.lock:
+                self.conn.execute('CREATE TABLE IF NOT EXISTS approvals (id INTEGER PRIMARY KEY AUTOINCREMENT, skill TEXT NOT NULL, args TEXT NOT NULL, risk TEXT NOT NULL, status TEXT NOT NULL DEFAULT "pending", created_at REAL NOT NULL, decided_at REAL, decision TEXT)')
+                self.conn.commit()
 
-    def create_request(self, skill_name, args, risk_level):
-        with self.lock:
-            cur = self.conn.execute(
-                "INSERT INTO approvals (skill, args, risk, status, created_at) VALUES (?, ?, ?, ?, ?)",
-                (skill_name, json.dumps(args), risk_level, 'pending', time.time())
-            )
-            self.conn.commit()
-            return cur.lastrowid
+        def create_request(self, skill_name, args, risk_level):
+            with self.lock:
+                cur = self.conn.execute(
+                    "INSERT INTO approvals (skill, args, risk, status, created_at) VALUES (?, ?, ?, ?, ?)",
+                    (skill_name, json.dumps(args), risk_level, 'pending', time.time())
+                )
+                self.conn.commit()
+                return cur.lastrowid
 
-    def get_status(self, approval_id):
-        with self.lock:
-            cur = self.conn.execute(
-                "SELECT status, decision, decided_at FROM approvals WHERE id = ?",
-                (approval_id,)
-            )
-            row = cur.fetchone()
-            if row is None:
-                return None
-            status, decision, decided_at = row
-            return {"status": status, "decision": decision, "decided_at": decided_at}
+        def get_status(self, approval_id):
+            with self.lock:
+                cur = self.conn.execute(
+                    "SELECT status, decision, decided_at FROM approvals WHERE id = ?",
+                    (approval_id,)
+                )
+                row = cur.fetchone()
+                if row is None:
+                    return None
+                status, decision, decided_at = row
+                return {"status": status, "decision": decision, "decided_at": decided_at}
 
-    def get_all_pending(self):
-        with self.lock:
-            cur = self.conn.execute(
-                "SELECT id, skill, args, risk, created_at FROM approvals WHERE status = 'pending'"
-            )
-            rows = cur.fetchall()
-            result = []
-            for row in rows:
-                rid, skill, args, risk, created_at = row
-                result.append({
-                    "id": rid,
-                    "skill": skill,
-                    "args": json.loads(args),
-                    "risk": risk,
-                    "timestamp": created_at
+        def get_all_pending(self):
+            with self.lock:
+                cur = self.conn.execute(
+                    "SELECT id, skill, args, risk, created_at FROM approvals WHERE status = 'pending'"
+                )
+                rows = cur.fetchall()
+                result = []
+                for row in rows:
+                    rid, skill, args, risk, created_at = row
+                    result.append({
+                        "id": rid,
+                        "skill": skill,
+                        "args": json.loads(args),
+                        "risk": risk,
+                        "timestamp": created_at
+                    })
+                return result
+
+        def set_decision(self, approval_id, decision):
+            with self.lock:
+                cur = self.conn.execute(
+                    "UPDATE approvals SET status = 'decided', decision = ?, decided_at = ? WHERE id = ? AND status = 'pending'",
+                    (decision, time.time(), approval_id)
+                )
+                self.conn.commit()
+                return cur.rowcount > 0
+
+    # --- JSON 文件模式 ---
+    else:
+        def _init_json_store(self):
+            if not os.path.exists(self.json_file):
+                with open(self.json_file, 'w', encoding='utf-8') as f:
+                    json.dump({"next_id": 1, "approvals": []}, f, ensure_ascii=False)
+
+        def _load_data(self):
+            with open(self.json_file, 'r', encoding='utf-8') as f:
+                return json.load(f)
+
+        def _save_data(self, data):
+            with open(self.json_file, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+
+        def create_request(self, skill_name, args, risk_level):
+            with self.lock:
+                data = self._load_data()
+                new_id = data["next_id"]
+                data["approvals"].append({
+                    "id": new_id,
+                    "skill": skill_name,
+                    "args": args,
+                    "risk": risk_level,
+                    "status": "pending",
+                    "created_at": time.time(),
+                    "decided_at": None,
+                    "decision": None
                 })
-            return result
+                data["next_id"] = new_id + 1
+                self._save_data(data)
+                return new_id
 
-    def set_decision(self, approval_id, decision):
-        with self.lock:
-            cur = self.conn.execute(
-                "UPDATE approvals SET status = 'decided', decision = ?, decided_at = ? WHERE id = ? AND status = 'pending'",
-                (decision, time.time(), approval_id)
-            )
-            self.conn.commit()
-            return cur.rowcount > 0
+        def get_status(self, approval_id):
+            with self.lock:
+                data = self._load_data()
+                for app in data["approvals"]:
+                    if app["id"] == approval_id:
+                        return {
+                            "status": app["status"],
+                            "decision": app["decision"],
+                            "decided_at": app["decided_at"]
+                        }
+                return None
+
+        def get_all_pending(self):
+            with self.lock:
+                data = self._load_data()
+                result = []
+                for app in data["approvals"]:
+                    if app["status"] == "pending":
+                        result.append({
+                            "id": app["id"],
+                            "skill": app["skill"],
+                            "args": app["args"],
+                            "risk": app["risk"],
+                            "timestamp": app["created_at"]
+                        })
+                return result
+
+        def set_decision(self, approval_id, decision):
+            with self.lock:
+                data = self._load_data()
+                for app in data["approvals"]:
+                    if app["id"] == approval_id and app["status"] == "pending":
+                        app["status"] = "decided"
+                        app["decision"] = decision
+                        app["decided_at"] = time.time()
+                        self._save_data(data)
+                        return True
+                return False
 
 # 全局存储实例
 approval_store = ApprovalStore()
@@ -1128,35 +1219,14 @@ async def api_export_json():
         if not conv:
             raise HTTPException(status_code=404, detail="当前无对话")
 
-        def format_value(val):
-            if val is None:
-                return None
-            if isinstance(val, datetime):
-                return val.isoformat()
-            if isinstance(val, (datetime.date, datetime.time)):
-                return str(val)
-            # 处理枚举类型
-            if hasattr(val, 'name'):
-                return val.name
-            return val
-
+        # 直接利用 Message 类已有的 to_dict() 方法，彻底避免枚举序列化问题
         export_data = {
             "conversation_id": conv.conversation_id,
             "title": getattr(conv, 'title', '未命名对话'),
-            "created_at": format_value(getattr(conv, 'created_at', None)),
-            "updated_at": format_value(getattr(conv, 'updated_at', None)),
-            "messages": []
+            "created_at": conv.created_at.isoformat() if hasattr(conv, 'created_at') and conv.created_at else None,
+            "updated_at": conv.updated_at.isoformat() if hasattr(conv, 'updated_at') and conv.updated_at else None,
+            "messages": [msg.to_dict() for msg in conv.messages]
         }
-
-        for msg in conv.messages:
-            msg_dict = {
-                "role": msg.role,
-                "content": getattr(msg, 'content', '') or '',
-                "timestamp": format_value(getattr(msg, 'timestamp', None))
-            }
-            if hasattr(msg, 'tool_calls') and msg.tool_calls:
-                msg_dict["tool_calls"] = msg.tool_calls
-            export_data["messages"].append(msg_dict)
 
         json_content = json.dumps(export_data, ensure_ascii=False, indent=2)
 
@@ -1247,6 +1317,47 @@ api_stats = ApiStatistics()
 async def get_api_stats():
     """获取API统计数据"""
     return {"success": True, "data": api_stats.get_stats()}
+
+# ============================================
+# 局域网房间发现 API
+# ============================================
+@app.post("/api/discovery/start_scan")
+async def start_discovery_scan():
+    """启动局域网房间扫描"""
+    global _discovery_instance
+    try:
+        if not _discovery_instance:
+            _discovery_instance = ClusterDiscovery(port=50005)
+        _discovery_instance.start_scanning()
+        return {"success": True, "message": "扫描已启动"}
+    except Exception as e:
+        logger.error(f"启动扫描失败: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
+
+@app.get("/api/discovery/rooms")
+async def get_discovered_rooms():
+    """获取局域网中发现的所有房间"""
+    global _discovery_instance
+    try:
+        if not _discovery_instance:
+            return {"success": True, "rooms": []}
+        rooms = _discovery_instance.get_available_rooms()
+        return {"success": True, "rooms": rooms}
+    except Exception as e:
+        logger.error(f"获取发现房间失败: {e}", exc_info=True)
+        return {"success": False, "error": str(e), "rooms": []}
+
+@app.post("/api/discovery/stop")
+async def stop_discovery():
+    """停止发现服务"""
+    global _discovery_instance
+    try:
+        if _discovery_instance:
+            _discovery_instance.stop()
+        return {"success": True, "message": "发现服务已停止"}
+    except Exception as e:
+        logger.error(f"停止发现失败: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
 
 def find_available_port(start_port: int, max_attempts: int = 10, host: str = "0.0.0.0") -> int:
     """查找可用端口"""

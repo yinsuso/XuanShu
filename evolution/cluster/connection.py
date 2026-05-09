@@ -15,37 +15,101 @@ if TYPE_CHECKING:
     from .scheduler import TaskScheduler
     from .capability import CapabilityAssessor
 
-# 临时能力评估（Phase 1简易版）
-# Phase 3 将被 capability.py 替代
+# 简易能力评估函数（与CapabilityAssessor保持兼容）
 MODEL_RANKINGS = {
+    "qwen3.5:9b": 0.90,
+    "qwen3": 0.88,
     "qwen2.5-coder:7b": 0.95,
+    "qwen2.5-coder:14b": 0.98,
+    "qwen2.5-coder:32b": 0.99,
     "qwen2.5:7b": 0.85,
+    "qwen2.5:14b": 0.90,
+    "qwen2.5:32b": 0.95,
+    "qwen-plus": 0.92,
+    "qwen-turbo": 0.88,
     "llama3:8b": 0.80,
-    "phi3:3.8b": 0.60,
-    "mistral:7b": 0.70
+    "llama3:70b": 0.94,
+    "llama3.1:8b": 0.82,
+    "llama3.1:70b": 0.95,
+    "llama3.2": 0.75,
+    "phi3:3.8b": 0.70,
+    "phi4": 0.80,
+    "mistral:7b": 0.78,
+    "mistral-nemo": 0.82,
+    "deepseek-coder:6.7b": 0.92,
+    "deepseek-chat": 0.88,
+    "gpt-4o": 0.98,
+    "gpt-4": 0.95,
+    "gpt-4-turbo": 0.96,
+    "gpt-3.5-turbo": 0.80,
+    "glm-4": 0.90,
+    "glm-4-plus": 0.93,
+    "claude-3-opus": 0.99,
+    "claude-3-sonnet": 0.90,
+    "claude-3.5-sonnet": 0.93,
+    "gemini-pro": 0.90,
+    "gemini-1.5-pro": 0.93
 }
+
+def _get_model_score_simple(model_name: str) -> float:
+    """简易子串匹配获取模型分数"""
+    model_lower = model_name.lower()
+    
+    # 精确匹配
+    if model_name in MODEL_RANKINGS:
+        return MODEL_RANKINGS[model_name]
+    
+    # 子串匹配
+    matched_scores = []
+    for key, score in MODEL_RANKINGS.items():
+        key_lower = key.lower()
+        if key_lower in model_lower:
+            matched_scores.append((len(key), score))
+    
+    if matched_scores:
+        matched_scores.sort(reverse=True, key=lambda x: x[0])
+        return matched_scores[0][1]
+    
+    # 按参数量估算
+    if "72b" in model_lower or "70b" in model_lower:
+        return 0.90
+    elif "34b" in model_lower or "32b" in model_lower:
+        return 0.85
+    elif "14b" in model_lower or "12b" in model_lower:
+        return 0.80
+    elif "9b" in model_lower or "8b" in model_lower or "7b" in model_lower:
+        return 0.75
+    elif "7b" in model_lower:
+        return 0.72
+    elif "3b" in model_lower or "2b" in model_lower:
+        return 0.60
+    
+    # 云端API默认0.85，本地未知模型0.7
+    if "api" in model_lower or "remote" in model_lower:
+        return 0.85
+    return 0.70
 
 def evaluate_capability_simple(node_info: Dict[str, Any]) -> float:
     """
-    简易能力评估（Phase 1原型）
+    简易能力评估（增强版，智能子串匹配）
     
     评估维度：
-    - 模型分（基于排行榜）
+    - 模型分（智能排行榜子串匹配）
     - GPU分（如果提供）
     
     Returns:
         0.0-1.0 的能力分
     """
     model = node_info.get("model", "unknown")
-    model_score = MODEL_RANKINGS.get(model, 0.5)
+    model_score = _get_model_score_simple(model)
     
     # GPU加成（如果有显存信息）
     gpu_bonus = 0.0
     if "gpu" in node_info:
-        gpu_name = node_info["gpu"].lower()
-        if "rtx 4090" in gpu_name or "rtx 40" in gpu_name:
+        gpu_name = str(node_info["gpu"]).lower()
+        if "rtx 4090" in gpu_name or "rtx 40" in gpu_name or "a100" in gpu_name or "h100" in gpu_name:
             gpu_bonus = 0.1
-        elif "rtx 30" in gpu_name or "rtx 20" in gpu_name:
+        elif "rtx 30" in gpu_name or "rtx 20" in gpu_name or "3090" in gpu_name:
             gpu_bonus = 0.05
     
     total = model_score + gpu_bonus
@@ -514,17 +578,36 @@ class ClusterManager:
         self.room_password_hash = password_hash
         self.owner_node_id = owner_node_id
         
-        # 房主自动成为第一个成员
+        # 房主自动成为第一个成员，同时创建对应的节点记录（解决房主节点不在nodes字典中导致状态离线的问题）
         effective_owner_id = owner_node_id or self.current_project or "manager"
+        # 确保房主节点也在self.nodes字典中
+        if effective_owner_id not in self.nodes:
+            from .capability import CapabilityAssessor
+            capability_score = evaluate_capability_simple({'model': model})
+            node = ClusterNode(
+                node_id=effective_owner_id,
+                ip="127.0.0.1",
+                model=model,
+                role="manager",
+                mode="auto",
+                capability_score=capability_score
+            )
+            # 房主本地节点设置为在线状态，CPU和内存有合理的初始值
+            node.status = "active"
+            node.load_cpu = 0.3
+            node.load_memory = 0.4
+            self.nodes[effective_owner_id] = node
+            logger.info(f"🏠 [ClusterManager] 房主节点已注册到集群: {effective_owner_id}, 能力分: {capability_score:.2f}")
+        
         self.room_members[effective_owner_id] = {
             "node_id": effective_owner_id,
             "name": owner_name,
-            "mode": "auto",  # 房主默认为 auto
+            "mode": "auto",
             "model": model,
             "joined_at": time.time(),
             "is_owner": True
         }
-        logger.info(f"🏠 [ClusterManager] 房间已创建: {room_name} (ID: {self.room_id})")
+        logger.info(f"🏠 [ClusterManager] 房间已创建: {room_name} (ID: {self.room_id}, 房主: {owner_name})")
         return self.room_id
     
     def join_room(self, node_info: Dict[str, Any]) -> bool:
