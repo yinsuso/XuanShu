@@ -1,14 +1,19 @@
 """集群任务管理 API 路由"""
 from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect, Depends, HTTPException
 from fastapi.responses import JSONResponse
-from typing import Dict, Any
+from typing import Dict, Any, Set
 import uuid
 import asyncio
+import json
 
 from .connection import ClusterNode, TaskStatus
 from config import CLUSTER_API_TOKEN
+from logger import logger
 
 router = APIRouter(tags=["Cluster"])
+
+# WebSocket 连接池 - 用于向所有浏览器广播事件
+connected_ws_clients: Set[WebSocket] = set()
 
 def verify_token(request: Request):
     if CLUSTER_API_TOKEN:
@@ -21,6 +26,18 @@ def get_cluster_node(request: Request) -> ClusterNode:
     if not node:
         raise HTTPException(status_code=503, detail="Cluster node not initialized")
     return node
+
+async def broadcast_to_all_clients(event: Dict[str, Any]):
+    """向所有连接的浏览器WebSocket客户端广播事件"""
+    disconnected = set()
+    for ws in connected_ws_clients:
+        try:
+            await ws.send_json(event)
+        except Exception as e:
+            logger.warning(f"广播WebSocket客户端失败: {e}")
+            disconnected.add(ws)
+    for ws in disconnected:
+        connected_ws_clients.discard(ws)
 
 @router.post("/tasks")
 async def receive_task(request: Request):
@@ -56,7 +73,7 @@ async def receive_task_batch(request: Request):
             continue
         task_type = task["task_type"]
         description = task["description"]
-        parameters = task.get("parameters", {})
+        parameters = data.get("parameters", {})
         task_id = manager.assign_task(task_type, description, parameters)
         if task_id:
             results.append({"task_id": task_id, "status": "assigned"})
@@ -89,14 +106,37 @@ async def cluster_status(request: Request, node: ClusterNode = Depends(get_clust
     }
 
 @router.websocket("/ws/updates")
-async def ws_updates(websocket: WebSocket):
-    """WebSocket 更新推送（支持 standalone 模式）"""
+async def ws_updates(websocket: WebSocket, request: Request):
+    """WebSocket 更新推送 - 实现完整协作机制"""
     await websocket.accept()
+    connected_ws_clients.add(websocket)
+    logger.info(f"[WebSocket] 新客户端连接，当前共 {len(connected_ws_clients)} 个连接")
+    
+    manager = getattr(request.app.state, "cluster_manager", None)
+    if manager and hasattr(manager, 'own_node') and manager.own_node:
+        if not hasattr(manager.own_node, 'ws_connections'):
+            manager.own_node.ws_connections = []
+        manager.own_node.ws_connections.append(websocket)
+    
     try:
         while True:
-            await asyncio.sleep(1)
+            data = await websocket.receive_text()
+            try:
+                msg = json.loads(data)
+                logger.debug(f"[WebSocket] 收到消息: {msg}")
+            except:
+                pass
+            await asyncio.sleep(0.1)
     except WebSocketDisconnect:
-        pass
+        logger.info("[WebSocket] 客户端断开连接")
+    finally:
+        connected_ws_clients.discard(websocket)
+        if manager and hasattr(manager, 'own_node') and manager.own_node:
+            if hasattr(manager.own_node, 'ws_connections'):
+                try:
+                    manager.own_node.ws_connections.remove(websocket)
+                except:
+                    pass
 
 
 @router.post("/tasks/{task_id}/approve")

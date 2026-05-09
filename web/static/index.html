@@ -172,6 +172,21 @@
 <body>
     <div id="cluster-badge" class="cluster-badge hidden">🤝 协作模式</div>
     <div id="toast" class="toast hidden"></div>
+    
+    <!-- 密码输入弹窗 -->
+    <div id="password-modal" class="hidden" style="position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 2000; display: flex; align-items: center; justify-content: center;">
+        <div style="background: white; padding: 24px; border-radius: 12px; width: 360px; box-shadow: 0 4px 20px rgba(0,0,0,0.3);">
+            <h3 style="margin-bottom: 16px; color: #007bff;">🔒 房间需要密码</h3>
+            <div class="form-group">
+                <label>请输入房间密码</label>
+                <input type="password" id="room-password-input" placeholder="输入密码" style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 4px;">
+            </div>
+            <div style="display: flex; gap: 8px; margin-top: 16px;">
+                <button id="password-cancel" class="btn" style="background: #6c757d; flex: 1;">取消</button>
+                <button id="password-confirm" class="btn" style="flex: 1;">确认进入</button>
+            </div>
+        </div>
+    </div>
 
     <div class="container">
         <!-- 左侧导航 -->
@@ -766,6 +781,105 @@ function exportConversation(format) {
     window.open(url, '_blank');
     showToast('正在导出' + (format === 'json' ? 'JSON' : 'Markdown') + '文件...');
 }
+// 全局状态 - 待进入房间信息
+let pendingRoomToEnter = null;
+
+// 显示密码弹窗
+function showPasswordModal(callback) {
+    const modal = document.getElementById('password-modal');
+    modal.classList.remove('hidden');
+    document.getElementById('room-password-input').value = '';
+    document.getElementById('room-password-input').focus();
+    
+    const confirmBtn = document.getElementById('password-confirm');
+    const cancelBtn = document.getElementById('password-cancel');
+    
+    // 移除旧的监听器
+    const newConfirm = confirmBtn.cloneNode(true);
+    confirmBtn.parentNode.replaceChild(newConfirm, confirmBtn);
+    const newCancel = cancelBtn.cloneNode(true);
+    cancelBtn.parentNode.replaceChild(newCancel, cancelBtn);
+    
+    // 确认事件
+    newConfirm.onclick = () => {
+        const pwd = document.getElementById('room-password-input').value;
+        modal.classList.add('hidden');
+        callback(pwd);
+    };
+    
+    // 取消事件
+    newCancel.onclick = () => {
+        modal.classList.add('hidden');
+        callback(null);
+    };
+    
+    // 按回车确认
+    document.getElementById('room-password-input').addEventListener('keypress', (e) => {
+        if (e.key === 'Enter') {
+            newConfirm.click();
+        }
+    });
+}
+
+// 点击房间卡片处理函数
+async function handleRoomCardClick(room) {
+    pendingRoomToEnter = room;
+    
+    // 本机房主房间，直接进入
+    if (room.is_local) {
+        await enterRoom(room.room_id);
+        return;
+    }
+    
+    // 远程房间
+    const host = room.ip + ':' + (room.manager_port || 30001);
+    
+    // 如果有密码，弹窗输入
+    if (room.has_password) {
+        showPasswordModal(async (password) => {
+            if (!password) {
+                showToast('已取消', true);
+                return;
+            }
+            await joinAndEnterRoom(host, room, password);
+        });
+    } else {
+        await joinAndEnterRoom(host, room, "");
+    }
+}
+
+// 加入远程房间然后进入协作页面
+async function joinAndEnterRoom(host, room, password) {
+    const name = prompt('请输入你的成员花名:', '协作成员');
+    if (!name) return;
+    const mode = 'auto';
+    
+    // 弹出模型选择
+    await loadRoomModels('join-model-temp');
+    const selectId = 'join-model-temp';
+    const selectEl = document.createElement('select');
+    selectEl.id = selectId;
+    // 这里简化处理，直接用默认模型
+    const model = prompt('请输入你使用的模型名:', 'qwen2.5-coder:7b');
+    if (!model) return;
+    
+    try {
+        const res = await api('/api/rooms/join', {
+            method: 'POST',
+            body: JSON.stringify({ host, name, mode, model, password })
+        });
+        if (res.success) {
+            showToast('已成功加入房间');
+            setTimeout(() => init(), 1000);
+        } else {
+            showToast(res.error || '加入失败', true);
+        }
+    } catch (e) {
+        showToast('请求失败', true);
+        console.error(e);
+    }
+}
+
 // ==================== 房间管理（Manager） ====================
 async function refreshRooms() {
     try {
@@ -782,7 +896,7 @@ async function refreshRooms() {
         }
         
         document.getElementById('room-list-container').innerHTML = rooms.map(room => `
-            <div class="room-card" onclick="enterRoom('${room.room_id}')">
+            <div class="room-card" onclick='handleRoomCardClick(${JSON.stringify(room).replace(/'/g, "\\'")})'>
                 <h4>${room.room_name} <small>${room.room_id.slice(-8)}</small></h4>
                 <p>房主: ${room.owner_name || '未知'}</p>
                 <p>模型: ${room.owner_model || '未知'}</p>
@@ -851,7 +965,7 @@ async function enterRoom(roomId) {
     try {
         // 直接获取当前房间的信息，不管传进来的 roomId，因为房主刚创建完房间就是当前房间
         const data = await api('/api/rooms/current');
-        if (data && data.success && data.room_name && data.room_name !== "Default-Room") {
+        if (data && data.success && data.room_name && data.room_name !== "Default-Room" && data.room_ready) {
             // 显示房间详情
             document.getElementById('detail-room-name').textContent = data.room_name;
             document.getElementById('detail-room-id').textContent = data.room_id;
@@ -1362,9 +1476,31 @@ function connectWebSocket() {
         }
     };
 }
+// 全局状态 - 当前激活任务
+STATE.currentActiveTask = null;
+
 function handleClusterEvent(data) {
+    console.log('收到集群事件:', data);
+    
     if (data.type === 'task_assigned') {
         const entry = addTaskLog('新任务', data.task_type, data.description);
+        
+        // 关键逻辑：收到任务分配时，自动跳转到协作对话页面
+        STATE.currentActiveTask = {
+            task_id: data.task_id,
+            task_type: data.task_type,
+            description: data.description
+        };
+        
+        // Worker节点自动进入协作对话模式
+        if (STATE.role === 'worker') {
+            showToast('收到新任务，自动进入协作模式！');
+            showView('collab-chat');
+            initCollabChat();
+            appendCollabMessage('system', `📋 **收到新任务**\n\n类型: ${data.task_type}\n描述: ${data.description}`);
+        }
+        
+        // 手动模式需要批准
         if (STATE.role === 'worker' && STATE.nodeMode === 'manual') {
             const btn = document.createElement('button');
             btn.className = 'btn';
@@ -1375,9 +1511,20 @@ function handleClusterEvent(data) {
             entry.appendChild(btn);
             STATE.pendingApprovals[data.task_id] = entry;
         }
+    } else if (data.type === 'enter_collab_mode') {
+        // 房主广播进入协作模式事件
+        showToast('房主发起协作任务，全体进入协作对话模式！');
+        showView('collab-chat');
+        initCollabChat();
     } else if (data.status && data.task_id) {
         // task_update event
         addStatusUpdate(data.task_id, data.status);
+        // 将状态更新追加到协作对话
+        appendCollabMessage('system', `🔄 任务 ${data.task_id.slice(0, 8)} 状态更新: **${data.status}**`);
+    } else if (data.type === 'task_result') {
+        // 收到任务执行结果
+        appendCollabMessage('assistant', `✅ 任务完成:\n\n${data.result || '无结果数据'}`);
+        showToast('任务已完成！');
     }
 }
 async function approveTask(logEntry, taskId, btn) {

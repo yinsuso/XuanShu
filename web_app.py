@@ -372,6 +372,31 @@ async def create_room(request: Request):
         
         room_id = manager.create_room(room_name, owner_name, model, owner_node_id=owner_node_id, password_hash=password_hash)
         
+        # 单机模式下也启动房主的TCP服务器，让其他agent可以通过局域网连接进来
+        try:
+            from config import CLUSTER_MANAGER_HOST, CLUSTER_MANAGER_PORT
+            manager.start_server(host=CLUSTER_MANAGER_HOST, port=CLUSTER_MANAGER_PORT)
+            logger.info(f"🌐 房主TCP服务器已启动在 {CLUSTER_MANAGER_HOST}:{CLUSTER_MANAGER_PORT}")
+        except Exception as e:
+            logger.warning(f"启动TCP服务器时遇到问题（可能已在运行）: {e}")
+        
+        # 创建房间后启动房主UDP广播（单机模式下的关键）
+        discovery = getattr(manager, 'discovery', None) or globals().get('_discovery_instance')
+        if discovery:
+            # 更新discovery的房间信息
+            discovery.update_room_info(room_name=room_name, room_id=room_id, extra_info={
+                "owner_name": owner_name,
+                "owner_model": model
+            })
+            # 启动广播
+            discovery.start_hosting(extra_info={
+                "owner_name": owner_name,
+                "owner_model": model
+            })
+            logger.info(f"📢 UDP广播已启动，房间信息: {room_name}, 房主模型: {model}")
+        else:
+            logger.warning("⚠️ discovery实例未找到，UDP广播未启动")
+        
         logger.info(f"房间创建成功: room_id={room_id}, room_name={room_name}, owner={owner_name}, model={model}, has_password={password_hash is not None}")
         return {"success": True, "room_id": room_id, "room_name": room_name}
         
@@ -604,16 +629,16 @@ async def update_member(request: Request):
 
 @app.post("/api/rooms/start_task")
 async def start_task(request: Request):
-    """Manager 开启协作任务（广播给所有成员）"""
+    """Manager 开启协作任务（广播给所有成员，让全体自动进入协作对话模式）"""
+    from evolution.cluster.cluster_api import broadcast_to_all_clients
+    
     verify_token(request)
-    if CLUSTER_ROLE != "manager":
-        raise HTTPException(status_code=403, detail="仅 Manager 可")
-
+    
     # 懒加载集群组件
-    if CLUSTER_ENABLED:
-        success = await ensure_cluster_initialized()
-        if not success:
-            raise HTTPException(status_code=500, detail="集群未就绪，无法执行操作")
+    success = await ensure_cluster_initialized()
+    if not success:
+        raise HTTPException(status_code=500, detail="集群未就绪，无法执行操作")
+    
     data = await request.json()
     task_type = data.get("task_type")
     description = data.get("description")
@@ -621,8 +646,20 @@ async def start_task(request: Request):
     if not all([task_type, description]):
         raise HTTPException(status_code=400, detail="缺少任务类型或描述")
     manager = app.state.cluster_manager
+    
+    # 第一步：向所有浏览器客户端广播「进入协作模式」事件
+    await broadcast_to_all_clients({
+        "type": "enter_collab_mode",
+        "task_type": task_type,
+        "description": description,
+        "timestamp": time.time()
+    })
+    
+    # 第二步：调用调度分配任务
     task_id = manager.start_collaborative_task(task_type, description, parameters)
-    return {"success": True, "task_id": task_id}
+    
+    logger.info(f"🤝 [协作模式] 房主发起协作任务: task_id={task_id}, 描述={description}")
+    return {"success": True, "task_id": task_id, "message": "已向所有成员广播协作任务"}
 
 @app.post("/api/rooms/dismiss")
 async def dismiss_room(request: Request):
@@ -636,14 +673,35 @@ async def dismiss_room(request: Request):
         raise HTTPException(status_code=500, detail="集群管理器未初始化")
 
     try:
-        # 重置房间信息
+        # 第一步：停止房主UDP广播，这样其他agent的扫描器就不会再收到旧房间信息了
+        discovery = getattr(manager, 'discovery', None) or globals().get('_discovery_instance')
+        if discovery:
+            discovery.stop_hosting()
+            logger.info("📢 房主UDP广播已停止，其他Agent将很快看不到这个房间")
+        
+        # 第二步：停止房主TCP服务器，断开所有已连接的成员
+        try:
+            manager.stop_server()
+        except Exception as e:
+            logger.warning(f"停止TCP服务器时遇到问题: {e}")
+        
+        # 第三步：重置房间信息
         manager.room_id = str(uuid.uuid4())
         manager.room_name = "Default-Room"
         manager.owner_name = None
         manager.owner_model = None
         manager.room_password_hash = None
         manager.room_members.clear()
-        logger.info("房间已解散")
+        # 同时清理 nodes 字典中的成员节点（房主节点保留）
+        owner_node_id = manager.own_node.node_id if hasattr(manager, 'own_node') and manager.own_node else None
+        nodes_to_remove = []
+        for nid in manager.nodes.keys():
+            if nid != owner_node_id:
+                nodes_to_remove.append(nid)
+        for nid in nodes_to_remove:
+            del manager.nodes[nid]
+        
+        logger.info("✅ 房间已完整解散，UDP广播和TCP服务已停止")
         return {"success": True, "message": "房间已解散"}
     except Exception as e:
         logger.error(f"解散房间失败: {e}", exc_info=True)
@@ -695,10 +753,20 @@ async def ensure_cluster_initialized():
     try:
         if not CLUSTER_ENABLED:
             # 单机模式下也需要初始化集群管理器用于房间功能
+            # 从 model_providers 获取当前模型配置，保证模型正确性
+            from model_providers import config_manager
+            current_model_name = MODEL_NAME or "qwen2.5-coder:7b"
+            current_cfg = config_manager.current_config
+            if current_cfg:
+                current_model_name = current_cfg.model_name
+                logger.info(f"🔍 [单机初始化] 从配置管理器获取当前模型: {current_model_name}")
+            else:
+                logger.info(f"🔍 [单机初始化] 使用默认模型: {current_model_name}")
+            
             node = ClusterNode(
                 node_id=str(uuid.uuid4()),
                 ip="127.0.0.1",
-                model=MODEL_NAME or "qwen2.5-coder:7b",
+                model=current_model_name,
                 role="manager",
                 mode="auto"
             )
@@ -706,6 +774,8 @@ async def ensure_cluster_initialized():
             manager = ClusterManager()
             manager.own_node = node
             manager.broadcast_node = node
+            # 确保初始时node.model与从配置管理器获取的模型一致
+            node.model = current_model_name
             assessor = CapabilityAssessor(CAPABILITY_MODEL_RANKINGS)
             scheduler = TaskScheduler(assessor, strategy=SCHEDULER_STRATEGY)
             manager.set_scheduler(scheduler, assessor)

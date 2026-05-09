@@ -315,6 +315,8 @@ class ClusterManager:
         self.room_password_hash = None  # 房间密码哈希
         self.discovery = None
         self._server: Optional["ClusterServer"] = None
+        self.own_node = None  # 房主自己的节点引用
+        self.room_ready = False  # 房间就绪状态标志
         
         # 调度器与评估器（Phase 3 动态注入）
         self.scheduler: Optional[TaskScheduler] = None
@@ -597,6 +599,8 @@ class ClusterManager:
             node.load_cpu = 0.3
             node.load_memory = 0.4
             self.nodes[effective_owner_id] = node
+            # 设置 own_node 引用，确保房主节点可访问
+            self.own_node = node
             logger.info(f"🏠 [ClusterManager] 房主节点已注册到集群: {effective_owner_id}, 能力分: {capability_score:.2f}")
         
         self.room_members[effective_owner_id] = {
@@ -607,7 +611,9 @@ class ClusterManager:
             "joined_at": time.time(),
             "is_owner": True
         }
-        logger.info(f"🏠 [ClusterManager] 房间已创建: {room_name} (ID: {self.room_id}, 房主: {owner_name})")
+        # 标记房间数据已就绪
+        self.room_ready = True
+        logger.info(f"🏠 [ClusterManager] 房间已创建: {room_name} (ID: {self.room_id}, 房主: {owner_name}, 模型: {model})")
         return self.room_id
     
     def join_room(self, node_info: Dict[str, Any]) -> bool:
@@ -651,7 +657,8 @@ class ClusterManager:
             "owner_model": self.owner_model,
             "members": list(self.room_members.values()),
             "has_password": self.room_password_hash is not None,
-            "total_members": len(self.room_members)
+            "total_members": len(self.room_members),
+            "room_ready": self.room_ready
         }
     
     def broadcast_to_room(self, room_id: str, event: Dict[str, Any]) -> int:
