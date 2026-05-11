@@ -488,6 +488,7 @@ async def join_room(request: Request):
     name = data.get("name")
     mode = data.get("mode", "auto")
     model = data.get("model")
+    password = data.get("password", "")
     if not all([host, name, model]):
         raise HTTPException(status_code=400, detail="缺少必要参数")
 
@@ -512,8 +513,9 @@ async def join_room(request: Request):
     }
     try:
         loop = asyncio.get_event_loop()
+        # 传递密码参数给 client.join()
         success = await asyncio.wait_for(
-            loop.run_in_executor(None, client.join, host, port, node_info),
+            loop.run_in_executor(None, client.join, host, port, node_info, password),
             timeout=10.0
         )
     except asyncio.TimeoutError:
@@ -526,6 +528,8 @@ async def join_room(request: Request):
     if success:
         if node:
             node.connection = client.socket
+            node.model = model
+            node.status = "active"
         def listener():
             while True:
                 try:

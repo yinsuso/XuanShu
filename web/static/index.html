@@ -188,6 +188,29 @@
         </div>
     </div>
 
+    <!-- 加入房间完整表单弹窗 -->
+    <div id="join-room-modal" class="hidden" style="position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 3000; display: flex; align-items: center; justify-content: center;">
+        <div style="background: white; padding: 24px; border-radius: 12px; width: 420px; box-shadow: 0 4px 20px rgba(0,0,0,0.3);">
+            <h3 style="margin-bottom: 16px; color: #007bff;">🔗 加入房间</h3>
+            <div class="form-group">
+                <label>成员花名（必填）</label>
+                <input type="text" id="join-modal-name" placeholder="例如：清风明月" style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 4px;">
+            </div>
+            <div class="form-group">
+                <label>使用模型（自动读取本地配置）</label>
+                <select id="join-modal-model" style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 4px;"></select>
+            </div>
+            <div class="form-group">
+                <label>房间密码（如果有，请输入，无密码可留空）</label>
+                <input type="password" id="join-modal-password" placeholder="输入密码（留空表示无密码）" style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 4px;">
+            </div>
+            <div style="display: flex; gap: 8px; margin-top: 16px;">
+                <button id="join-modal-cancel" class="btn" style="background: #6c757d; flex: 1;">取消</button>
+                <button id="join-modal-confirm" class="btn" style="flex: 1;">确认加入</button>
+            </div>
+        </div>
+    </div>
+
     <div class="container">
         <!-- 左侧导航 -->
         <div class="panel">
@@ -233,8 +256,8 @@
                     <input type="text" id="new-room-name" placeholder="例如：项目A协作室">
                 </div>
                 <div class="form-group">
-                    <label>房主名称（花名/必填）</label>
-                    <input type="text" id="new-room-owner" placeholder="例如：玄枢居士">
+                    <label>房主名称（必填）</label>
+                    <input type="text" id="new-room-owner" placeholder="例如：玄枢">
                 </div>
                 <div class="form-group">
                     <label>选择模型</label>
@@ -783,42 +806,58 @@ function exportConversation(format) {
 }
 // 全局状态 - 待进入房间信息
 let pendingRoomToEnter = null;
+let pendingJoinRoomCallback = null;
 
-// 显示密码弹窗
-function showPasswordModal(callback) {
-    const modal = document.getElementById('password-modal');
+// 显示完整的加入房间表单弹窗
+async function showJoinRoomModal(callback) {
+    const modal = document.getElementById('join-room-modal');
     modal.classList.remove('hidden');
-    document.getElementById('room-password-input').value = '';
-    document.getElementById('room-password-input').focus();
     
-    const confirmBtn = document.getElementById('password-confirm');
-    const cancelBtn = document.getElementById('password-cancel');
+    // 清空表单
+    document.getElementById('join-modal-name').value = '';
+    document.getElementById('join-modal-password').value = '';
     
-    // 移除旧的监听器
+    // 自动加载模型列表到选择框
+    await loadRoomModels('join-modal-model');
+    
+    // 焦点在花名输入框
+    document.getElementById('join-modal-name').focus();
+    
+    const confirmBtn = document.getElementById('join-modal-confirm');
+    const cancelBtn = document.getElementById('join-modal-cancel');
+    
+    // 移除旧的监听器，避免重复绑定
     const newConfirm = confirmBtn.cloneNode(true);
     confirmBtn.parentNode.replaceChild(newConfirm, confirmBtn);
     const newCancel = cancelBtn.cloneNode(true);
     cancelBtn.parentNode.replaceChild(newCancel, cancelBtn);
     
+    pendingJoinRoomCallback = callback;
+    
     // 确认事件
     newConfirm.onclick = () => {
-        const pwd = document.getElementById('room-password-input').value;
+        const name = document.getElementById('join-modal-name').value.trim();
+        const model = document.getElementById('join-modal-model').value;
+        const password = document.getElementById('join-modal-password').value || '';
+        
+        if (!name) {
+            showToast('请输入成员花名', true);
+            return;
+        }
+        
         modal.classList.add('hidden');
-        callback(pwd);
+        if (pendingJoinRoomCallback) {
+            pendingJoinRoomCallback({ name, model, password });
+        }
     };
     
     // 取消事件
     newCancel.onclick = () => {
         modal.classList.add('hidden');
-        callback(null);
-    };
-    
-    // 按回车确认
-    document.getElementById('room-password-input').addEventListener('keypress', (e) => {
-        if (e.key === 'Enter') {
-            newConfirm.click();
+        if (pendingJoinRoomCallback) {
+            pendingJoinRoomCallback(null);
         }
-    });
+    };
 }
 
 // 点击房间卡片处理函数
@@ -831,53 +870,33 @@ async function handleRoomCardClick(room) {
         return;
     }
     
-    // 远程房间
-    const host = room.ip + ':' + (room.manager_port || 30001);
-    
-    // 如果有密码，弹窗输入
-    if (room.has_password) {
-        showPasswordModal(async (password) => {
-            if (!password) {
-                showToast('已取消', true);
-                return;
-            }
-            await joinAndEnterRoom(host, room, password);
-        });
-    } else {
-        await joinAndEnterRoom(host, room, "");
-    }
-}
-
-// 加入远程房间然后进入协作页面
-async function joinAndEnterRoom(host, room, password) {
-    const name = prompt('请输入你的成员花名:', '协作成员');
-    if (!name) return;
-    const mode = 'auto';
-    
-    // 弹出模型选择
-    await loadRoomModels('join-model-temp');
-    const selectId = 'join-model-temp';
-    const selectEl = document.createElement('select');
-    selectEl.id = selectId;
-    // 这里简化处理，直接用默认模型
-    const model = prompt('请输入你使用的模型名:', 'qwen2.5-coder:7b');
-    if (!model) return;
-    
-    try {
-        const res = await api('/api/rooms/join', {
-            method: 'POST',
-            body: JSON.stringify({ host, name, mode, model, password })
-        });
-        if (res.success) {
-            showToast('已成功加入房间');
-            setTimeout(() => init(), 1000);
-        } else {
-            showToast(res.error || '加入失败', true);
+    // 远程房间 - 弹出完整表单（花名、模型、密码一次性输入）
+    showJoinRoomModal(async (formData) => {
+        if (!formData) {
+            showToast('已取消', true);
+            return;
         }
-    } catch (e) {
-        showToast('请求失败', true);
-        console.error(e);
-    }
+        
+        const host = room.ip + ':' + (room.manager_port || 30001);
+        const { name, model, password } = formData;
+        const mode = 'auto';
+        
+        try {
+            const res = await api('/api/rooms/join', {
+                method: 'POST',
+                body: JSON.stringify({ host, name, mode, model, password })
+            });
+            if (res.success) {
+                showToast('已成功加入房间');
+                setTimeout(() => init(), 1000);
+            } else {
+                showToast(res.error || '加入失败', true);
+            }
+        } catch (e) {
+            showToast('请求失败', true);
+            console.error(e);
+        }
+    });
 }
 
 // ==================== 房间管理（Manager） ====================

@@ -28,7 +28,6 @@
 现在有了 **智能启动器**，你只需要运行：
 
 ```bash
-# 两种等价方式
 python launcher.py
 ```
 
@@ -45,7 +44,6 @@ python launcher.py
 ### 传统启动方式
 
 ```bash
-# 使用新版SkillAgent v5.4.2（推荐）
 python launcher.py
 ```
 

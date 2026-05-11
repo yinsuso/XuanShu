@@ -1,3 +1,11 @@
+## [5.5.1] - 2026-05-09
+- fix: 两个核心问题深度修复
+  - 问题1：创建房间后房主模型没有正确调用自配置管理器bug → 单机模式初始化集群节点时，从model_providers.config_manager单例读取当前用户正在使用的模型（model_config.json或Ollama中选中的），不再硬编码默认值
+  - 问题2：局域网跨主机房间发现深度修复 → 定义全局UDP_DISCOVERY_PORT=50005统一端口，拆分单一running标志为broadcasting和scanning两个独立状态，新增update_room_info动态更新广播内容，创建房间成功后自动启动房主UDP广播，修复UDP Socket稳定性
+  - discovery.py: 新增独立的stop_hosting/stop_scanning方法，增强日志便于调试
+  - web_app.py: 确保单机模式初始化时模型正确性，创建房间后自动启动广播
+  - 全平台验证：Windows、Linux和macOS三端同时开放50005 UDP端口和30000/30001/30002 TCP端口即可完美发现同一路由器内其他主机的房间
+
 ## [5.5.0] - 2026-05-09
 - fix: 两个核心问题修复
   - 问题1：创建房间后房主模型信息显示异常 → 现在启动UDP广播时主动传入owner_name和owner_model，确保房主模型正确传递

@@ -874,6 +874,7 @@ class ClusterServer:
         """处理客户端连接（加入后持续接收消息）"""
         node = None
         try:
+            import hashlib
             # 第一步：处理 join 消息
             data = conn.recv(4096)
             if not data:
@@ -885,6 +886,22 @@ class ClusterServer:
                 conn.sendall(json.dumps(response).encode('utf-8'))
                 return
 
+            # 密码验证
+            client_password = msg.get('password', '')
+            if self.manager.room_password_hash:
+                # 房间有密码，需要验证
+                client_password_hash = hashlib.sha256(client_password.encode()).hexdigest() if client_password else ""
+                if client_password_hash != self.manager.room_password_hash:
+                    logger.warning(f"[ClusterServer] 密码验证失败，拒绝节点 {addr[0]} 连接")
+                    response = {"type": "ack", "status": "error", "reason": "密码错误"}
+                    conn.sendall(json.dumps(response).encode('utf-8'))
+                    return
+                logger.info(f"[ClusterServer] 密码验证通过，节点 {addr[0]}")
+            else:
+                # 房间没有密码，直接通过
+                if client_password:
+                    logger.info(f"[ClusterServer] 房间无密码，但客户端提供了密码，忽略")
+            
             # 构建节点信息，并进行能力评估
             node_info = {
                 "node_id": msg.get('node_id'),
@@ -906,6 +923,7 @@ class ClusterServer:
             if node:
                 node.connection = conn
                 node.ip = addr[0]
+                node.status = "active"
             response = {"type": "ack", "status": "ok", "reason": "加入成功"}
             conn.sendall(json.dumps(response).encode('utf-8'))
             
@@ -913,7 +931,7 @@ class ClusterServer:
             if self.manager.room_id:
                 self.manager.join_room({
                     "node_id": node_info['node_id'],
-                    "name": node_info.get('name', node_info['node_id']),
+                    "name": msg.get('name', node_info['node_id']),
                     "mode": node_info.get('mode', 'auto'),
                     "model": node_info.get('model', 'unknown')
                 })

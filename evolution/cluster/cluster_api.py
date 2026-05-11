@@ -106,13 +106,17 @@ async def cluster_status(request: Request, node: ClusterNode = Depends(get_clust
     }
 
 @router.websocket("/ws/updates")
-async def ws_updates(websocket: WebSocket, request: Request):
+async def ws_updates(websocket: WebSocket):
     """WebSocket 更新推送 - 实现完整协作机制"""
     await websocket.accept()
     connected_ws_clients.add(websocket)
     logger.info(f"[WebSocket] 新客户端连接，当前共 {len(connected_ws_clients)} 个连接")
     
-    manager = getattr(request.app.state, "cluster_manager", None)
+    app_state = websocket.scope.get("app", None)
+    manager = None
+    if app_state:
+        manager = getattr(app_state.state, "cluster_manager", None)
+    
     if manager and hasattr(manager, 'own_node') and manager.own_node:
         if not hasattr(manager.own_node, 'ws_connections'):
             manager.own_node.ws_connections = []
