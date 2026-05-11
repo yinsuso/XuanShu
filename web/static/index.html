@@ -843,9 +843,18 @@ async function resendMessage(userMessage) {
 }
 
 function exportConversation(format) {
-    const url = format === 'json' ? '/api/export/json' : '/api/export';
-    window.open(url, '_blank');
-    showToast('正在导出' + (format === 'json' ? 'JSON' : 'Markdown') + '文件...');
+    // 【问题3修复】智能判断导出当前协作对话还是普通单机对话
+    if (STATE.currentView === 'collab-chat') {
+        // 当前在协作对话视图，导出协作专用的对话内容
+        const url = format === 'json' ? '/api/rooms/collab/export/json' : '/api/rooms/collab/export';
+        window.open(url, '_blank');
+        showToast('正在导出协作' + (format === 'json' ? 'JSON' : 'Markdown') + '文件...');
+    } else {
+        // 普通单机模式，导出原有普通对话
+        const url = format === 'json' ? '/api/export/json' : '/api/export';
+        window.open(url, '_blank');
+        showToast('正在导出' + (format === 'json' ? 'JSON' : 'Markdown') + '文件...');
+    }
 }
 // 全局状态 - 待进入房间信息
 let pendingRoomToEnter = null;
@@ -1285,10 +1294,14 @@ async function startCollabChat() {
 }
 
 // ==================== 初始化协作对话 ====================
+// 协作模式专用状态 - 持久化协作对话ID
+STATE.collabConversationId = null;
+
 function initCollabChat() {
     const chatContainer = document.getElementById('collab-messages');
-    if (chatContainer) {
-        chatContainer.innerHTML = '';
+    // 【问题1修复】不要每次进入协作对话就清空所有历史消息！避免模型回复不显示
+    // 只有当容器是空的时，才添加欢迎消息
+    if (chatContainer && chatContainer.children.length === 0) {
         appendCollabMessage('system', '🤝 欢迎进入协作对话模式！所有Agent的任务状态和返回结果都将在这里实时显示。');
     }
     // 刷新成员状态
@@ -1391,6 +1404,10 @@ async function sendCollabMessage() {
         
         if (taskRes.success) {
             showToast('协作任务已分发');
+            // 保存协作对话ID，用于后续导出
+            if (taskRes.collab_conversation_id) {
+                STATE.collabConversationId = taskRes.collab_conversation_id;
+            }
         } else {
             showToast(taskRes.error || '分发失败', true);
         }
@@ -1674,6 +1691,37 @@ STATE.currentActiveTask = null;
 function handleClusterEvent(data) {
     console.log('收到集群事件:', data);
     
+    if (data.type === 'joined_room_success') {
+        // 成员成功加入房间，显示提示并进入房间详情页
+        showToast('✅ 成功进入协作房间，已进入协作模式');
+        document.getElementById('cluster-badge').classList.remove('hidden');
+        document.getElementById('nav-collab-chat').classList.remove('hidden');
+        document.getElementById('room-name-display').textContent = '协作房间';
+        document.getElementById('current-room-info').classList.remove('hidden');
+        showView('room-detail');
+        startMemberRefresh();
+        return;
+    }
+    
+    if (data.type === 'left_room_success') {
+        // 成功退出房间，重置所有协作状态
+        showToast('✅ 已退出协作模式');
+        document.getElementById('cluster-badge').classList.add('hidden');
+        document.getElementById('nav-collab-chat').classList.add('hidden');
+        document.getElementById('current-room-info').classList.add('hidden');
+        if (memberRefreshTimer) {
+            clearInterval(memberRefreshTimer);
+            memberRefreshTimer = null;
+        }
+        if (STATE.collabMemberTimer) {
+            clearInterval(STATE.collabMemberTimer);
+            STATE.collabMemberTimer = null;
+        }
+        showView('room-list');
+        refreshRooms();
+        return;
+    }
+    
     if (data.type === 'task_assigned') {
         const entry = addTaskLog('新任务', data.task_type, data.description);
         
@@ -1700,41 +1748,72 @@ function handleClusterEvent(data) {
             entry.appendChild(btn);
             STATE.pendingApprovals[data.task_id] = entry;
         }
-    } else if (data.type === 'enter_collab_mode') {
-        showToast('房主发起协作任务，全体进入协作对话模式！');
+        return;
+    } 
+    
+    if (data.type === 'enter_collab_mode') {
+        // 房主通知所有成员：进入协作对话模式
+        showToast('🤝 房主发起协作任务，全体进入协作对话模式！');
+        document.getElementById('cluster-badge').classList.remove('hidden');
+        document.getElementById('nav-collab-chat').classList.remove('hidden');
+        
+        // 所有成员（房主也一样）自动跳转到协作对话页面
         showView('collab-chat');
         initCollabChat();
-    } else if (data.type === 'task_status_update') {
+        
+        // 在协作对话中显示任务详情（主Agent作为用户发送的信息）
+        appendCollabMessage('user', data.description || '房主发起协作任务');
+        appendCollabMessage('system', `📢 协作任务详情:\n- 任务类型: ${data.task_type || 'collaborative_task'}\n- 任务描述: ${data.description || ''}`);
+        return;
+    }
+    
+    if (data.type === 'task_status_update') {
+        // 任务状态实时更新（关键！可视化任务分发链）
         const agentName = data.agent_name || '未知Agent';
+        const status = data.status;
         addStatusUpdate(data.task_id, data.status);
         
-        if (data.status === 'assigned') {
-            appendCollabMessage('system', `🎯 **Agent ${agentName} 接收到任务**\n\n任务ID: ${data.task_id.slice(0,8)}`);
+        if (STATE.currentView === 'collab-chat') {
+            if (status === 'assigned') {
+                appendCollabMessage('system', `✅ 【任务分发】Agent「${agentName}」已成功接收到任务，准备开始处理...`);
+            } else if (status === 'running') {
+                appendCollabMessage('system', `⚡ 【执行中】Agent「${agentName}」正在调用大模型进行推理...`);
+            }
         }
-        
-        if (data.status === 'completed') {
-            appendCollabMessage('assistant', `🤖 **来自 Agent「${agentName}」的回复**\n\n${data.result_preview || '任务已完成'}`);
-            showToast(`Agent「${agentName}」完成任务！`);
-        }
-    } else if (data.type === 'task_update') {
+        return;
+    }
+    
+    if (data.type === 'task_update') {
+        // 任务最终完成更新
         const agentName = data.agent_name || '未知Agent';
+        const status = data.status;
         addStatusUpdate(data.task_id, data.status);
         
-        if (data.status === 'assigned') {
-            appendCollabMessage('system', `🎯 **Agent ${agentName} 接收到任务**\n\n任务ID: ${data.task_id.slice(0,8)}`);
-        } else if (data.status === 'completed') {
-            appendCollabMessage('assistant', `🤖 **来自 Agent「${agentName}」的回复**\n\n${(data.result || data.result_preview) || '任务已完成'}`);
-            showToast(`Agent「${agentName}」完成任务！`);
+        if (status === 'completed') {
+            // 把结果直接追加到协作对话，并且明确标注来自哪个Agent
+            appendCollabMessage('assistant', (data.result || data.result_preview || '任务已完成'), agentName);
+            showToast(`Agent「${agentName}」任务已完成！`);
+        } else if (status === 'failed') {
+            appendCollabMessage('assistant', `❌ Agent「${agentName}」任务失败: ${data.error || '未知错误'}`, agentName);
         } else {
             appendCollabMessage('system', `🔄 Agent「${agentName}」任务状态: **${data.status}**`);
         }
-    } else if (data.status && data.task_id) {
+        return;
+    }
+    
+    if (data.status && data.task_id) {
         addStatusUpdate(data.task_id, data.status);
         appendCollabMessage('system', `🔄 任务 ${data.task_id.slice(0, 8)} 状态更新: **${data.status}**`);
-    } else if (data.type === 'task_result') {
+        return;
+    }
+    
+    if (data.type === 'task_result') {
         appendCollabMessage('assistant', `✅ 任务完成:\n\n${data.result || '无结果数据'}`);
         showToast('任务已完成！');
+        return;
     }
+    
+    logger.debug('[WebSocket] 收到事件:', data);
 }
 async function approveTask(logEntry, taskId, btn) {
     try {

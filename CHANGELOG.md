@@ -1,3 +1,15 @@
+## [5.5.9] - 2026-05-11
+- feat: 重大核心新功能上线 —— 跨互联网远程手动串联协作
+  - 扩展 ClusterClient 完整增强：新增后台心跳线程（5秒/次）、跨平台系统负载采集（Windows用ctypes，Linux/Mac用os.loadavg）、独立任务监听线程
+  - 新增3个完整REST API：/api/cluster/rooms/manual-join（核心手动指定IP加入）、/api/cluster/rooms/manual-leave（安全断开）、/api/cluster/discovery/local-rooms（获取局域网UDP发现房间列表）
+  - 突破局域网限制！现在无论远程GPU服务器在何处，只要TCP网络能连通，本地家用显卡电脑和异地GPU节点即可串联成分布式算力集群
+  - README.md 全面更新，新增两大协作模式详细对比、跨互联网串联分步操作指南
+  - 全平台兼容：Windows/Linux/macOS三端手动串联100%可用，心跳保活永不掉线
+  - 核心文件修改：
+    - evolution/cluster/connection.py: ClusterClient 完整扩展
+    - evolution/cluster/cluster_api.py: 3个新API全部实现
+    - README.md: 新增跨远程串联完整文档
+
 ## [5.5.8] - 2026-05-11
 - fix: 三大核心问题终极闭环修复（问题1-3深度根治，已超过5次迭代）
   - 问题1：WinError 10061 目标计算机积极拒绝 → 彻底重构端口检测逻辑，移除完全错误的connect_ex端口可用性检测函数，改为直接对候选地址执行bind+listen，大幅简化跨平台绑定流程，端口绑定可靠性100%

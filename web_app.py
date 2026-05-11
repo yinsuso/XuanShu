@@ -536,6 +536,7 @@ async def list_rooms(request: Request):
 async def join_room(request: Request):
     """Worker 加入房间（触发 ClusterClient 连接）"""
     import socket
+    from evolution.cluster.cluster_api import broadcast_to_all_clients
 
     # 懒加载集群组件 - 问题2优化：无论CLUSTER_ENABLED与否都确保初始化完成
     success = await ensure_cluster_initialized()
@@ -631,6 +632,10 @@ async def join_room(request: Request):
             node.connection = client.socket
             node.model = model
             node.status = "active"
+            node.mode = mode
+            # 在节点上标记已加入协作房间状态
+            setattr(node, "in_collab_mode", True)
+            
         def listener():
             while True:
                 try:
@@ -641,6 +646,29 @@ async def join_room(request: Request):
                         break
                     msg = json.loads(data.decode('utf-8'))
                     msg_type = msg.get("type")
+                    
+                    logger.info(f"📩 [Worker TCP] 从房主收到事件: {msg_type}")
+                    
+                    # 【关键功能】任何从房主通过TCP发来的事件，直接通过本地WebSocket转发给Worker的浏览器
+                    try:
+                        from evolution.cluster.cluster_api import broadcast_to_all_clients
+                        import asyncio
+                        # 在事件循环中执行，推送事件给当前Worker自己的浏览器
+                        try:
+                            loop = asyncio.get_event_loop()
+                            if loop.is_running():
+                                asyncio.create_task(broadcast_to_all_clients(msg))
+                            else:
+                                loop.run_until_complete(broadcast_to_all_clients(msg))
+                        except Exception:
+                            new_loop = asyncio.new_event_loop()
+                            asyncio.set_event_loop(new_loop)
+                            new_loop.run_until_complete(broadcast_to_all_clients(msg))
+                            new_loop.close()
+                        logger.info(f"📡 [Worker本地转发] 已将房主事件推送到本地浏览器")
+                    except Exception as e:
+                        logger.warning(f"转发房主事件到本地浏览器失败: {e}")
+                    
                     if msg_type == "task_assignment":
                         payload = msg.get("payload", {})
                         if node:
@@ -650,6 +678,8 @@ async def join_room(request: Request):
                                 description=payload["description"],
                                 parameters=payload.get("parameters")
                             )
+                    elif msg_type == "enter_collab_mode":
+                        logger.info(f"🤝 [协作模式] 从房主收到进入协作模式广播，自动跳转协作对话页面")
                     else:
                         logger.debug(f"Worker 监听线程收到其他消息: {msg_type}")
                 except Exception as e:
@@ -677,12 +707,16 @@ async def join_room(request: Request):
                 time.sleep(5)
         threading.Thread(target=heartbeat_loop, daemon=True).start()
         
-        discovery = getattr(manager, 'discovery', None) or globals().get('_discovery_instance')
-        if discovery and not discovery.scanning:
-            discovery.start_scanning()
-            logger.info("🔍 成员节点也启动局域网扫描，确保双向发现互见")
+        # 向本地浏览器客户端广播：成员成功进入房间，进入协作模式准备状态
+        await broadcast_to_all_clients({
+            "type": "joined_room_success",
+            "name": name,
+            "mode": mode,
+            "model": model,
+            "timestamp": time.time()
+        })
             
-        return {"success": True, "message": "已加入房间"}
+        return {"success": True, "message": "已加入房间，进入协作模式", "in_collab_mode": True}
     else:
         # 根据join_reason判断抛出明确的错误
         if join_reason == "密码错误":
@@ -692,7 +726,8 @@ async def join_room(request: Request):
 
 @app.post("/api/rooms/leave")
 async def leave_room(request: Request):
-    """Worker 离开房间"""
+    """Worker 离开房间，退出协作模式"""
+    from evolution.cluster.cluster_api import broadcast_to_all_clients
 
     # 懒加载集群组件
     if CLUSTER_ENABLED:
@@ -700,14 +735,38 @@ async def leave_room(request: Request):
         if not success:
             raise HTTPException(status_code=500, detail="集群未就绪，无法执行操作")
     node = getattr(app.state, "cluster_node", None)
+    
     if node and node.connection:
         try:
             node.connection.close()
         except:
             pass
         node.connection = None
-        return {"success": True}
-    return {"success": False, "error": "未连接"}
+        
+        # 清除协作模式状态标记
+        if hasattr(node, "in_collab_mode"):
+            node.in_collab_mode = False
+            
+        # 向本地浏览器客户端广播：已成功退出房间，退出协作模式
+        await broadcast_to_all_clients({
+            "type": "left_room_success",
+            "timestamp": time.time()
+        })
+        
+        logger.info("🚪 已成功退出协作房间，退出协作模式")
+        return {"success": True, "message": "已退出房间，退出协作模式"}
+    
+    # 即使未真正建立TCP连接，也重置状态标记
+    if node:
+        if hasattr(node, "in_collab_mode"):
+            node.in_collab_mode = False
+        await broadcast_to_all_clients({
+            "type": "left_room_success",
+            "timestamp": time.time()
+        })
+        return {"success": True, "message": "已重置协作模式状态"}
+        
+    return {"success": False, "error": "未连接到任何房间"}
 
 @app.post("/api/rooms/update_member")
 async def update_member(request: Request):
@@ -744,9 +803,7 @@ async def update_member(request: Request):
 
 @app.post("/api/rooms/start_task")
 async def start_task(request: Request):
-    """Manager 开启协作任务（广播给所有成员，让全体自动进入协作对话模式）"""
-    from evolution.cluster.cluster_api import broadcast_to_all_clients
-    
+    """Manager 开启协作任务（双保险广播给所有成员，让全体自动进入协作对话模式）- 协作持久化增强版"""
     verify_token(request)
     
     # 懒加载集群组件
@@ -762,19 +819,111 @@ async def start_task(request: Request):
         raise HTTPException(status_code=400, detail="缺少任务类型或描述")
     manager = app.state.cluster_manager
     
-    # 第一步：向所有浏览器客户端广播「进入协作模式」事件
-    await broadcast_to_all_clients({
+    # 双保险推送：第一步通过 manager.broadcast() 同时向远程TCP节点和本地浏览器WebSocket推送事件
+    manager.broadcast({
         "type": "enter_collab_mode",
         "task_type": task_type,
         "description": description,
         "timestamp": time.time()
     })
     
-    # 第二步：调用调度分配任务
+    # 第二步：调用调度分配任务（会自动初始化协作对话并持久化所有消息）
     task_id = manager.start_collaborative_task(task_type, description, parameters)
     
     logger.info(f"🤝 [协作模式] 房主发起协作任务: task_id={task_id}, 描述={description}")
-    return {"success": True, "task_id": task_id, "message": "已向所有成员广播协作任务"}
+    
+    # 第三步：返回协作对话ID，前端保存用于后续导出
+    return {
+        "success": True, 
+        "task_id": task_id, 
+        "message": "已向所有成员广播协作任务，全体自动进入协作对话模式",
+        "collab_conversation_id": manager.collab_conversation_id
+    }
+
+@app.get("/api/rooms/collab/conversation")
+async def get_collab_conversation():
+    """获取当前协作对话信息（用于导出和加载）"""
+    await ensure_cluster_initialized()
+    manager = getattr(app.state, "cluster_manager", None)
+    
+    if not manager:
+        return {"success": False, "error": "集群未初始化"}
+    
+    return {
+        "success": True,
+        "collab_conversation_id": manager.collab_conversation_id,
+        "collab_initialized": manager._collab_initialized,
+        "message_count": len(manager.collab_messages)
+    }
+
+@app.post("/api/rooms/collab/add_message")
+async def add_collab_message_api(request: Request):
+    """外部API：手动添加一条协作消息（可选用于房主直接发送消息）"""
+    await ensure_cluster_initialized()
+    manager = getattr(app.state, "cluster_manager", None)
+    
+    if not manager:
+        return {"success": False, "error": "集群未初始化"}
+    
+    data = await request.json()
+    role = data.get("role", "user")
+    content = data.get("content", "")
+    metadata = data.get("metadata", {})
+    
+    if not content:
+        raise HTTPException(status_code=400, detail="消息内容不能为空")
+    
+    success = manager.add_collab_message(role, content, metadata)
+    return {"success": success}
+
+# 导出协作对话专用版本
+@app.get("/api/rooms/collab/export")
+async def api_collab_export():
+    """导出当前协作对话为 Markdown - 协作模式专用，直接导出本次协作内容"""
+    await ensure_cluster_initialized()
+    manager = getattr(app.state, "cluster_manager", None)
+    
+    if not manager or not manager._collab_initialized:
+        raise HTTPException(status_code=404, detail="当前没有活跃的协作对话")
+    
+    # 确保 conv_mgr 加载的是协作对话
+    collab_conv_id = manager.collab_conversation_id
+    conv_manager.load_conversation(collab_conv_id)
+    
+    if not conv_manager.current_conversation:
+        raise HTTPException(status_code=404, detail="协作对话不存在")
+    
+    content = conv_manager.current_conversation.export_as_markdown()
+    
+    return Response(
+        content=content,
+        media_type="text/markdown; charset=utf-8",
+        headers={"Content-Disposition": f"attachment; filename=collab-{manager.room_name}-{datetime.now().strftime('%Y%m%d-%H%M%S')}.md"}
+    )
+
+@app.get("/api/rooms/collab/export/json")
+async def api_collab_export_json():
+    """导出当前协作对话为 JSON - 协作模式专用，直接导出本次协作内容"""
+    await ensure_cluster_initialized()
+    manager = getattr(app.state, "cluster_manager", None)
+    
+    if not manager or not manager._collab_initialized:
+        raise HTTPException(status_code=404, detail="当前没有活跃的协作对话")
+    
+    # 确保 conv_mgr 加载的是协作对话
+    collab_conv_id = manager.collab_conversation_id
+    conv_manager.load_conversation(collab_conv_id)
+    
+    if not conv_manager.current_conversation:
+        raise HTTPException(status_code=404, detail="协作对话不存在")
+    
+    json_content = conv_manager.current_conversation.export_as_json()
+    
+    return Response(
+        content=json_content,
+        media_type="application/json; charset=utf-8",
+        headers={"Content-Disposition": f"attachment; filename=collab-{manager.room_name}-{datetime.now().strftime('%Y%m%d-%H%M%S')}.json"}
+    )
 
 @app.post("/api/rooms/dismiss")
 async def dismiss_room(request: Request):

@@ -29,8 +29,32 @@ class ClusterDiscovery:
         self._last_processed_msg = None  # 用于去重的最后处理消息
         self._extra_broadcast_info = {}  # 持久化保存要广播的额外信息（密码标识、房主名、模型等）
     
+    def _is_valid_private_ip(self, ip: str) -> bool:
+        """验证IP是否为有效的私网局域网IP（排除回环、广播、无效地址）"""
+        if not ip:
+            return False
+        parts = ip.split('.')
+        if len(parts) != 4:
+            return False
+        for p in parts:
+            try:
+                n = int(p)
+                if n < 0 or n > 255:
+                    return False
+            except ValueError:
+                return False
+        a, b, c, d = map(int, parts)
+        # 排除广播地址
+        if d == 255:
+            return False
+        # 回环地址仅保留127.0.0.1
+        if a == 127:
+            return ip == '127.0.0.1'
+        # 私网网段判定
+        return (a == 10) or (a == 172 and 16 <= b <= 31) or (a == 192 and b == 168)
+
     def _get_all_local_ips(self) -> List[str]:
-        """获取本机所有网卡的IP地址（跨平台终极版 - 完美兼容Windows/Linux/Mac，支持有线+无线多网卡）"""
+        """获取本机所有网卡的IP地址（跨平台终极版 - 只保留真实有效的局域网IP）"""
         local_ips = ['127.0.0.1']
         
         # 方式1：标准 gethostbyname_ex
@@ -38,19 +62,22 @@ class ClusterDiscovery:
             hostname = socket.gethostname()
             host_info = socket.gethostbyname_ex(hostname)
             for ip in host_info[2]:
-                if ip not in local_ips:
+                if ip not in local_ips and self._is_valid_private_ip(ip):
                     local_ips.append(ip)
         except Exception as e:
             logger.debug(f"_get_all_local_ips 方式1失败: {e}")
         
-        # 方式2：尝试获取能连接外网的网卡IP
+        # 方式2：尝试获取能连接外网的网卡IP（这是最核心最可靠的IP）
+        reliable_source_ip = None
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             s.connect(("8.8.8.8", 80))
             local_ip = s.getsockname()[0]
             s.close()
-            if local_ip not in local_ips:
-                local_ips.append(local_ip)
+            if local_ip and self._is_valid_private_ip(local_ip):
+                if local_ip not in local_ips:
+                    local_ips.append(local_ip)
+                reliable_source_ip = local_ip
         except Exception as e:
             logger.debug(f"_get_all_local_ips 方式2失败: {e}")
         
@@ -59,18 +86,16 @@ class ClusterDiscovery:
         platform = sys.platform
         
         if platform.startswith('win'):
-            # Windows平台：使用 socket.gethostbyname_ex 的增强版 + 多探测
+            # Windows平台：使用 ipconfig 解析，但严格过滤只保留有效IP
             try:
-                hostname = socket.gethostname()
-                # 额外探测：遍历 192.168.x.x 系列常见局域网IP，避免漏网
                 import subprocess
-                result = subprocess.run(['ipconfig', '/all'], capture_output=True, text=True, encoding='gbk', errors='ignore')
+                result = subprocess.run(['ipconfig'], capture_output=True, text=True, encoding='gbk', errors='ignore')
                 if result.returncode == 0:
                     import re
                     ip_pattern = re.compile(r'IPv4.*?:\s*(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})')
                     for match in ip_pattern.finditer(result.stdout):
                         ip = match.group(1)
-                        if ip not in local_ips and not ip.startswith('255.') and not ip.startswith('0.'):
+                        if ip not in local_ips and self._is_valid_private_ip(ip):
                             local_ips.append(ip)
             except Exception as e:
                 logger.debug(f"Windows ipconfig解析补充失败: {e}")
@@ -93,7 +118,7 @@ class ClusterDiscovery:
                 namestr = names.tobytes()
                 for i in range(0, outbytes, 32):
                     ip = socket.inet_ntoa(namestr[i+20:i+24])
-                    if ip not in local_ips and ip != '127.0.0.1':
+                    if ip not in local_ips and self._is_valid_private_ip(ip):
                         local_ips.append(ip)
                 s.close()
             except Exception as e:
@@ -105,13 +130,13 @@ class ClusterDiscovery:
                     if result.returncode == 0:
                         ips_str = result.stdout.strip()
                         for ip in ips_str.split():
-                            if ip and ip.count('.') == 3:
+                            if ip and self._is_valid_private_ip(ip):
                                 if ip not in local_ips:
                                     local_ips.append(ip)
                 except Exception:
                     pass
         
-        logger.info(f"🏠 [ClusterDiscovery] 本机IP列表: {local_ips} (已遍历所有网卡，平台: {platform})")
+        logger.info(f"🏠 [ClusterDiscovery] 本机IP列表: {local_ips} (已过滤无效IP，平台: {platform})")
         return local_ips
 
     def _is_ip_local(self, ip: str) -> bool:
@@ -219,13 +244,61 @@ class ClusterDiscovery:
                 return ip
         return '127.0.0.1'
 
+    def _get_subnet_unicast_targets(self) -> List[str]:
+        """通用同网段常用IP单播目标生成 - 100%适配所有标准私网网段 (10.x.x.x / 172.16-31.x.x / 192.168.x.x)"""
+        unicast_targets = []
+        common_last_octets = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
+                              11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
+                              21, 22, 23, 24, 25, 30, 31, 32, 40, 50,
+                              60, 100, 101, 120, 123, 160, 161, 162, 163, 200]
+        
+        for local_ip in self._local_ips:
+            if local_ip in ('127.0.0.1',):
+                continue
+            parts = local_ip.split('.')
+            if len(parts) == 4:
+                a, b, c, d = map(int, parts)
+                
+                # 处理 192.168.x.x 网段（C类）
+                if a == 192 and b == 168:
+                    base3 = f"{a}.{b}.{c}"
+                    for last_octet in common_last_octets:
+                        target_ip = f"{base3}.{last_octet}"
+                        if target_ip not in unicast_targets and target_ip != local_ip:
+                            unicast_targets.append(target_ip)
+                
+                # 处理 172.16-31.x.x 网段（B类）
+                elif a == 172 and 16 <= b <= 31:
+                    base2 = f"{a}.{b}"
+                    # 覆盖前10个可能的第三段 + 常用最后一段
+                    for third_octet in range(0, 11):
+                        base3 = f"{base2}.{third_octet}"
+                        for last_octet in common_last_octets:
+                            target_ip = f"{base3}.{last_octet}"
+                            if target_ip not in unicast_targets and target_ip != local_ip:
+                                unicast_targets.append(target_ip)
+                
+                # 处理 10.x.x.x 网段（A类）
+                elif a == 10:
+                    # 覆盖前10个可能的第二段 + 前10个第三段 + 常用最后一段
+                    for second_octet in range(0, 11):
+                        for third_octet in range(0, 11):
+                            base3 = f"{a}.{second_octet}.{third_octet}"
+                            for last_octet in common_last_octets[:20]:
+                                target_ip = f"{base3}.{last_octet}"
+                                if target_ip not in unicast_targets and target_ip != local_ip:
+                                    unicast_targets.append(target_ip)
+        return unicast_targets
+
     def _broadcast_loop(self):
         """广播主循环 - 使用持久化的_extra_broadcast_info，附带本机真实IP作为广播源标识"""
         broadcast_ips = self._get_local_broadcast_ips()
+        unicast_targets = self._get_subnet_unicast_targets()
         # 获取自己的真实源IP，放到广播消息里，解决某些场景下sender不准确的问题
         my_real_source_ip = self._get_best_broadcast_source_ip()
-        logger.info(f"📡 [ClusterDiscovery] 广播地址列表: {broadcast_ips}, 本机源IP标识: {my_real_source_ip}")
+        logger.info(f"📡 [ClusterDiscovery] 广播地址列表: {broadcast_ips}, 补充单播目标数: {len(unicast_targets)}, 本机源IP标识: {my_real_source_ip}")
         
+        send_counter = 0
         while self.broadcasting:
             try:
                 msg = {
@@ -249,7 +322,16 @@ class ClusterDiscovery:
                         logger.debug(f"📤 [ClusterDiscovery] 已广播到 {bcast_ip}:{self.port}")
                     except Exception as e:
                         logger.debug(f"广播到 {bcast_ip} 失败: {e}")
+                # 每5次广播（约10秒）执行一轮单播补充发送
+                if send_counter % 5 == 0:
+                    for unicast_ip in unicast_targets:
+                        try:
+                            s.sendto(data, (unicast_ip, self.port))
+                        except Exception:
+                            pass
+                    logger.debug(f"🎯 [ClusterDiscovery] 补充单播发送已执行，共 {len(unicast_targets)} 个目标")
                 s.close()
+                send_counter += 1
             except Exception as e:
                 logger.debug(f"广播循环异常: {e}")
             time.sleep(2)  # 更频繁一点，2秒发一次，确保跨平台快速发现
@@ -274,35 +356,37 @@ class ClusterDiscovery:
             except Exception as bind_e:
                 logger.warning(f"端口{self.port}被占用，尝试随机端口监听: {bind_e}")
                 s.bind(('', 0))
-            s.settimeout(2.0)
-            duplicate_filter = {}  # 用于秒级时间戳+room_id去重，防止Windows收到多次同一广播包
+            s.settimeout(1.5)
+            
+            # 扫描端主动探测：生成同网段所有常用IP，定期发房间查询请求
+            probe_targets = self._get_subnet_unicast_targets()
+            probe_counter = 0
+            duplicate_filter = {}
+            
             while self.scanning:
                 try:
                     data, addr = s.recvfrom(4096)
                     msg = json.loads(data.decode('utf-8'))
+                    
+                    # 处理房间广告
                     if msg.get("type") == "ROOM_ADVERTISEMENT":
                         sender_ip = addr[0]
-                        # 【关键优化】优先用消息里显式附带的 source_ip，解决跨平台/多网卡场景下的sender不准确问题
                         explicit_source_ip = msg.get("source_ip")
-                        if explicit_source_ip and not self._is_ip_local(explicit_source_ip):
+                        if explicit_source_ip:
                             sender_ip = explicit_source_ip
                         
-                        # 1️⃣ 关键修复：过滤掉来自本机IP的回环广播包（这是Windows出现重复房间的根本原因）
                         if self._is_ip_local(sender_ip):
                             logger.debug(f"🚫 [ClusterDiscovery] 过滤本机回环广播包，跳过: {sender_ip}")
                             continue
                         
                         room_id = msg.get('room_id', 'unknown')
-                        msg_timestamp = int(msg.get("timestamp", time.time()))  # 按秒级粒度去重
-                        
-                        # 2️⃣ 秒级去重：同一房间+同一秒内多次收到的消息，只处理一次
+                        msg_timestamp = int(msg.get("timestamp", time.time()))
                         dedup_key = f"{sender_ip}:{room_id}:{msg_timestamp}"
                         if dedup_key in duplicate_filter:
                             logger.debug(f"🔁 [ClusterDiscovery] 重复广播包已跳过: {dedup_key}")
                             continue
                         duplicate_filter[dedup_key] = True
                         
-                        # 3️⃣ 清理过期的去重记录（超过5秒的自动清理）
                         expired_keys = [k for k, v in duplicate_filter.items() 
                                        if int(k.split(':')[-1]) < int(time.time()) - 5]
                         for ek in expired_keys:
@@ -322,7 +406,38 @@ class ClusterDiscovery:
                         }
                         safe_model = msg.get('owner_model') or "unknown"
                         logger.info(f"✨ [ClusterDiscovery] 发现局域网房间: {msg.get('room_name', 'Unnamed-Room')} @ {sender_ip}, 模型: {safe_model}")
+                    
+                    # 处理其他节点发来的房间查询请求，直接响应回完整房间广告
+                    elif msg.get("type") == "ROOM_DISCOVERY_QUERY" and self.broadcasting:
+                        query_sender_ip = addr[0]
+                        logger.debug(f"📥 [ClusterDiscovery] 收到来自 {query_sender_ip} 的房间查询请求，正在回复...")
+                        reply_msg = {
+                            "type": "ROOM_ADVERTISEMENT",
+                            "room_name": self.room_name,
+                            "room_id": self.room_id,
+                            "manager_port": PORT_CLUSTER_MANAGER,
+                            "web_port": PORT_WEB,
+                            "timestamp": time.time(),
+                            "source_ip": self._get_best_broadcast_source_ip(),
+                            **self._extra_broadcast_info
+                        }
+                        reply_data = json.dumps(reply_msg, ensure_ascii=False).encode('utf-8')
+                        try:
+                            s.sendto(reply_data, (query_sender_ip, self.port))
+                        except Exception:
+                            pass
+                            
                 except socket.timeout:
+                    # 超时期间主动发送探测请求，每3个超时周期约4.5秒发一轮
+                    probe_counter += 1
+                    if probe_counter % 3 == 0 and probe_targets:
+                        query_msg = json.dumps({"type": "ROOM_DISCOVERY_QUERY"}, ensure_ascii=False).encode('utf-8')
+                        for probe_ip in probe_targets:
+                            try:
+                                s.sendto(query_msg, (probe_ip, self.port))
+                            except Exception:
+                                pass
+                        logger.debug(f"🔍 [ClusterDiscovery] 主动局域网探测已执行，共 {len(probe_targets)} 个目标")
                     continue
                 except Exception as e:
                     logger.debug(f"扫描接收异常: {e}")
