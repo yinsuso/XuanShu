@@ -358,19 +358,6 @@
                     </div>
                 </div>
 
-                <!-- 协作任务发送 -->
-                <div style="margin-top:16px; padding:12px; background:#f8f9fa; border-radius:8px;">
-                    <h4>📝 发起协作任务</h4>
-                    <p style="font-size:12px;color:#666;margin-bottom:8px;">向房间内所有成员广播协作任务，成员将共同协作完成</p>
-                    <div style="margin-bottom:8px;">
-                        <input type="text" id="collab-task-input" placeholder="输入需要协作完成的任务..." style="width:100%;padding:8px;border:1px solid #ddd;border-radius:4px;box-sizing:border-box;">
-                    </div>
-                    <div>
-                        <button class="btn" onclick="sendCollaborativeTask()">📤 发送任务</button>
-                    </div>
-                    <div id="collab-task-log" class="task-log" style="max-height:150px;"></div>
-                </div>
-
                 <div style="margin-top:16px; display:flex; gap:8px;">
                     <button class="btn" id="btn-start-task" onclick="startCollabChat()">🚀 开始协作对话</button>
                     <button class="btn btn-danger" id="btn-leave-room" onclick="handleRoomExit()">🔒 退出房间</button>
@@ -583,7 +570,7 @@ async function loadRoomModels(selectId) {
     if (!select) return;
     
     const defaultModels = [
-        { name: 'qwen2.5-coder:7b', desc: 'qwen2.5-coder:7b (代码专精)' },
+        { name: 'qwen3.5:9b', desc: 'qwen3.5:9b (代码专精)' },
         { name: 'qwen2.5:7b', desc: 'qwen2.5:7b (通用)' },
         { name: 'llama3:8b', desc: 'llama3:8b' },
         { name: 'phi3:3.8b', desc: 'phi3:3.8b (轻量)' }
@@ -592,28 +579,16 @@ async function loadRoomModels(selectId) {
     const models = [];
     
     try {
-        const ollamaRes = await api('/api/ollama_models');
-        if (ollamaRes.success && ollamaRes.models.length > 0) {
-            ollamaRes.models.forEach(m => {
-                models.push({ name: m.name, desc: `${m.name} (本地)`, type: 'local' });
+        const allRes = await api('/api/all_models');
+        if (allRes.success && allRes.models.length > 0) {
+            allRes.models.forEach(m => {
+                const suffix = m.model === allRes.current_model ? ' (当前)' : '';
+                const typeLabel = m.type === 'ollama' ? ' (本地)' : m.type === 'api' ? ' (云端)' : '';
+                models.push({ name: m.model, desc: `${m.model}${suffix}${typeLabel}` });
             });
         }
     } catch (e) {
-        console.log('Ollama不可用，仅使用配置模型');
-    }
-    
-    try {
-        const configRes = await api('/api/models');
-        if (configRes.success && configRes.models.length > 0) {
-            configRes.models.forEach(m => {
-                if (!models.some(existing => existing.name === m.name)) {
-                    const suffix = m.is_current ? ' (当前)' : '';
-                    models.push({ name: m.name, desc: `${m.name}${suffix} (云端)`, type: 'cloud' });
-                }
-            });
-        }
-    } catch (e) {
-        console.log('获取配置模型失败');
+        console.log('获取配置模型失败', e);
     }
     
     if (models.length === 0) {
@@ -623,6 +598,14 @@ async function loadRoomModels(selectId) {
     select.innerHTML = models.map(m => 
         `<option value="${m.name}">${m.desc}</option>`
     ).join('');
+    
+    // 如果有当前模型，自动选中
+    try {
+        const allRes = await api('/api/all_models');
+        if (allRes.success && allRes.current_model) {
+            select.value = allRes.current_model;
+        }
+    } catch (e) {}
 }
 async function api(endpoint, options = {}) {
     const res = await fetch(`${STATE.apiBase}${endpoint}`, {

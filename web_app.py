@@ -476,6 +476,7 @@ async def list_rooms(request: Request):
 @app.post("/api/rooms/join")
 async def join_room(request: Request):
     """Worker 加入房间（触发 ClusterClient 连接）"""
+    import socket
 
     # 懒加载集群组件
     if CLUSTER_ENABLED:
@@ -501,6 +502,34 @@ async def join_room(request: Request):
         host_parts = host.split(":")
         host = host_parts[0]
         port = int(host_parts[1])
+    
+    # 【关键修复】有效性检查：不允许尝试连接无意义主机或无效端口
+    # 先获取本机所有IP做过滤
+    try:
+        hostname = socket.gethostname()
+        local_ips = ['127.0.0.1']
+        try:
+            host_info = socket.gethostbyname_ex(hostname)
+            for local_ip_candidate in host_info[2]:
+                if local_ip_candidate not in local_ips:
+                    local_ips.append(local_ip_candidate)
+        except Exception:
+            pass
+        
+        # 关键保护：如果 host 是本机IP，禁止尝试连接，避免10061错误
+        if host in local_ips or host.lower() == 'localhost':
+            logger.warning(f"🚫 尝试连接到本机({host})房间是无效操作，拒绝请求。您是房主，无需加入自己的房间")
+            raise HTTPException(status_code=400, detail="您是当前房主，不能连接自己的房间")
+        
+        # 端口范围安全检查：防止无效端口
+        if not (1024 <= port <= 65535):
+            logger.warning(f"⚠️ 无效端口号: {port}")
+            raise HTTPException(status_code=400, detail=f"无效端口号: {port}")
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.warning(f"⚠️ 连接前有效性检查失败: {e}，继续尝试...")
 
     from evolution.cluster.connection import ClusterClient
     client = ClusterClient()
@@ -784,12 +813,13 @@ async def ensure_cluster_initialized():
             scheduler = TaskScheduler(assessor, strategy=SCHEDULER_STRATEGY)
             manager.set_scheduler(scheduler, assessor)
             manager.start_monitoring(interval=MANAGER_MONITOR_INTERVAL)
-            # 启动局域网扫描模式，支持发现其他主机的房间
+            # 【关键修复】单机模式下只启动扫描模式，绝对不启动默认房间的UDP广播！
+            # 等用户手动调用创建房间API后，再广播真实的自定义房间信息
             if not globals().get('_discovery_instance'):
                 globals()['_discovery_instance'] = ClusterDiscovery()
-                globals()['_discovery_instance'].start_scanning()
+                globals()['_discovery_instance'].start_scanning()  # 仅启动扫描，只发现别人的房间
                 manager.discovery = globals()['_discovery_instance']
-                logger.info("✅ [ClusterDiscovery] 单机模式局域网扫描已启动")
+                logger.info("✅ [ClusterDiscovery] 单机模式局域网扫描已启动（仅扫描，未广播，等待用户创建房间）")
             # 单机模式下也启动房主TCP服务器，监听30001端口，解决WinError 10061问题
             from config import CLUSTER_MANAGER_HOST, CLUSTER_MANAGER_PORT
             try:
@@ -1112,46 +1142,47 @@ async def list_ollama_models():
 
 @app.get("/api/all_models")
 async def list_all_models():
-    """获取所有可用的模型选项（包括Ollama本地模型和已配置的API模型）"""
+    """获取所有可用的模型选项（优先从model_config.json读取，包括Ollama本地模型）"""
     try:
         all_models = []
         
-        # 获取Ollama本地模型
-        ollama_models = await list_ollama_models()
-        if ollama_models.get("success"):
-            for m in ollama_models["models"]:
-                all_models.append({
-                    "name": m["name"],
-                    "model": m["model"],
-                    "type": "ollama",
-                    "provider": "ollama",
-                    "has_api_key": False,
-                    "size": m.get("size"),
-                    "modified_at": m.get("modified_at")
-                })
-        
-        # 获取已配置的API模型（需要有api_key）
+        # 优先读取已配置的所有模型（包括Ollama和API，无论是否有api_key）
         configs = config_manager.list_configs()
         for cfg in configs:
-            if cfg.get("provider") != "ollama" and cfg.get("has_api_key"):
-                all_models.append({
-                    "name": cfg["name"],
-                    "model": cfg["model"],
-                    "type": "api",
-                    "provider": cfg["provider"],
-                    "has_api_key": True,
-                    "size": None,
-                    "modified_at": None
-                })
+            all_models.append({
+                "name": cfg["name"],
+                "model": cfg["model"],
+                "type": "config",
+                "provider": cfg["provider"],
+                "has_api_key": cfg.get("has_api_key", False),
+                "size": None,
+                "modified_at": None
+            })
+        
+        # 获取Ollama本地模型，补充到列表中（避免重复）
+        ollama_models = await list_ollama_models()
+        existing_model_names = {m["model"] for m in all_models}
+        if ollama_models.get("success"):
+            for m in ollama_models["models"]:
+                if m["name"] not in existing_model_names:
+                    all_models.append({
+                        "name": m["name"],
+                        "model": m["model"],
+                        "type": "ollama",
+                        "provider": "ollama",
+                        "has_api_key": False,
+                        "size": m.get("size"),
+                        "modified_at": m.get("modified_at")
+                    })
         
         # 获取当前配置
         current = config_manager.current_config
-        current_name = current.name if current else None
+        current_model_name = current.model_name if current else None
         
         return {
             "success": True,
             "models": all_models,
-            "current_model": current_name,
+            "current_model": current_model_name,
             "total_count": len(all_models)
         }
     except Exception as e:

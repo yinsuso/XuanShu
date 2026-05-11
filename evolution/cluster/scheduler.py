@@ -109,6 +109,20 @@ class TaskScheduler:
         self.round_robin_index += 1
         return node
 
+    def select(self, nodes: List) -> Optional[ClusterNode]:
+        """
+        从节点池中选择最优节点（兼容旧接口）
+        
+        Args:
+            nodes: 节点列表
+        
+        Returns:
+            选中的ClusterNode对象
+        """
+        self.update_node_pool(nodes)
+        task = {"task_type": "default"}
+        return self.schedule(task)
+    
     def get_stats(self) -> Dict[str, Any]:
         """获取调度器统计信息"""
         stats = {
