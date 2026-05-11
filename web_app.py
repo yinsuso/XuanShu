@@ -395,20 +395,21 @@ async def create_room(request: Request):
         except Exception as e:
             logger.warning(f"启动TCP服务器时遇到问题（可能已在运行）: {e}")
         
-        # 创建房间后启动房主UDP广播（单机模式下的关键）
+        # 创建房间后启动房主UDP广播 - 优化流程：合并所有必要信息
         discovery = getattr(manager, 'discovery', None) or globals().get('_discovery_instance')
         if discovery:
-            # 更新discovery的房间信息
-            discovery.update_room_info(room_name=room_name, room_id=room_id, extra_info={
+            # 准备所有要广播的关键信息
+            extra_info = {
                 "owner_name": owner_name,
-                "owner_model": model
-            })
-            # 启动广播
-            discovery.start_hosting(extra_info={
-                "owner_name": owner_name,
-                "owner_model": model
-            })
-            logger.info(f"📢 UDP广播已启动，房间信息: {room_name}, 房主模型: {model}")
+                "owner_model": model,
+                "password_required": password_hash is not None
+            }
+            # 更新discovery的房间信息 - 合并到持久化字典
+            discovery.update_room_info(room_name=room_name, room_id=room_id, extra_info=extra_info)
+            # 如果广播还没启动，再启动
+            if not discovery.broadcasting:
+                discovery.start_hosting(extra_info=extra_info)
+            logger.info(f"📢 UDP广播已启动，房间信息: {room_name}, 房主模型: {model}, 需要密码: {password_hash is not None}")
         else:
             logger.warning("⚠️ discovery实例未找到，UDP广播未启动")
         
@@ -521,7 +522,7 @@ async def list_rooms(request: Request):
                         "manager_port": r.get('manager_port', 30001),
                         "members": [],
                         "members_detail": [],
-                        "has_password": False,
+                        "has_password": r.get('password_required', False),
                         "total_members": 0,
                         "is_local": False,
                         "status": "remote"

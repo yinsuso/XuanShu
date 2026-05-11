@@ -791,21 +791,26 @@ class ClusterManager:
             logger.warning("任务状态更新来自未知节点", node_id=node_id, task_id=task_id)
 
     def start_server(self, host: str = "0.0.0.0", port: int = 30001):
-        """启动房主端 TCP 服务器，监听节点加入请求"""
+        """启动房主端 TCP 服务器，监听节点加入请求 - 增强修复版"""
         if self._server is None:
             self._server = ClusterServer(self, host, port)
             self._server.start()
+            # 等待一小会儿，让服务器完成绑定，获取真实使用的端口
+            time.sleep(0.5)
+            actual_port = self._server._actual_bind_port if self._server._bind_success else port
             # 启动房间广播服务，同时也启动扫描模式监听局域网其他主机
             if not self.discovery:
-                self.discovery = ClusterDiscovery(room_name=self.room_name, room_id=self.room_id, host_port=port)
-            # 广播房主信息（包含模型名称等）
+                self.discovery = ClusterDiscovery(room_name=self.room_name, room_id=self.room_id, host_port=actual_port)
+            # 广播房主信息（包含模型名称、密码标识等关键信息）
             extra_info = {
                 "owner_name": self.owner_name,
-                "owner_model": self.owner_model
+                "owner_model": self.owner_model,
+                "password_required": self.room_password_hash is not None,
+                "manager_port": actual_port
             }
             self.discovery.start_hosting(extra_info=extra_info)
             self.discovery.start_scanning()  # 同时启动扫描，支持发现局域网其他房间
-            logger.info(f"🌐 [Cluster] 房主服务器已启动: {host}:{port}, 房主模型: {self.owner_model}")
+            logger.info(f"🌐 [Cluster] 房主服务器已启动: {self._server._actual_bind_host}:{actual_port}, 房主模型: {self.owner_model}, 需密码: {self.room_password_hash is not None}")
             # 设置广播节点为自身（用于事件推送）
             self.broadcast_node = self
         else:
@@ -843,15 +848,16 @@ class ClusterServer:
         self._actual_bind_port = port
 
     def _check_port_available(self, host: str, port: int) -> bool:
-        """检查端口是否可用 - 跨平台兼容"""
+        """检查端口是否可用 - 跨平台兼容 修复bug：改为直接尝试绑定测试，而非connect_ex"""
         try:
             test_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            test_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             test_sock.settimeout(1.0)
-            result = test_sock.connect_ex((host, port))
+            test_sock.bind((host, port))
             test_sock.close()
-            return result != 0
-        except:
             return True
+        except:
+            return False
 
     def _try_bind_with_fallback(self):
         """尝试绑定，失败时自动尝试备选地址和端口"""
@@ -876,13 +882,9 @@ class ClusterServer:
             if (ip_candidate, self.port) not in candidates:
                 candidates.append((ip_candidate, self.port))
         
-        # 尝试所有候选地址
+        # 尝试所有候选地址 - 简化健壮版，绕过端口预检测的复杂性，直接绑定
         for try_host, try_port in candidates:
             try:
-                if not self._check_port_available(try_host, try_port):
-                    logger.warning(f"端口 {try_port} 可能已被占用，尝试其他方案...")
-                    continue
-                
                 self._server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 self._server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
                 self._server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1) if hasattr(socket, 'SO_REUSEPORT') else None
