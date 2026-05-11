@@ -181,13 +181,7 @@ class ModelConfigManager:
         return None
 
     def list_configs(self) -> List[Dict[str, Any]]:
-        filtered = []
-        for cfg in self.configs:
-            if cfg.provider == ProviderType.OLLAMA:
-                filtered.append(cfg)
-            elif cfg.api_key:
-                filtered.append(cfg)
-        
+        """返回所有模型配置，不做任何过滤，确保用户添加的所有云端API配置都可见"""
         return [
             {
                 "name": cfg.name,
@@ -196,7 +190,7 @@ class ModelConfigManager:
                 "has_api_key": bool(cfg.api_key),
                 "is_current": self.current_config and self.current_config.name == cfg.name
             }
-            for cfg in filtered
+            for cfg in self.configs
         ]
 
 

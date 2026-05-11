@@ -305,18 +305,32 @@ from evolution.cluster.cluster_api import verify_token, get_cluster_node
 
 @app.get("/api/info")
 async def get_info():
-    """获取当前节点角色与状态"""
+    """获取当前节点角色与状态，同时返回当前从model_config.json读取的模型配置"""
+    from model_providers import config_manager
+    current_model = None
+    current_model_name = None
+    if config_manager and config_manager.current_config:
+        current_model = config_manager.current_config
+        current_model_name = current_model.model_name
     if not CLUSTER_ENABLED:
-        return {"role": "standalone", "message": "Cluster disabled"}
+        return {
+            "role": "standalone", 
+            "message": "Cluster disabled",
+            "current_model_name": current_model_name
+        }
     role = CLUSTER_ROLE
     node = getattr(app.state, "cluster_node", None)
     if role == "manager":
         manager = getattr(app.state, "cluster_manager", None)
         if manager:
             room = manager.get_room_info()
-            return {"role": "manager", "room": room}
+            return {
+                "role": "manager", 
+                "room": room,
+                "current_model_name": current_model_name
+            }
         else:
-            return {"role": "manager", "room": None}
+            return {"role": "manager", "room": None, "current_model_name": current_model_name}
     else:  # worker
         if node:
             return {
@@ -324,10 +338,11 @@ async def get_info():
                 "node_id": node.node_id,
                 "connected": node.connection is not None,
                 "mode": node.mode,
-                "model": node.model
+                "model": node.model,
+                "current_model_name": current_model_name
             }
         else:
-            return {"role": "worker", "connected": False}
+            return {"role": "worker", "connected": False, "current_model_name": current_model_name}
 
 @app.post("/api/rooms/create")
 async def create_room(request: Request):
@@ -422,6 +437,36 @@ async def get_current_room(request: Request):
     info = manager.get_room_info()
     info["members_detail"] = manager.get_member_info()
     info["success"] = True  # 总是返回 success，即使房间是 Default-Room
+    
+    # 【问题1修复】从 model_config.json 中读取所有模型配置，返回给前端下拉框
+    from model_providers import config_manager
+    all_models = []
+    configs = config_manager.list_configs()
+    for cfg in configs:
+        suffix = " (当前)" if cfg.get('is_current') else ""
+        type_label = " (本地)" if cfg.get('provider') == 'ollama' else " (云端)"
+        all_models.append({
+            "name": cfg["name"],
+            "model": cfg["model"],
+            "desc": f"{cfg['model']}{suffix}{type_label}"
+        })
+    # 补充 Ollama 模型到列表 - 静默模式（完全不输出警告）
+    try:
+        ollama_models_res = await list_ollama_models()
+        if ollama_models_res.get("success"):
+            existing_names = {m["model"] for m in all_models}
+            for m in ollama_models_res.get("models", []):
+                if m["name"] not in existing_names:
+                    all_models.append({
+                        "name": m["name"],
+                        "model": m["model"],
+                        "desc": f"{m['name']} (Ollama)"
+                    })
+    except Exception:
+        pass  # 静默忽略所有Ollama相关错误，完全不打扰用户
+    info["available_models"] = all_models
+    info["current_model"] = config_manager.current_config.model_name if config_manager.current_config else None
+    
     logger.info(f"房间信息: owner_name={info.get('owner_name')}, room_name={info.get('room_name')}, members_detail={info['members_detail']}")
     return info
 
@@ -437,9 +482,14 @@ async def list_rooms(request: Request):
         if not manager:
             return {"success": True, "rooms": []}
 
-        # 1. 把本地房间加入列表
+        # 1. 把本地房间加入列表 - 【问题4修复】严格检查房间是否真实创建
         room_info = manager.get_room_info()
-        if not (room_info["room_name"] == "Default-Room" and room_info.get("owner_name") is None):
+        is_real_local_room = (
+            room_info["room_name"] != "Default-Room" and 
+            room_info.get("owner_name") is not None and 
+            room_info.get("room_ready", False)
+        )
+        if is_real_local_room:
             room_info["members_detail"] = manager.get_member_info()
             room_info["status"] = "active" if len(room_info["members"]) > 0 else "waiting"
             room_info["is_local"] = True
@@ -450,6 +500,15 @@ async def list_rooms(request: Request):
         if discovery:
             found = discovery.get_available_rooms()
             for r in found:
+                # 【问题4修复】严格过滤无效的/未准备好的远程房间
+                remote_room_name = r.get('room_name', '')
+                if (not remote_room_name or 
+                    remote_room_name == "Default-Room" or 
+                    remote_room_name == "Default-Agent-Room" or
+                    not r.get('owner_name') or 
+                    r.get('owner_name') == 'Unknown'):
+                    # 无效房间跳过
+                    continue
                 # 排除本地房间（通过 room_id 比对）
                 local_room_id = getattr(manager, 'room_id', None)
                 if r.get('room_id') != local_room_id:
@@ -478,11 +537,10 @@ async def join_room(request: Request):
     """Worker 加入房间（触发 ClusterClient 连接）"""
     import socket
 
-    # 懒加载集群组件
-    if CLUSTER_ENABLED:
-        success = await ensure_cluster_initialized()
-        if not success:
-            raise HTTPException(status_code=500, detail="集群未就绪，无法执行操作")
+    # 懒加载集群组件 - 问题2优化：无论CLUSTER_ENABLED与否都确保初始化完成
+    success = await ensure_cluster_initialized()
+    if not success:
+        raise HTTPException(status_code=500, detail="集群未就绪，无法执行操作")
     data = await request.json()
     host = data.get("host")
     port = data.get("port", 30001)
@@ -516,10 +574,9 @@ async def join_room(request: Request):
         except Exception:
             pass
         
-        # 关键保护：如果 host 是本机IP，禁止尝试连接，避免10061错误
-        if host in local_ips or host.lower() == 'localhost':
-            logger.warning(f"🚫 尝试连接到本机({host})房间是无效操作，拒绝请求。您是房主，无需加入自己的房间")
-            raise HTTPException(status_code=400, detail="您是当前房主，不能连接自己的房间")
+        # 关键优化：不再禁止本机IP连接，允许单机多角色调试场景（房主和Worker在同一台机器）
+        # 这样用户可以在同一台机器上通过 127.0.0.1 或局域网IP连接自己的TCP服务器进行调试
+        logger.info(f"🔌 准备连接到主机 {host}，支持单机多角色调试场景")
         
         # 端口范围安全检查：防止无效端口
         if not (1024 <= port <= 65535):
@@ -545,14 +602,17 @@ async def join_room(request: Request):
         # 传递密码参数给 client.join()
         success = await asyncio.wait_for(
             loop.run_in_executor(None, client.join, host, port, node_info, password),
-            timeout=10.0
+            timeout=8.0
         )
     except asyncio.TimeoutError:
         success = False
-        print("Worker 连接 manager 超时（10秒）")
+        logger.error(f"❌ 连接房间 {host}:{port} 超时（8秒），请确认房主房间是否创建成功且网络可访问")
+    except ConnectionRefusedError:
+        success = False
+        logger.error(f"❌ [ClusterClient] 连接被拒绝: {host}:{port}，请确认房主的房间已经创建成功")
     except Exception as e:
         success = False
-        print(f"Worker 连接 manager 失败: {e}")
+        logger.error(f"❌ Worker 连接 manager 失败: {e}")
 
     if success:
         if node:
@@ -579,11 +639,11 @@ async def join_room(request: Request):
                                 parameters=payload.get("parameters")
                             )
                     else:
-                        print(f"Worker 监听线程收到其他消息: {msg_type}")
+                        logger.debug(f"Worker 监听线程收到其他消息: {msg_type}")
                 except Exception as e:
-                    print(f"Worker 监听线程异常: {e}")
+                    logger.debug(f"Worker 监听线程异常: {e}")
                     break
-        threading.Thread(target=listener, daemon=True).start()
+            threading.Thread(target=listener, daemon=True).start()
 
         def heartbeat_loop():
             while True:
@@ -600,13 +660,13 @@ async def join_room(request: Request):
                         )
                         client.socket.sendall(hb.serialize())
                 except Exception as e:
-                    print(f"心跳发送失败: {e}")
+                    logger.debug(f"心跳发送失败: {e}")
                     break
                 time.sleep(5)
         threading.Thread(target=heartbeat_loop, daemon=True).start()
         return {"success": True, "message": "已加入房间"}
     else:
-        raise HTTPException(status_code=500, detail="加入房间失败")
+        raise HTTPException(status_code=500, detail="加入房间失败，请确认房主房间已创建成功、网络可达，且密码正确")
 
 @app.post("/api/rooms/leave")
 async def leave_room(request: Request):
@@ -813,20 +873,15 @@ async def ensure_cluster_initialized():
             scheduler = TaskScheduler(assessor, strategy=SCHEDULER_STRATEGY)
             manager.set_scheduler(scheduler, assessor)
             manager.start_monitoring(interval=MANAGER_MONITOR_INTERVAL)
-            # 【关键修复】单机模式下只启动扫描模式，绝对不启动默认房间的UDP广播！
+            # 【关键修复1】单机模式下只启动扫描模式，绝对不启动默认房间的UDP广播！
             # 等用户手动调用创建房间API后，再广播真实的自定义房间信息
             if not globals().get('_discovery_instance'):
                 globals()['_discovery_instance'] = ClusterDiscovery()
                 globals()['_discovery_instance'].start_scanning()  # 仅启动扫描，只发现别人的房间
                 manager.discovery = globals()['_discovery_instance']
                 logger.info("✅ [ClusterDiscovery] 单机模式局域网扫描已启动（仅扫描，未广播，等待用户创建房间）")
-            # 单机模式下也启动房主TCP服务器，监听30001端口，解决WinError 10061问题
-            from config import CLUSTER_MANAGER_HOST, CLUSTER_MANAGER_PORT
-            try:
-                manager.start_server(host=CLUSTER_MANAGER_HOST, port=CLUSTER_MANAGER_PORT)
-                logger.info(f"🌐 单机模式TCP服务器已启动在 {CLUSTER_MANAGER_HOST}:{CLUSTER_MANAGER_PORT}")
-            except Exception as e:
-                logger.warning(f"单机模式启动TCP服务器时遇到问题（可能已在运行）: {e}")
+            # 【关键修复2】单机模式下：不要提前启动TCP服务器，用户创建房间时再启动！
+            # 这样不会有未创建房间时TCP端口就被占用但没有真实房间的情况
             app.state.cluster_manager = manager
             logger.info("✅ [ClusterManager] 单机模式集群管理器已初始化")
             _cluster_initialized = True
@@ -1127,18 +1182,18 @@ async def delete_model(request: Request):
 
 @app.get("/api/ollama_models")
 async def list_ollama_models():
-    """获取Ollama中已下载的模型列表"""
+    """获取Ollama中已下载的模型列表 - 静默失败模式，无警告"""
     import requests
     ollama_url = "http://localhost:11434/api/tags"
     try:
-        response = requests.get(ollama_url, timeout=5)
+        response = requests.get(ollama_url, timeout=3)
         response.raise_for_status()
         data = response.json()
         models = [{"name": m["name"], "model": m["name"], "modified_at": m.get("modified_at"), "size": m.get("size")} for m in data.get("models", [])]
         return {"success": True, "models": models}
-    except Exception as e:
-        logger.warning(f"获取Ollama模型列表失败: {e}")
-        return {"success": False, "error": str(e), "models": []}
+    except Exception:
+        # 静默失败，完全不输出警告，因为很多用户根本不使用本地Ollama服务
+        return {"success": False, "models": []}
 
 @app.get("/api/all_models")
 async def list_all_models():
@@ -1251,6 +1306,18 @@ async def clear_current_conversation():
         return {"success": False, "error": str(e)}
 
 
+# ==================== API：Token数据统计（协作模式可用） ====================
+@app.get("/api/stats/tokens")
+async def get_token_stats():
+    """获取token使用统计 - 协作模式下数据统计功能"""
+    try:
+        from token_tracker import token_tracker
+        stats = token_tracker.get_stats()
+        return {"success": True, "stats": stats}
+    except Exception as e:
+        logger.error(f"获取token统计失败: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
+
 # ==================== API：核心功能（新增） ====================
 
 @app.get("/api/skills")
@@ -1278,7 +1345,7 @@ async def api_skills():
 
 @app.post("/api/chat")
 async def api_chat(request: Request):
-    """处理用户消息，返回回复"""
+    """处理用户消息，返回回复 - 增强容错版：即使模型无回复也保证后续功能可用"""
     try:
         data = await request.json()
         message = data.get('message', '').strip()
@@ -1286,22 +1353,35 @@ async def api_chat(request: Request):
         if not message:
             raise HTTPException(status_code=400, detail="消息不能为空")
         
+        # 1. 确保对话管理器状态完整，避免后续导出/历史功能异常
         if conversation_id:
             conv_manager.load_conversation_or_create(conversation_id)
+        # 确保当前对话对象一定存在
+        if not conv_manager.current_conversation:
+            conv_manager.new_conversation()
         
+        # 2. 记录用户消息（无论后续模型调用成功与否，都先存下来）
         conv_manager.add_user_message(message)
         
+        response = ""
         agent = get_agent()
-        # 使用异步执行模型调用，避免阻塞Web服务器
-        import asyncio
-        response = await asyncio.to_thread(agent._process_simple, message)
+        # 3. 使用异步执行模型调用，带完整容错
+        try:
+            import asyncio
+            response = await asyncio.to_thread(agent._process_simple, message)
+        except Exception as model_error:
+            logger.warning(f"⚠️ 模型调用出现异常: {model_error}，但对话仍可正常保存")
+            # 生成友好的空回复提示，避免完全没有助手消息
+            response = f"【模型暂时无法回复】\n错误信息: {str(model_error)}"
         
+        # 4. 确保助手消息无论如何都添加，保证导出/统计/历史功能不会失败
         conv_manager.add_assistant_message(response)
         conv_manager.save_current()
         
         return {"success": True, "response": response, "conversation_id": conv_manager.current_conversation.conversation_id}
     except Exception as e:
         logger.error(f"API chat error: {e}", exc_info=True)
+        # 极端场景下的保底：确保API返回格式正确
         return {"success": False, "error": str(e)}
 
 @app.get("/api/memory")
@@ -1351,64 +1431,43 @@ async def api_token_stats():
 
 @app.get("/api/export")
 async def api_export():
-    """导出当前对话为 Markdown"""
+    """导出当前对话为 Markdown - 修复版"""
     try:
         conv = conv_manager.current_conversation
         if not conv:
             raise HTTPException(status_code=404, detail="当前无对话")
 
-        lines_export = ["# 对话导出", ""]
-        for msg in conv.messages:
-            if msg.role == "user":
-                role_name = "用户"
-            elif msg.role == "assistant":
-                role_name = "助手"
-            else:
-                role_name = msg.role
-            lines_export.append(f"## {role_name}\n")
-            content = getattr(msg, 'content', '') or ''
-            lines_export.append(content + "\n")
-            if hasattr(msg, 'tool_calls') and msg.tool_calls:
-                lines_export.append(f"**工具调用：** {msg.tool_calls}\n")
-            lines_export.append("")
-
-        content = "\n".join(lines_export)
+        # 使用Conversation类内置的导出方法，确保兼容性和完整性
+        content = conv.export_as_markdown()
 
         return Response(
             content=content,
-            media_type="text/markdown",
+            media_type="text/markdown; charset=utf-8",
             headers={"Content-Disposition": f"attachment; filename=conversation-{datetime.now().strftime('%Y%m%d-%H%M%S')}.md"}
         )
     except Exception as e:
-        return {"success": False, "error": str(e)}
+        logger.error(f"Markdown导出失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"导出失败: {str(e)}")
 
 @app.get("/api/export/json")
 async def api_export_json():
-    """导出当前对话为 JSON"""
+    """导出当前对话为 JSON - 修复版"""
     try:
         conv = conv_manager.current_conversation
         if not conv:
             raise HTTPException(status_code=404, detail="当前无对话")
 
-        # 直接利用 Message 类已有的 to_dict() 方法，彻底避免枚举序列化问题
-        export_data = {
-            "conversation_id": conv.conversation_id,
-            "title": getattr(conv, 'title', '未命名对话'),
-            "created_at": conv.created_at.isoformat() if hasattr(conv, 'created_at') and conv.created_at else None,
-            "updated_at": conv.updated_at.isoformat() if hasattr(conv, 'updated_at') and conv.updated_at else None,
-            "messages": [msg.to_dict() for msg in conv.messages]
-        }
-
-        json_content = json.dumps(export_data, ensure_ascii=False, indent=2)
+        # 使用Conversation类内置的导出方法，彻底解决序列化问题
+        json_content = conv.export_as_json()
 
         return Response(
             content=json_content,
-            media_type="application/json",
+            media_type="application/json; charset=utf-8",
             headers={"Content-Disposition": f"attachment; filename=conversation-{datetime.now().strftime('%Y%m%d-%H%M%S')}.json"}
         )
     except Exception as e:
         logger.error(f"JSON导出失败: {e}", exc_info=True)
-        return {"success": False, "error": str(e)}
+        raise HTTPException(status_code=500, detail=f"导出失败: {str(e)}")
 
 # API 统计类
 class ApiStatistics:

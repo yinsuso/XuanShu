@@ -830,7 +830,7 @@ class ClusterManager:
                 except Exception as e:
                     logger.error(f"广播消息到节点 {node.node_id} 失败: {e}")
 class ClusterServer:
-    """房主端 TCP 服务器：接收客户端加入请求"""
+    """房主端 TCP 服务器：接收客户端加入请求 - 跨平台增强版"""
     def __init__(self, manager: ClusterManager, host: str = "0.0.0.0", port: int = 30001):
         self.manager = manager
         self.host = host
@@ -838,22 +838,94 @@ class ClusterServer:
         self._running = False
         self._server_socket: Optional[socket.socket] = None
         self._thread: Optional[threading.Thread] = None
+        self._bind_success = False
+        self._actual_bind_host = host
+        self._actual_bind_port = port
+
+    def _check_port_available(self, host: str, port: int) -> bool:
+        """检查端口是否可用 - 跨平台兼容"""
+        try:
+            test_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            test_sock.settimeout(1.0)
+            result = test_sock.connect_ex((host, port))
+            test_sock.close()
+            return result != 0
+        except:
+            return True
+
+    def _try_bind_with_fallback(self):
+        """尝试绑定，失败时自动尝试备选地址和端口"""
+        # 优先尝试用户指定的host
+        candidates = []
+        candidates.append((self.host, self.port))
+        
+        # 确保同时支持所有平台的备选绑定方案
+        local_ips = []
+        try:
+            hostname = socket.gethostname()
+            host_info = socket.gethostbyname_ex(hostname)
+            for ip in host_info[2]:
+                if ip not in local_ips:
+                    local_ips.append(ip)
+        except Exception:
+            pass
+        local_ips.extend(['127.0.0.1', '0.0.0.0'])
+        
+        # 添加备选绑定组合
+        for ip_candidate in local_ips:
+            if (ip_candidate, self.port) not in candidates:
+                candidates.append((ip_candidate, self.port))
+        
+        # 尝试所有候选地址
+        for try_host, try_port in candidates:
+            try:
+                if not self._check_port_available(try_host, try_port):
+                    logger.warning(f"端口 {try_port} 可能已被占用，尝试其他方案...")
+                    continue
+                
+                self._server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                self._server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                self._server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1) if hasattr(socket, 'SO_REUSEPORT') else None
+                self._server_socket.settimeout(2.0)
+                self._server_socket.bind((try_host, try_port))
+                self._server_socket.listen(10)
+                self._actual_bind_host = try_host
+                self._actual_bind_port = try_port
+                self._bind_success = True
+                logger.info(f"✅ [ClusterServer] 成功绑定到 {try_host}:{try_port}")
+                return True
+            except Exception as e:
+                logger.warning(f"尝试绑定 {try_host}:{try_port} 失败: {e}")
+                if self._server_socket:
+                    try:
+                        self._server_socket.close()
+                    except:
+                        pass
+                self._server_socket = None
+                continue
+        
+        # 所有候选都失败了
+        raise RuntimeError(f"无法绑定到任何可用地址端口，尝试了 {len(candidates)} 种组合")
 
     def start(self):
-        """在后台线程启动服务器"""
+        """在后台线程启动服务器 - 跨平台增强"""
+        if self._running:
+            logger.warning("[ClusterServer] 服务器已在运行，跳过重复启动")
+            return
         self._running = True
         self._thread = threading.Thread(target=self._run_server, daemon=True)
         self._thread.start()
 
     def _run_server(self):
-        """服务器主循环"""
+        """服务器主循环 - 增强健壮性"""
         try:
-            self._server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self._server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            self._server_socket.settimeout(2.0)
-            self._server_socket.bind((self.host, self.port))
-            self._server_socket.listen(5)
-            logger.info(f"👂 [ClusterServer] 监听 {self.host}:{self.port}，等待节点加入...")
+            self._try_bind_with_fallback()
+            if not self._bind_success:
+                logger.error("[ClusterServer] 绑定失败，服务器无法启动")
+                self._running = False
+                return
+                
+            logger.info(f"👂 [ClusterServer] 已启动监听 {self._actual_bind_host}:{self._actual_bind_port}，等待节点加入...")
 
             while self._running:
                 try:
@@ -866,10 +938,14 @@ class ClusterServer:
                     if self._running:
                         logger.error(f"[ClusterServer] 接受连接出错: {e}")
         except Exception as e:
-            logger.error(f"[ClusterServer] 服务器启动失败: {e}")
+            logger.error(f"[ClusterServer] 服务器启动失败: {e}", exc_info=True)
+            self._running = False
         finally:
             if self._server_socket:
-                self._server_socket.close()
+                try:
+                    self._server_socket.close()
+                except:
+                    pass
 
     def _handle_client(self, conn: socket.socket, addr):
         """处理客户端连接（加入后持续接收消息）"""
@@ -937,29 +1013,54 @@ class ClusterServer:
                     "model": node_info.get('model', 'unknown')
                 })
 
-            # 进入消息循环，处理心跳和任务状态更新
+            # 进入消息循环，处理心跳和任务状态更新 - 简化统一格式
             while True:
-                data = conn.recv(4096)
-                if not data:
-                    break
                 try:
+                    data = conn.recv(8192)
+                    if not data:
+                        break
                     msg = json.loads(data.decode('utf-8'))
+                    
                     msg_type = msg.get("type")
-                    if msg_type == "heartbeat":
-                        node_id = msg.get("node_id")
-                        load_info = msg.get("load", {})
-                        self.manager.handle_heartbeat(node_id, load_info)
-                    elif msg_type == "task_update":
-                        node_id = msg.get("node_id")
-                        task_id = msg.get("task_id")
-                        status = msg.get("status")
-                        result = msg.get("result")
-                        error = msg.get("error")
-                        self.manager.handle_task_update(node_id, task_id, status, result, error)
+                    
+                    # 支持两种消息格式的简化逻辑
+                    payload = msg.get("payload")
+                    
+                    # 方案A: ClusterMessage格式 (带payload)
+                    if payload is not None:
+                        # 从payload中提取内容
+                        if msg_type == "heartbeat":
+                            node_id = payload.get("node_id")
+                            load_info = payload.get("load", {})
+                            self.manager.handle_heartbeat(node_id, load_info)
+                        elif msg_type == "task_update":
+                            node_id = payload.get("node_id")
+                            task_id = payload.get("task_id")
+                            status = payload.get("status")
+                            result = payload.get("result")
+                            error = payload.get("error")
+                            self.manager.handle_task_update(node_id, task_id, status, result, error)
+                        else:
+                            logger.debug(f"[ClusterServer] 收到集群消息类型: {msg_type}")
+                    
+                    # 方案B: 简单直接JSON格式 (不带payload)
                     else:
-                        logger.warning(f"[ClusterServer] 未知消息类型: {msg_type}")
+                        if msg_type == "heartbeat":
+                            node_id = msg.get("node_id")
+                            load_info = msg.get("load", {})
+                            self.manager.handle_heartbeat(node_id, load_info)
+                        elif msg_type == "task_update":
+                            node_id = msg.get("node_id")
+                            task_id = msg.get("task_id")
+                            status = msg.get("status")
+                            result = msg.get("result")
+                            error = msg.get("error")
+                            self.manager.handle_task_update(node_id, task_id, status, result, error)
+                        else:
+                            logger.debug(f"[ClusterServer] 未知消息类型: {msg_type}")
+                            
                 except json.JSONDecodeError:
-                    logger.error(f"[ClusterServer] 解析消息失败")
+                    logger.error(f"[ClusterServer] JSON解析失败")
                 except Exception as e:
                     logger.error(f"[ClusterServer] 处理消息异常: {e}")
         except Exception as e:
@@ -986,14 +1087,14 @@ class ClusterServer:
 
 
 class ClusterClient:
-    """客户端：连接房主并注册节点信息"""
-    def __init__(self, timeout: float = 5.0):
+    """客户端：连接房主并注册节点信息 - 跨平台增强版"""
+    def __init__(self, timeout: float = 10.0):
         self.timeout = timeout
         self.socket: Optional[socket.socket] = None  # 保存持久连接
 
     def join(self, host: str, port: int, node_info: Dict[str, Any], password: str = "") -> bool:
         """
-        连接到房主服务器并发送加入请求，保持连接打开
+        连接到房主服务器并发送加入请求，保持连接打开 - 增强健壮性版本
         
         Args:
             host: 房主IP地址
@@ -1005,25 +1106,40 @@ class ClusterClient:
             True 表示加入成功，False 表示失败
         """
         sock = None
+        # 增强：连接前记录调试信息
+        logger.info(f"🔌 [ClusterClient] 正在尝试连接 {host}:{port}...")
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.settimeout(self.timeout)
+            # 允许地址重用
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            
             sock.connect((host, port))
+            logger.info(f"🔗 [ClusterClient] TCP连接建立成功")
 
             msg = {
                 "type": "join",
                 "node_id": node_info.get("node_id"),
+                "name": node_info.get("name", "Unknown-Worker"),
                 "model": node_info.get("model", "unknown"),
                 "role": node_info.get("role", "worker"),
                 "mode": node_info.get("mode", "auto"),
-                "gpu": node_info.get("gpu"),  # 可选
-                "vram": node_info.get("vram"),   # 可选 GB
-                "password": password  # 可选密码
+                "gpu": node_info.get("gpu"),
+                "vram": node_info.get("vram"),
+                "password": password
             }
+            logger.debug(f"📤 [ClusterClient] 发送加入消息: {msg}")
             sock.sendall(json.dumps(msg).encode('utf-8'))
 
-            response_data = sock.recv(4096)
+            response_data = sock.recv(8192)
+            if not response_data:
+                logger.error(f"❌ [ClusterClient] 房主没有返回任何数据")
+                sock.close()
+                return False
+                
             response = json.loads(response_data.decode('utf-8'))
+            logger.debug(f"📥 [ClusterClient] 收到房主响应: {response}")
+            
             if response.get("status") == "ok":
                 logger.info(f"✅ [ClusterClient] 成功加入房间 {host}:{port}")
                 # 保持连接，不关闭
@@ -1031,17 +1147,23 @@ class ClusterClient:
                 return True
             else:
                 logger.error(f"❌ [ClusterClient] 加入失败: {response.get('reason', '未知错误')}")
+                sock.close()
                 return False
         except socket.timeout:
-            logger.error(f"❌ [ClusterClient] 连接超时: {host}:{port}")
+            logger.error(f"❌ [ClusterClient] 连接超时: {host}:{port}，请确认房主服务器已启动")
+            if sock:
+                sock.close()
             return False
         except ConnectionRefusedError:
-            logger.error(f"❌ [ClusterClient] 连接被拒绝: {host}:{port}")
+            logger.error(f"❌ [ClusterClient] 连接被拒绝: {host}:{port}，10061错误 - 请确认房主房间已成功创建且TCP服务正在监听")
+            if sock:
+                sock.close()
             return False
         except Exception as e:
-            logger.error(f"❌ [ClusterClient] 连接异常: {e}")
+            logger.error(f"❌ [ClusterClient] 连接异常: {type(e).__name__}: {e}", exc_info=True)
+            if sock:
+                sock.close()
             return False
-        # 不再关闭 socket
     
     def close(self):
         """关闭持久连接"""

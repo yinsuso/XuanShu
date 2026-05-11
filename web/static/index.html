@@ -975,7 +975,25 @@ async function enterRoom(roomId) {
             document.getElementById('detail-my-mode').textContent = '房主模式';
             // 自动填充我的信息表单的花名
             document.getElementById('my-nickname').value = data.owner_name || '';
-            document.getElementById('my-model').value = data.owner_model || 'qwen2.5-coder:7b';
+            
+            // 【问题1修复】从返回的 available_models 中填充我的模型下拉框
+            const myModelSelect = document.getElementById('my-model');
+            if (myModelSelect && data.available_models && data.available_models.length > 0) {
+                myModelSelect.innerHTML = data.available_models.map(m => 
+                    `<option value="${m.model}">${m.desc}</option>`
+                ).join('');
+                // 自动选中当前模型或房主模型
+                const targetModel = data.current_model || data.owner_model || '';
+                if (targetModel) {
+                    myModelSelect.value = targetModel;
+                }
+            } else {
+                // 备用方案：使用 loadRoomModels 函数加载
+                await loadRoomModels('my-model');
+                if (data.owner_model) {
+                    myModelSelect.value = data.owner_model;
+                }
+            }
 
             // 显示成员列表
             if (data.members_detail && data.members_detail.length > 0) {

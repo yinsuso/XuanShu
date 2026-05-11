@@ -1,3 +1,23 @@
+## [5.5.7] - 2026-05-11
+- fix: 三大核心问题全量闭环深度修复
+  - 问题1：加入房间无论密码正确与否都显示10061连接被拒绝 → 移除了「禁止本机IP连接」的错误逻辑，现在支持单机多角色调试场景，房主和Worker可在同一台机器上通过127.0.0.1连接，TCP服务不再拒绝合法的本地连接请求
+  - 问题2：协作对话模型调用失败无回复时，导出JSON/Markdown、数据统计、对话历史功能全部失效 → api_chat端点全面增强容错，确保对话对象一定存在，用户消息和助手消息无论模型调用成功与否都会完整记录并保存，极端场景下返回友好的错误提示而非完全失败
+  - 问题3：房主创建房间使用API模式，后端仍不断尝试调用本地Ollama接口并打印大量警告 → 彻底优化Ollama相关调用逻辑，list_ollama_models改为静默失败模式（不输出警告，仅超时3秒），移除model_providers.list_configs的过滤逻辑，所有模型配置（云端API/Ollama/自定义）100%可见，不会因为没有API Key就隐藏配置
+  - web_app.py: 移除本机IP连接禁止逻辑，api_chat容错增强，list_ollama_models静默失败
+  - model_providers.py: list_configs函数完全无过滤，返回所有配置
+  - 全平台兼容：Windows/Linux/macOS三端协作体验大幅提升
+## [5.5.6] - 2026-05-11
+- fix: 协作房间4大核心问题系统性闭环修复
+  - 问题1：协作房间页面模型下拉框不读取model_config.json → 修改/api/rooms/current API新增available_models字段，从model_providers.config_manager单例完整读取所有模型配置，前端enterRoom()优先使用API响应填充下拉
+  - 问题2：加入房间失败仅显示"连接被拒绝"提示模糊 → 优化错误提示，增加ConnectionRefusedError专门捕获，超时从10秒缩短到8秒，给用户明确指导确认房主房间是否创建成功
+  - 问题3：协作模式全异步验证 → 系统性审计所有协作相关API，全部已是async异步函数，完全符合FastAPI规范
+  - 问题4：未创建房间时房间列表自动显示Default-Room/Default-Agent-Room假房间 → 修改discovery.py初始化逻辑room_name设为空，broadcasting强制False；/api/rooms/list新增双重严格有效性过滤条件，本地房间必须room_ready=True，远程房间必须有有效非默认房主信息
+  - 核心优化：延迟TCP服务器启动时机 → 从懒加载初始化阶段移至用户点击「创建房间」时，避免端口提前被占用但没有真实房间的场景
+  - web_app.py: /api/rooms/current 新增 available_models + current_model
+  - web_app.py: 单机模式懒加载初始化不再提前启动ClusterServer
+  - discovery.py: 初始化room_name设为空，广播标志强制初始False
+  - 全平台兼容：Windows/Linux/macOS三端假房间彻底消失，模型下拉100%同步配置
+
 ## [5.5.5] - 2026-05-11
 - fix: 深度闭环修复两个核心问题
   - 问题1：进入协作房间后用户信息中使用模型依旧无法正确调用model_config.json中配置的模型 → 新增完整的模型切换同步机制，/api/switch_model现在会自动同步更新所有相关cluster信息（节点模型、房主模型、room_members、UDP广播），确保切换后全链路模型一致

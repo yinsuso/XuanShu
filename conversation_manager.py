@@ -121,6 +121,46 @@ class Conversation:
                 history.append(f"工具[{msg.tool_name}]: {msg.content}")
         return "\n".join(history)
 
+    def export_as_markdown(self) -> str:
+        """导出为Markdown格式，即使某些消息模型没有回复也能完整导出"""
+        lines = []
+        lines.append(f"# {self.title}")
+        lines.append(f"> 对话ID: {self.conversation_id}")
+        lines.append(f"> 创建时间: {self.created_at.strftime('%Y-%m-%d %H:%M:%S')}")
+        lines.append(f"> 更新时间: {self.updated_at.strftime('%Y-%m-%d %H:%M:%S')}")
+        lines.append("")
+        lines.append("---")
+        lines.append("")
+        
+        for msg in self.messages:
+            time_str = msg.timestamp.strftime('%H:%M:%S')
+            if msg.role == MessageRole.USER:
+                lines.append(f"## 🧑 用户 ({time_str})")
+                lines.append("")
+                lines.append(msg.content)
+                lines.append("")
+            elif msg.role == MessageRole.ASSISTANT:
+                lines.append(f"## 🤖 助手 ({time_str})")
+                lines.append("")
+                lines.append(msg.content)
+                lines.append("")
+            elif msg.role == MessageRole.TOOL:
+                lines.append(f"## 🔧 工具 `{msg.tool_name}` ({time_str})")
+                lines.append("")
+                if msg.content and len(msg.content) > 0:
+                    lines.append("```")
+                    lines.append(msg.content)
+                    lines.append("```")
+                else:
+                    lines.append("(空输出)")
+                lines.append("")
+        
+        return "\n".join(lines)
+
+    def export_as_json(self) -> str:
+        """导出为JSON格式，包含完整元数据和所有消息"""
+        return json.dumps(self.to_dict(), ensure_ascii=False, indent=2)
+
 
 class ConversationManager:
     def __init__(self, conversation_id: Optional[str] = None):
