@@ -1,3 +1,30 @@
+## [5.5.5] - 2026-05-11
+- fix: 深度闭环修复两个核心问题
+  - 问题1：进入协作房间后用户信息中使用模型依旧无法正确调用model_config.json中配置的模型 → 新增完整的模型切换同步机制，/api/switch_model现在会自动同步更新所有相关cluster信息（节点模型、房主模型、room_members、UDP广播），确保切换后全链路模型一致
+  - 问题2：加入房间时TCP连接被拒绝，WinError 10061 由于目标计算机积极拒绝，无法连接 → 单机模式ensure_cluster_initialized()新增自动启动ClusterServer监听30001端口的逻辑，修复ClusterServer的socket缺少timeout导致无法正常停止的问题（设置2秒timeout），现在单机模式下TCP服务也正常运行
+  - connection.py: 给ClusterServer socket添加 settimeout(2.0)，支持正常停止服务
+  - web_app.py: switch_model 端点增强，全链路同步模型信息
+  - web_app.py: 单机模式懒加载初始化后立即启动TCP服务器
+  - 全平台兼容：Windows/Linux/macOS三端现在都能在单机模式下正常监听30001端口
+
+## [5.5.4] - 2026-05-11
+- fix: 协作房间模型调用与TCP连接问题深度修复
+  - 问题1：进入协作房间后信息中使用模型依旧无法调用model_config.json中的模型 → 完善节点模型信息同步机制，确保从model_config_manager正确读取并传递当前选择的模型
+  - 问题2：加入房间时无论密码是否正确都提示加入失败，TCP连接被拒绝 → 修复ClusterServer监听端口初始化逻辑，确保30001端口正确启动，完善连接错误处理
+  - baocuo.md: 问题记录同步更新
+  - 根目录md文件全量审计与一致性校验
+## [5.5.3] - 2026-05-11
+- fix: 深度闭环修复5个核心问题
+  - 问题1：WebSocket端点参数错误 → 完全移除request参数，从websocket.scope获取app实例，连接正常不再断开
+  - 问题2：房间密码验证完全缺失 → ClusterServer._handle_client新增SHA256哈希密码校验，密码错误直接拒绝TCP连接，安全可靠
+  - 问题3：加入房间使用多个原生prompt用户体验差 → 新增完整精美的加入房间表单弹窗，一次性收集花名+自动模型下拉选择+密码输入
+  - 问题4：加入房间后所有成员状态显示离线 → 新节点加入集群时自动设置node.status="active"，所有成员直接在线
+  - 问题5：文档全量同步更新 → 技术债清单、决策日志、架构蓝图、项目地图全部同步至最新状态
+  - cluster_api.py: WebSocket端点深度重构
+  - evolution/cluster/connection.py: 密码校验 + 节点状态管理完善
+  - web/static/index.html: 全新加入房间UI组件
+  - docs/: 所有文档版本同步到v5.5.3
+
 ## [5.5.1] - 2026-05-09
 - fix: 两个核心问题深度修复
   - 问题1：创建房间后房主模型没有正确调用自配置管理器bug → 单机模式初始化集群节点时，从model_providers.config_manager单例读取当前用户正在使用的模型（model_config.json或Ollama中选中的），不再硬编码默认值

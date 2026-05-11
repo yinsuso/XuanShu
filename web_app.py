@@ -790,6 +790,13 @@ async def ensure_cluster_initialized():
                 globals()['_discovery_instance'].start_scanning()
                 manager.discovery = globals()['_discovery_instance']
                 logger.info("✅ [ClusterDiscovery] 单机模式局域网扫描已启动")
+            # 单机模式下也启动房主TCP服务器，监听30001端口，解决WinError 10061问题
+            from config import CLUSTER_MANAGER_HOST, CLUSTER_MANAGER_PORT
+            try:
+                manager.start_server(host=CLUSTER_MANAGER_HOST, port=CLUSTER_MANAGER_PORT)
+                logger.info(f"🌐 单机模式TCP服务器已启动在 {CLUSTER_MANAGER_HOST}:{CLUSTER_MANAGER_PORT}")
+            except Exception as e:
+                logger.warning(f"单机模式启动TCP服务器时遇到问题（可能已在运行）: {e}")
             app.state.cluster_manager = manager
             logger.info("✅ [ClusterManager] 单机模式集群管理器已初始化")
             _cluster_initialized = True
@@ -1012,7 +1019,7 @@ async def save_model(
 
 @app.post("/api/switch_model")
 async def switch_model(request: Request):
-    """切换当前模型"""
+    """切换当前模型 - 同步更新cluster相关的所有模型信息"""
     try:
         data = await request.json()
         name = data.get("name")
@@ -1022,10 +1029,45 @@ async def switch_model(request: Request):
         if not config:
             raise HTTPException(status_code=404, detail="配置不存在")
         config_manager.set_current(name)
+        
+        # 同步更新Cluster相关模型信息，确保房间内模型正确调用
+        manager = getattr(app.state, "cluster_manager", None)
+        node = getattr(app.state, "cluster_node", None)
+        new_model_name = config.model_name
+        
+        if node:
+            node.model = new_model_name
+            logger.info(f"🔄 节点模型已同步更新为: {new_model_name}")
+        
+        if manager:
+            manager.owner_model = new_model_name
+            # 更新房主节点模型
+            if manager.own_node:
+                manager.own_node.model = new_model_name
+            # 更新房主在room_members中的模型信息
+            for member_id, member_info in manager.room_members.items():
+                if member_info.get("is_owner"):
+                    manager.room_members[member_id]["model"] = new_model_name
+                    logger.info(f"🔄 房主成员模型已同步更新为: {new_model_name}")
+                    break
+            # 更新UDP广播中的房主模型信息
+            if manager.discovery:
+                manager.discovery.update_room_info(
+                    room_name=manager.room_name,
+                    room_id=manager.room_id,
+                    extra_info={
+                        "owner_name": manager.owner_name,
+                        "owner_model": new_model_name
+                    }
+                )
+                logger.info(f"🔄 UDP广播房主模型已同步更新为: {new_model_name}")
+        
+        logger.info(f"✅ 模型切换完成，全部相关信息已同步: {name} -> {new_model_name}")
         return {"success": True}
     except HTTPException:
         raise
     except Exception as e:
+        logger.error(f"切换模型时出错: {e}", exc_info=True)
         return {"success": False, "error": str(e)}
 
 @app.post("/api/delete_model")

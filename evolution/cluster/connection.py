@@ -850,6 +850,7 @@ class ClusterServer:
         try:
             self._server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self._server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            self._server_socket.settimeout(2.0)
             self._server_socket.bind((self.host, self.port))
             self._server_socket.listen(5)
             logger.info(f"👂 [ClusterServer] 监听 {self.host}:{self.port}，等待节点加入...")
