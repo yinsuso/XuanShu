@@ -101,7 +101,7 @@ class UniversalAgent:
         except Exception as e:
             logger.error(f"加载技能失败：{e}")
 
-    def _build_system_prompt(self, query: str = "") -> str:
+    def _build_system_prompt(self, query: str = "", is_collab_mode: bool = False) -> str:
         skill_schemas = registry.get_openai_schemas()
         skills_info = [f"📌 {s['function']['name']}: {s['function']['description']}" for s in skill_schemas]
 
@@ -121,6 +121,20 @@ class UniversalAgent:
         system_prompt += "你是玄枢智能助手，一个具备深度思考、工具使用和自主进化能力的AI助手。\n"
         system_prompt += "你的目标是帮助用户完成各种任务，从简单问答到复杂的代码编写和数据分析。\n"
         system_prompt += "</identity>\n\n"
+        
+        # --- 协作模式专属提示词 ---
+        if is_collab_mode:
+            system_prompt += "<collaboration_mode>\n"
+            system_prompt += "⚠️ 当前处于玄枢局域网多Agent协作房间模式！\n"
+            system_prompt += "你是房主节点，拥有完整的任务调度权，房间内当前有多个Worker节点等待分配任务。\n"
+            system_prompt += "协作模式核心原则：\n"
+            system_prompt += "1. 不要大包大揽所有工作，学会利用分布式算力将复杂任务拆解\n"
+            system_prompt += "2. 遇到需要多台机器并行处理的任务，优先考虑将子任务分配给局域网内空闲的Worker节点执行\n"
+            system_prompt += "3. 时刻关注房间内成员状态，随时准备根据各节点能力分进行智能任务调度\n"
+            system_prompt += "4. 保持和所有协作成员的高效沟通，不要让任何节点长时间处于空闲等待状态\n"
+            system_prompt += "5. 任务完成后及时汇总各节点执行结果，向用户输出完整报告\n"
+            system_prompt += "你现在是分布式团队的管理者，不是单打独斗的孤胆英雄！\n"
+            system_prompt += "</collaboration_mode>\n\n"
         
         # 2. 核心指令（结构化）
         system_prompt += "<instructions>\n"

@@ -1,4 +1,4 @@
-# 🤖 玄枢 (XuanShu) v5.5.4
+# 🤖 玄枢 (XuanShu) v5.5.7
 
 **一个具备自进化能力的本地AI智能体集群系统**
 
@@ -81,6 +81,13 @@ python3 launcher.py
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
+
+# 开放防火墙端口（以ufw为例，Ubuntu/Debian）
+sudo ufw allow 30000/tcp  # Web服务端口
+sudo ufw allow 30001/tcp  # 集群Manager TCP监听端口
+sudo ufw allow 50005/udp  # 局域网UDP房间发现广播端口
+sudo ufw reload
+
 python3 launcher.py
 ```
 
@@ -241,6 +248,46 @@ set USE_VECTOR_MEMORY=true
 
 - Manager 可设置房间密码（最大 32 字符），通过 bcrypt 加密存储。
 - 所有集群 API 需验证 `X-Cluster-Token`（与 `CLUSTER_API_TOKEN` 一致）。
+
+### 🌐 跨平台端口开放说明
+
+为了让局域网内多台设备可以正常发现和连接协作房间，你需要确保防火墙开放以下关键端口，三端分别处理方式：
+
+| 端口 | 协议 | 用途 | 说明 |
+|------|------|------|------|
+| **30000** | TCP | Web 界面服务 | 所有用户通过浏览器访问玄枢界面的默认端口 |
+| **30001** | TCP | 集群 Manager 监听 | 所有Worker节点通过TCP连接房主进行任务分发的端口 |
+| **50005** | UDP | 局域网房间发现广播 | UDP协议，用于扫描发现同一网段内其他主机的协作房间信息 |
+
+#### 🪟 Windows 用户
+Windows Defender防火墙会自动放行本地回环连接，但如果你需要其他局域网设备访问你的玄枢，需要手动添加入站规则：
+```powershell
+# 以管理员身份运行PowerShell
+New-NetFirewallRule -DisplayName "玄枢 30000" -Direction Inbound -Protocol TCP -LocalPort 30000 -Action Allow
+New-NetFirewallRule -DisplayName "玄枢 30001" -Direction Inbound -Protocol TCP -LocalPort 30001 -Action Allow
+New-NetFirewallRule -DisplayName "玄枢 50005" -Direction Inbound -Protocol UDP -LocalPort 50005 -Action Allow
+```
+
+#### 🍎 macOS 用户
+在「系统设置 - 网络 - 防火墙」中手动添加Python程序允许传入连接，或直接使用以下命令临时放行：
+```bash
+sudo pfctl -e  # 启用pf防火墙后配置规则放行30000/30001(UDP50005)
+```
+
+#### 🐧 Linux 用户（Ubuntu/Debian/CentOS通用）
+```bash
+# Ubuntu/Debian 使用ufw
+sudo ufw allow 30000/tcp
+sudo ufw allow 30001/tcp
+sudo ufw allow 50005/udp
+sudo ufw reload
+
+# CentOS/RHEL 使用firewalld
+sudo firewall-cmd --add-port=30000/tcp --permanent
+sudo firewall-cmd --add-port=30001/tcp --permanent
+sudo firewall-cmd --add-port=50005/udp --permanent
+sudo firewall-cmd --reload
+```
 
 ### 监控与日志
 
