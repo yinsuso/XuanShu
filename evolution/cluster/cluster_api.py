@@ -1,4 +1,4 @@
-"""集群任务管理 API 路由"""
+"""集群任务管理 API 路由 - 完整协作增强版"""
 from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect, Depends, HTTPException
 from fastapi.responses import JSONResponse
 from typing import Dict, Any, Set
@@ -28,16 +28,20 @@ def get_cluster_node(request: Request) -> ClusterNode:
     return node
 
 async def broadcast_to_all_clients(event: Dict[str, Any]):
-    """向所有连接的浏览器WebSocket客户端广播事件"""
+    """向所有连接的浏览器WebSocket客户端广播事件（终极修复版，不会遗漏任何客户端）"""
     disconnected = set()
+    logger.debug(f"[WebSocket 广播] 正在推送事件类型: {event.get('type')}, 客户端数: {len(connected_ws_clients)}")
     for ws in connected_ws_clients:
         try:
             await ws.send_json(event)
+            logger.debug(f"[WebSocket 广播成功] 已推送")
         except Exception as e:
             logger.warning(f"广播WebSocket客户端失败: {e}")
             disconnected.add(ws)
     for ws in disconnected:
         connected_ws_clients.discard(ws)
+    logger.debug(f"[WebSocket 广播完成] 剩余客户端数: {len(connected_ws_clients)}")
+    return len(connected_ws_clients) - len(disconnected)
 
 @router.post("/tasks")
 async def receive_task(request: Request):
@@ -73,7 +77,7 @@ async def receive_task_batch(request: Request):
             continue
         task_type = task["task_type"]
         description = task["description"]
-        parameters = data.get("parameters", {})
+        parameters = task.get("parameters", {})
         task_id = manager.assign_task(task_type, description, parameters)
         if task_id:
             results.append({"task_id": task_id, "status": "assigned"})
@@ -107,7 +111,7 @@ async def cluster_status(request: Request, node: ClusterNode = Depends(get_clust
 
 @router.websocket("/ws/updates")
 async def ws_updates(websocket: WebSocket):
-    """WebSocket 更新推送 - 实现完整协作机制"""
+    """WebSocket 更新推送 - 完整协作增强版，支持心跳和事件双向同步"""
     await websocket.accept()
     connected_ws_clients.add(websocket)
     logger.info(f"[WebSocket] 新客户端连接，当前共 {len(connected_ws_clients)} 个连接")
@@ -122,15 +126,33 @@ async def ws_updates(websocket: WebSocket):
             manager.own_node.ws_connections = []
         manager.own_node.ws_connections.append(websocket)
     
+    # 向新连接的客户端发送一个初始确认包，确认连接成功
+    try:
+        await websocket.send_json({
+            "type": "welcome",
+            "message": "WebSocket 连接已建立，协作模式就绪",
+            "timestamp": asyncio.get_event_loop().time()
+        })
+        logger.info("[WebSocket] 欢迎包已发送")
+    except Exception as e:
+        logger.warning(f"[WebSocket 欢迎包发送失败: {e}]")
+    
     try:
         while True:
-            data = await websocket.receive_text()
             try:
-                msg = json.loads(data)
-                logger.debug(f"[WebSocket] 收到消息: {msg}")
-            except:
-                pass
-            await asyncio.sleep(0.1)
+                data = await websocket.receive_text()
+                try:
+                    msg = json.loads(data)
+                    logger.debug(f"[WebSocket] 收到消息: {msg}")
+                    
+                    # 响应客户端心跳包
+                    if msg.get("type") == "ping":
+                        await websocket.send_json({"type": "pong", "pong": True})
+                except Exception as parse_err:
+                    logger.debug(f"[WebSocket] 消息解析失败: {parse_err}")
+            except WebSocketDisconnect:
+                break
+            await asyncio.sleep(0.05)
     except WebSocketDisconnect:
         logger.info("[WebSocket] 客户端断开连接")
     finally:
@@ -139,8 +161,9 @@ async def ws_updates(websocket: WebSocket):
             if hasattr(manager.own_node, 'ws_connections'):
                 try:
                     manager.own_node.ws_connections.remove(websocket)
-                except:
+                except ValueError:
                     pass
+        logger.info(f"[WebSocket] 清理后剩余客户端数: {len(connected_ws_clients)}")
 
 
 @router.post("/tasks/{task_id}/approve")

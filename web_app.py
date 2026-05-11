@@ -424,9 +424,8 @@ async def create_room(request: Request):
 
 @app.get("/api/rooms/current")
 async def get_current_room(request: Request):
-    """获取当前房间信息（Manager 或 standalone 模式）"""
-    if CLUSTER_ROLE not in ("manager", "") and CLUSTER_ENABLED:
-        raise HTTPException(status_code=403, detail="仅 Manager 可查看")
+    """获取当前房间信息（Manager / Worker / standalone 都可查看）"""
+    # 取消严格的角色限制，Worker节点也可以查看房间详情
 
     # 懒加载集群组件
     await ensure_cluster_initialized()
@@ -598,22 +597,34 @@ async def join_room(request: Request):
         "mode": mode,
         "name": name
     }
+    join_success = False
+    join_reason = "未知错误"
     try:
         loop = asyncio.get_event_loop()
         # 传递密码参数给 client.join()
-        success = await asyncio.wait_for(
+        join_result = await asyncio.wait_for(
             loop.run_in_executor(None, client.join, host, port, node_info, password),
             timeout=8.0
         )
+        if isinstance(join_result, tuple):
+            join_success, join_reason = join_result
+        else:
+            join_success = join_result
+            join_reason = "已加入" if join_success else "加入失败"
     except asyncio.TimeoutError:
-        success = False
+        join_success = False
+        join_reason = "连接超时"
         logger.error(f"❌ 连接房间 {host}:{port} 超时（8秒），请确认房主房间是否创建成功且网络可访问")
     except ConnectionRefusedError:
-        success = False
+        join_success = False
+        join_reason = "连接被拒绝"
         logger.error(f"❌ [ClusterClient] 连接被拒绝: {host}:{port}，请确认房主的房间已经创建成功")
     except Exception as e:
-        success = False
+        join_success = False
+        join_reason = str(e)
         logger.error(f"❌ Worker 连接 manager 失败: {e}")
+    
+    success = join_success
 
     if success:
         if node:
@@ -665,9 +676,19 @@ async def join_room(request: Request):
                     break
                 time.sleep(5)
         threading.Thread(target=heartbeat_loop, daemon=True).start()
+        
+        discovery = getattr(manager, 'discovery', None) or globals().get('_discovery_instance')
+        if discovery and not discovery.scanning:
+            discovery.start_scanning()
+            logger.info("🔍 成员节点也启动局域网扫描，确保双向发现互见")
+            
         return {"success": True, "message": "已加入房间"}
     else:
-        raise HTTPException(status_code=500, detail="加入房间失败，请确认房主房间已创建成功、网络可达，且密码正确")
+        # 根据join_reason判断抛出明确的错误
+        if join_reason == "密码错误":
+            raise HTTPException(status_code=401, detail="密码错误")
+        else:
+            raise HTTPException(status_code=500, detail=f"加入房间失败: {join_reason}")
 
 @app.post("/api/rooms/leave")
 async def leave_room(request: Request):
@@ -1307,6 +1328,42 @@ async def clear_current_conversation():
         return {"success": False, "error": str(e)}
 
 
+# ==================== API：局域网发现管理 ====================
+@app.post("/api/discovery/start_scan")
+async def discovery_start_scan():
+    """启动局域网房间扫描（无论是什么角色，都可以调用）"""
+    await ensure_cluster_initialized()
+    manager = getattr(app.state, "cluster_manager", None)
+    discovery = getattr(manager, 'discovery', None) or globals().get('_discovery_instance')
+    if discovery and not discovery.scanning:
+        discovery.start_scanning()
+        logger.info("🔍 /api/discovery/start_scan 已成功启动扫描")
+        return {"success": True, "message": "扫描已启动"}
+    elif discovery and discovery.scanning:
+        return {"success": True, "message": "扫描已在运行"}
+    else:
+        return {"success": False, "error": "discovery未初始化"}
+
+@app.get("/api/discovery/rooms")
+async def discovery_list_rooms():
+    """直接从discovery获取已发现的远程房间列表"""
+    await ensure_cluster_initialized()
+    manager = getattr(app.state, "cluster_manager", None)
+    discovery = getattr(manager, 'discovery', None) or globals().get('_discovery_instance')
+    if discovery:
+        return {"success": True, "rooms": discovery.get_available_rooms()}
+    return {"success": True, "rooms": []}
+
+@app.post("/api/discovery/stop")
+async def discovery_stop():
+    """停止发现服务"""
+    manager = getattr(app.state, "cluster_manager", None)
+    discovery = getattr(manager, 'discovery', None) or globals().get('_discovery_instance')
+    if discovery:
+        discovery.stop()
+        return {"success": True, "message": "发现服务已停止"}
+    return {"success": True, "message": "发现服务未运行"}
+
 # ==================== API：Token数据统计（协作模式可用） ====================
 @app.get("/api/stats/tokens")
 async def get_token_stats():
@@ -1407,27 +1464,13 @@ async def api_memory():
 
 @app.get("/api/token-stats")
 async def api_token_stats():
-    """获取 token 使用统计"""
+    """获取 token 使用统计 - 修复版直接访问全局实例"""
     try:
-        stats = {
-            "total": {"total_tokens": 0, "prompt_tokens": 0, "completion_tokens": 0},
-            "by_model": [],
-            "by_date": []
-        }
-        agent = get_agent()
-        if hasattr(agent, 'token_tracker'):
-            tracker = agent.token_tracker
-            if hasattr(tracker, 'get_total_usage'):
-                total = tracker.get_total_usage()
-                stats["total"] = {
-                    "total_tokens": total.get("total_tokens", 0),
-                    "prompt_tokens": total.get("prompt_tokens", 0),
-                    "completion_tokens": total.get("completion_tokens", 0)
-                }
-            if hasattr(tracker, 'get_usage_by_model'):
-                stats["by_model"] = tracker.get_usage_by_model()
-        return {"success": True, "data": stats}
+        from token_tracker import token_tracker
+        stats_data = token_tracker.get_stats()
+        return {"success": True, "data": stats_data}
     except Exception as e:
+        logger.error(f"获取token统计失败: {e}", exc_info=True)
         return {"success": False, "error": str(e)}
 
 @app.get("/api/export")

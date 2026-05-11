@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 import sys
 import os
+if sys.platform == 'win32':
+    import io
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+import io
 from pathlib import Path
 
 # Ensure project root is in sys.path for script-mode execution

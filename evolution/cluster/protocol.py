@@ -133,15 +133,14 @@ def create_capability_advertisement(node_info: Dict[str, Any]) -> ClusterMessage
 
 
 def create_task_assignment(task_id: str, task_type: str, description: str,
-                          target_node_id: str, parameters: Dict[str, Any] = None) -> ClusterMessage:
+                          parameters: Dict[str, Any] = None) -> ClusterMessage:
     """
-    创建任务分配消息
+    创建任务分配消息 - 简化版
 
     Args:
         task_id: 任务唯一标识
         task_type: 任务类型（如 "run_code", "read_file"）
         description: 任务描述
-        target_node_id: 目标节点ID
         parameters: 任务参数（可选）
 
     Returns:
@@ -153,7 +152,6 @@ def create_task_assignment(task_id: str, task_type: str, description: str,
             "task_id": task_id,
             "task_type": task_type,
             "description": description,
-            "target_node": target_node_id,
             "parameters": parameters or {},
             "assigned_at": time.time()
         }

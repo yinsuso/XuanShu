@@ -238,14 +238,22 @@ def _call_ollama(config: ModelConfig, prompt: str, system_prompt: str, temperatu
         
         content = result.get("response", "")
         
-        if token_tracker and "usage" in result:
-            usage = result["usage"]
-            token_tracker.record_usage(
-                model_name=config.model_name,
-                prompt_tokens=usage.get("prompt_tokens", 0),
-                completion_tokens=usage.get("completion_tokens", 0),
-                provider="ollama"
-            )
+        if token_tracker:
+            if "usage" in result:
+                usage = result["usage"]
+                token_tracker.record_usage(
+                    model_name=config.model_name,
+                    prompt_tokens=usage.get("prompt_tokens", 0),
+                    completion_tokens=usage.get("completion_tokens", 0),
+                    provider="ollama"
+                )
+            else:
+                token_tracker.record_usage_estimation(
+                    model_name=config.model_name,
+                    prompt_text=full_prompt,
+                    completion_text=content,
+                    provider="ollama"
+                )
         
         return content
     except Exception as e:
@@ -279,14 +287,26 @@ def _call_openai_compatible(config: ModelConfig, prompt: str, system_prompt: str
         
         content = result["choices"][0]["message"]["content"]
         
-        if token_tracker and "usage" in result:
-            usage = result["usage"]
-            token_tracker.record_usage(
-                model_name=config.model_name,
-                prompt_tokens=usage.get("prompt_tokens", 0),
-                completion_tokens=usage.get("completion_tokens", 0),
-                provider=config.provider.value
-            )
+        full_prompt_text = ""
+        for msg in messages:
+            full_prompt_text += msg.get("content", "")
+        
+        if token_tracker:
+            if "usage" in result:
+                usage = result["usage"]
+                token_tracker.record_usage(
+                    model_name=config.model_name,
+                    prompt_tokens=usage.get("prompt_tokens", 0),
+                    completion_tokens=usage.get("completion_tokens", 0),
+                    provider=config.provider.value
+                )
+            else:
+                token_tracker.record_usage_estimation(
+                    model_name=config.model_name,
+                    prompt_text=full_prompt_text,
+                    completion_text=content,
+                    provider=config.provider.value
+                )
         
         return content
     except Exception as e:

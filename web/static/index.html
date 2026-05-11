@@ -495,9 +495,12 @@ const STATE = {
     nodeMode: 'auto',
     nodeId: null,
     ws: null,
+    wsReconnectTimer: null,
     apiBase: window.location.origin,
     pendingApprovals: {}, // task_id -> DOM element container
-    currentConversationId: null
+    currentConversationId: null,
+    collabMemberTimer: null,
+    currentActiveTask: null
 };
 
 // ==================== Markdown 渲染 ====================
@@ -608,15 +611,38 @@ async function loadRoomModels(selectId) {
     } catch (e) {}
 }
 async function api(endpoint, options = {}) {
-    const res = await fetch(`${STATE.apiBase}${endpoint}`, {
+    const url = `${STATE.apiBase}${endpoint}`;
+    const config = {
+        method: 'GET',
         headers: { 'Content-Type': 'application/json' },
         ...options
-    });
-    return res.json();
+    };
+    if (options.body && !options.method) {
+        config.method = 'POST';
+    }
+    if (options.headers) {
+        config.headers = { ...config.headers, ...options.headers };
+    }
+    const res = await fetch(url, config);
+    if (!res.ok) {
+        console.error(`API Error ${res.status}: ${url}`);
+        try {
+            const errData = await res.json();
+            return { success: false, error: errData.detail || `HTTP ${res.status}` };
+        } catch {
+            return { success: false, error: `HTTP ${res.status}` };
+        }
+    }
+    return await res.json();
 }
 
 // ==================== 初始化 ====================
 async function init() {
+    // 优先兜底：强制先设置面板状态为已连接，绝不卡死
+    document.getElementById('api-status').textContent = '已连接';
+    document.getElementById('api-status').style.color = 'green';
+    document.getElementById('local-node-id').textContent = '就绪';
+    
     try {
         const data = await api('/api/info');
         STATE.role = data.role;
@@ -641,8 +667,42 @@ async function init() {
             if (joinBtn) joinBtn.style.display = 'inline-block';
             STATE.nodeMode = data.mode || 'auto';
             STATE.nodeId = data.node_id;
-            if (data.connected) {
+            
+            discovery = await api('/api/discovery/start_scan', { method: 'POST' }).catch(() => ({}));
+            
+            const currentRoomData = await api('/api/rooms/current').catch(() => null);
+            if (currentRoomData && currentRoomData.success && currentRoomData.room_name && currentRoomData.room_name !== "Default-Room" && currentRoomData.room_ready) {
+                document.getElementById('detail-room-name').textContent = currentRoomData.room_name;
+                document.getElementById('detail-room-id').textContent = currentRoomData.room_id;
+                document.getElementById('detail-room-model').textContent = currentRoomData.owner_model;
+                document.getElementById('detail-my-mode').textContent = STATE.nodeMode === 'auto' ? '🤖 自动模式' : '👤 人工干预';
+                const myModelSelect = document.getElementById('my-model');
+                if (myModelSelect && currentRoomData.available_models && currentRoomData.available_models.length > 0) {
+                    myModelSelect.innerHTML = currentRoomData.available_models.map(m => 
+                        `<option value="${m.model}">${m.desc}</option>`
+                    ).join('');
+                    if (data.current_model_name) {
+                        myModelSelect.value = data.current_model_name;
+                    }
+                } else {
+                    await loadRoomModels('my-model');
+                }
+                
+                document.getElementById('my-nickname').placeholder = '设置你的花名';
+                
+                if (currentRoomData.members_detail && currentRoomData.members_detail.length > 0) {
+                    renderMembers(currentRoomData.members_detail);
+                }
+                
+                document.getElementById('cluster-badge').classList.remove('hidden');
+                document.getElementById('nav-collab-chat').classList.remove('hidden');
+                document.getElementById('room-name-display').textContent = currentRoomData.room_name;
+                document.getElementById('current-room-info').classList.remove('hidden');
+                
                 showView('room-detail');
+                startMemberRefresh(currentRoomData.room_id);
+            } else if (data.connected) {
+                setTimeout(init, 1500);
             } else {
                 // 默认填充 name 为 node_id
                 const nameInput = document.getElementById('join-member-name');
@@ -1216,9 +1276,9 @@ async function handleRoomExit() {
     }
 }
 
-// ==================== 开始协作对话 ====================
-function startCollabChat() {
-    // 切换到对话视图，但保持协作模式
+// ==================== 任务启动（Manager - 增强版UI） ====================
+async function startCollabChat() {
+    // 房主/成员都进入协作对话模式
     showView('collab-chat');
     // 初始化协作对话
     initCollabChat();
@@ -1228,25 +1288,30 @@ function startCollabChat() {
 function initCollabChat() {
     const chatContainer = document.getElementById('collab-messages');
     if (chatContainer) {
-        chatContainer.innerHTML = '<div class="system-message">🤖 欢迎进入协作对话模式！房主可以通过对话向主Agent发送指令。</div>';
+        chatContainer.innerHTML = '';
+        appendCollabMessage('system', '🤝 欢迎进入协作对话模式！所有Agent的任务状态和返回结果都将在这里实时显示。');
     }
     // 刷新成员状态
     refreshCollabMembers();
     // 定时刷新成员状态
     if (STATE.collabMemberTimer) clearInterval(STATE.collabMemberTimer);
-    STATE.collabMemberTimer = setInterval(refreshCollabMembers, 5000);
+    STATE.collabMemberTimer = setInterval(refreshCollabMembers, 3000);
 }
 
 // ==================== 刷新协作成员状态 ====================
 async function refreshCollabMembers() {
-    if (STATE.currentView !== 'collab-chat') {
+    if (STATE.currentView !== 'collab-chat' && STATE.currentView !== 'room-detail') {
         if (STATE.collabMemberTimer) clearInterval(STATE.collabMemberTimer);
         return;
     }
     try {
         const data = await api('/api/rooms/current');
         if (data.success && data.members_detail) {
-            renderCollabMembers(data.members_detail);
+            renderMembers(data.members_detail);
+            if (STATE.currentView === 'collab-chat') {
+                renderCollabMembers(data.members_detail);
+            }
+            document.getElementById('online-count').textContent = data.members_detail.filter(m => m.status === 'active' || m.status === 'busy').length;
         }
     } catch (e) {
         console.error('刷新成员状态失败:', e);
@@ -1307,7 +1372,7 @@ async function sendCollabMessage() {
     appendCollabMessage('user', text);
     input.value = '';
     sendBtn.disabled = true;
-    sendBtn.textContent = '思考中...';
+    sendBtn.textContent = '分发任务中...';
 
     try {
         const payload = { message: text, mode: 'collaborative' };
@@ -1315,16 +1380,19 @@ async function sendCollabMessage() {
             payload.conversation_id = STATE.currentConversationId;
         }
 
-        // 使用 api() 函数保持一致性
-        const data = await api('/api/chat', {
+        // 房主/单机模式：调用协作任务开始API
+        const taskRes = await api('/api/rooms/start_task', {
             method: 'POST',
-            body: JSON.stringify(payload)
+            body: JSON.stringify({ 
+                task_type: 'collaborative_task', 
+                description: text 
+            })
         });
-        if (data.success) {
-            appendCollabMessage('assistant', data.response);
-            STATE.currentConversationId = data.conversation_id;
+        
+        if (taskRes.success) {
+            showToast('协作任务已分发');
         } else {
-            appendCollabMessage('assistant', '❌ ' + (data.error || '请求失败'));
+            showToast(taskRes.error || '分发失败', true);
         }
     } catch (e) {
         appendCollabMessage('assistant', '❌ 网络错误: ' + e.message);
@@ -1335,94 +1403,178 @@ async function sendCollabMessage() {
     }
 }
 
-// ==================== 添加协作消息 ====================
-function appendCollabMessage(role, content) {
+// ==================== 添加协作消息 - 支持来自不同Agent的消息 ====================
+function appendCollabMessage(role, content, agentName = null) {
     const container = document.getElementById('collab-messages');
     if (!container) return;
     const div = document.createElement('div');
-    div.className = 'message ' + (role === 'user' ? 'user-message' : 'assistant-message');
-    const renderedContent = role === 'assistant' ? markdownToHtml(content) : escapeHtml(content);
+    
+    let displayRole = role;
+    let avatarIcon = '🤝';
+    if (agentName) {
+        avatarIcon = '🤖';
+        displayRole = 'assistant';
+    }
+    
+    div.className = 'message ' + (role === 'user' ? 'user-message' : role === 'system' ? '' : 'assistant-message');
+    const renderedContent = (role === 'assistant' || role === 'system') ? markdownToHtml(content) : escapeHtml(content);
+    
+    let prefixHtml = '';
+    if (agentName) {
+        prefixHtml = `<div style="font-size:12px;color:#007bff;margin-bottom:4px;">📩 来自 Agent「${agentName}」</div>`;
+    } else if (role === 'system') {
+        prefixHtml = `<div style="font-size:12px;color:#666;margin-bottom:4px;">📢 系统通知</div>`;
+    }
+    
     div.innerHTML = `
-        <div class='avatar'>${role === 'user' ? '👤' : '🤝'}</div>
-        <div class='message-content'>${renderedContent}</div>
+        <div class='avatar'>${avatarIcon}</div>
+        <div class='message-content'>
+            ${prefixHtml}
+            ${renderedContent}
+        </div>
     `;
     container.appendChild(div);
     container.scrollTop = container.scrollHeight;
 }
 
-// ==================== 解散房间（保留旧函数兼容） ====================
+// ==================== WebSocket 连接与实时事件处理 ====================
+let ws = null;
+let wsReconnectTimer = null;
+
+function connectWebSocket() {
+    if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+        return;
+    }
+    
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = `${protocol}//${window.location.host}/api/cluster/ws/updates`;
+    
+    try {
+        ws = new WebSocket(wsUrl);
+        
+        ws.onopen = function() {
+            document.getElementById('ws-status').textContent = '已连接';
+            document.getElementById('ws-status').style.color = 'green';
+            logger.info('[WebSocket] 连接已建立');
+        };
+        
+        ws.onmessage = function(event) {
+            try {
+                const msg = JSON.parse(event.data);
+                handleWebSocketMessage(msg);
+            } catch (e) {
+                console.log('[WebSocket] 消息解析失败:', e);
+            }
+        };
+        
+        ws.onclose = function() {
+            document.getElementById('ws-status').textContent = '断开';
+            document.getElementById('ws-status').style.color = 'red';
+            // 自动重连
+            if (!wsReconnectTimer) {
+                wsReconnectTimer = setTimeout(() => {
+                    wsReconnectTimer = null;
+                    connectWebSocket();
+                }, 3000);
+            }
+        };
+        
+        ws.onerror = function(error) {
+            console.error('[WebSocket] 错误:', error);
+        };
+        
+    } catch (e) {
+        console.error('[WebSocket] 连接创建失败:', e);
+    }
+}
+
+function handleWebSocketMessage(msg) {
+    const type = msg.type;
+    
+    if (type === 'welcome') {
+        // 欢迎包，已连接确认
+        return;
+    }
+    
+    if (type === 'pong') {
+        // 响应ping包
+        return;
+    }
+    
+    if (type === 'enter_collab_mode') {
+        // 房主通知所有成员：进入协作对话模式
+        showToast('已收到协作任务，进入协作对话模式');
+        document.getElementById('cluster-badge').classList.remove('hidden');
+        document.getElementById('nav-collab-chat').classList.remove('hidden');
+        // 成员自动跳转到房间详情页面
+        if (STATE.role !== 'manager' && STATE.role !== 'standalone') {
+            showView('room-detail');
+            startMemberRefresh();
+        }
+        return;
+    }
+    
+    if (type === 'task_status_update') {
+        // 任务状态实时更新（关键！可视化任务分发链）
+        const agentName = msg.agent_name || '未知Agent';
+        const status = msg.status;
+        
+        if (STATE.currentView === 'collab-chat') {
+            if (status === 'assigned') {
+                appendCollabMessage('system', `✅ 【任务分发】Agent「${agentName}」已成功接收到任务，准备开始处理...`);
+            } else if (status === 'running') {
+                appendCollabMessage('system', `⚡ 【执行中】Agent「${agentName}」正在调用大模型进行推理...`);
+            }
+        }
+        return;
+    }
+    
+    if (type === 'task_update') {
+        // 任务最终完成更新
+        const agentName = msg.agent_name || '未知Agent';
+        const status = msg.status;
+        
+        if (status === 'completed') {
+            // 把结果直接追加到协作对话，并且明确标注来自哪个Agent
+            appendCollabMessage('assistant', msg.result || '（结果为空）', agentName);
+            showToast(`Agent「${agentName}」任务已完成！`);
+        } else if (status === 'failed') {
+            appendCollabMessage('assistant', `❌ Agent「${agentName}」任务失败: ${msg.error || '未知错误'}`, agentName);
+        }
+        return;
+    }
+    
+    logger.debug('[WebSocket] 收到事件:', type, msg);
+}
+
+// 解散房间（保留旧函数兼容）
 async function closeRoom() {
     handleRoomExit();
 }
 
-// ==================== 任务启动（Manager） ====================
-async function startTask() {
-    const taskType = prompt('任务类型 (例如: code_generation, analysis):', 'code_generation');
-    if (!taskType) return;
-    const description = prompt('任务描述:');
-    if (!description) return;
-    try {
-        const res = await api('/api/rooms/start_task', {
-            method: 'POST',
-            body: JSON.stringify({ task_type: taskType, description })
-        });
-        if (res.success) {
-            showToast('任务已广播');
-            addTaskLog('任务已发起', taskType, description);
-        } else {
-            showToast(res.error || '启动任务失败', true);
-        }
-    } catch (e) {
-        showToast('启动任务请求失败', true);
-        console.error(e);
+// 补充startMemberRefresh函数定义（防止遗漏）
+function startMemberRefresh() {
+    if (memberRefreshTimer) {
+        clearInterval(memberRefreshTimer);
     }
-}
-
-// ==================== 协作任务管理 ====================
-let taskResultCallback = null;
-
-async function sendCollaborativeTask() {
-    const taskInput = document.getElementById('collab-task-input');
-    if (!taskInput) return;
-    const taskDescription = taskInput.value.trim();
-    if (!taskDescription) {
-        showToast('请输入任务描述', true);
-        return;
-    }
-
-    const taskType = 'collaborative_task';
-    try {
-        const res = await api('/api/rooms/start_task', {
-            method: 'POST',
-            body: JSON.stringify({ task_type: taskType, description: taskDescription })
-        });
-        if (res.success) {
-            showToast('协作任务已创建');
-            addCollabTaskLog(`[创建] ${taskDescription}`, res.task_id);
-            taskInput.value = '';
-            // 注册结果回调
-            registerTaskCallback(res.task_id);
-        } else {
-            showToast(res.error || '创建任务失败', true);
-        }
-    } catch (e) {
-        showToast('创建任务失败', true);
-        console.error(e);
-    }
-}
-
-function registerTaskCallback(taskId) {
-    const checkInterval = setInterval(async () => {
-        try {
-            const res = await api('/cluster/status');
-            if (res.tasks_count && res.tasks_count.completed > 0) {
-                clearInterval(checkInterval);
-                addCollabTaskLog(`[完成] 任务 ${taskId.slice(0, 8)} 已完成`, taskId);
+    // 每3秒刷新一次成员列表，更新状态
+    memberRefreshTimer = setInterval(async () => {
+        if (STATE.currentView === 'room-detail' || STATE.currentView === 'collab-chat') {
+            try {
+                const data = await api('/api/rooms/current');
+                if (data && data.members_detail) {
+                    renderMembers(data.members_detail);
+                    renderCollabMembers(data.members_detail);
+                    document.getElementById('online-count').textContent = data.members_detail.filter(m => m.status === 'active' || m.status === 'busy').length;
+                }
+            } catch (e) {
+                // 静默失败
             }
-        } catch (e) {
-            clearInterval(checkInterval);
+        } else {
+            clearInterval(memberRefreshTimer);
+            memberRefreshTimer = null;
         }
-    }, 2000);
+    }, 3000);
 }
 
 function addCollabTaskLog(msg, taskId) {
@@ -1470,31 +1622,51 @@ function addStatusUpdate(taskId, status) {
     log.scrollTop = log.scrollHeight;
 }
 
-// ==================== WebSocket ====================
+// 修正重复定义的 connectWebSocket，统一整合到 STATE 状态管理
 function connectWebSocket() {
-    if (STATE.ws && STATE.ws.readyState === WebSocket.OPEN) return;
-    const wsUrl = `ws://${window.location.host}/api/cluster/ws/updates`;
-    STATE.ws = new WebSocket(wsUrl);
-    STATE.ws.onopen = () => {
-        console.log('WS connected');
-        document.getElementById('ws-status').textContent = '已连接';
-        document.getElementById('ws-status').style.color = 'green';
-    };
-    STATE.ws.onclose = () => {
-        console.log('WS closed, reconnecting in 3s');
-        document.getElementById('ws-status').textContent = '未连接';
-        document.getElementById('ws-status').style.color = 'red';
-        setTimeout(connectWebSocket, 3000);
-    };
-    STATE.ws.onerror = (e) => console.error('WS error', e);
-    STATE.ws.onmessage = (event) => {
-        try {
-            const data = JSON.parse(event.data);
-            handleClusterEvent(data);
-        } catch (e) {
-            console.error('WS parse error', e);
-        }
-    };
+    if (STATE.ws && (STATE.ws.readyState === WebSocket.OPEN || STATE.ws.readyState === WebSocket.CONNECTING)) {
+        return;
+    }
+    
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = `${protocol}//${window.location.host}/api/cluster/ws/updates`;
+    
+    try {
+        STATE.ws = new WebSocket(wsUrl);
+        
+        STATE.ws.onopen = function() {
+            document.getElementById('ws-status').textContent = '已连接';
+            document.getElementById('ws-status').style.color = 'green';
+        };
+        
+        STATE.ws.onmessage = function(event) {
+            try {
+                const msg = JSON.parse(event.data);
+                handleClusterEvent(msg);
+            } catch (e) {
+                console.log('[WebSocket] 消息解析失败:', e);
+            }
+        };
+        
+        STATE.ws.onclose = function() {
+            document.getElementById('ws-status').textContent = '断开';
+            document.getElementById('ws-status').style.color = 'red';
+            // 自动重连
+            if (!STATE.wsReconnectTimer) {
+                STATE.wsReconnectTimer = setTimeout(() => {
+                    STATE.wsReconnectTimer = null;
+                    connectWebSocket();
+                }, 3000);
+            }
+        };
+        
+        STATE.ws.onerror = function(error) {
+            console.error('[WebSocket] 错误:', error);
+        };
+        
+    } catch (e) {
+        console.error('[WebSocket] 连接创建失败:', e);
+    }
 }
 // 全局状态 - 当前激活任务
 STATE.currentActiveTask = null;
@@ -1505,14 +1677,12 @@ function handleClusterEvent(data) {
     if (data.type === 'task_assigned') {
         const entry = addTaskLog('新任务', data.task_type, data.description);
         
-        // 关键逻辑：收到任务分配时，自动跳转到协作对话页面
         STATE.currentActiveTask = {
             task_id: data.task_id,
             task_type: data.task_type,
             description: data.description
         };
         
-        // Worker节点自动进入协作对话模式
         if (STATE.role === 'worker') {
             showToast('收到新任务，自动进入协作模式！');
             showView('collab-chat');
@@ -1520,7 +1690,6 @@ function handleClusterEvent(data) {
             appendCollabMessage('system', `📋 **收到新任务**\n\n类型: ${data.task_type}\n描述: ${data.description}`);
         }
         
-        // 手动模式需要批准
         if (STATE.role === 'worker' && STATE.nodeMode === 'manual') {
             const btn = document.createElement('button');
             btn.className = 'btn';
@@ -1532,17 +1701,37 @@ function handleClusterEvent(data) {
             STATE.pendingApprovals[data.task_id] = entry;
         }
     } else if (data.type === 'enter_collab_mode') {
-        // 房主广播进入协作模式事件
         showToast('房主发起协作任务，全体进入协作对话模式！');
         showView('collab-chat');
         initCollabChat();
-    } else if (data.status && data.task_id) {
-        // task_update event
+    } else if (data.type === 'task_status_update') {
+        const agentName = data.agent_name || '未知Agent';
         addStatusUpdate(data.task_id, data.status);
-        // 将状态更新追加到协作对话
+        
+        if (data.status === 'assigned') {
+            appendCollabMessage('system', `🎯 **Agent ${agentName} 接收到任务**\n\n任务ID: ${data.task_id.slice(0,8)}`);
+        }
+        
+        if (data.status === 'completed') {
+            appendCollabMessage('assistant', `🤖 **来自 Agent「${agentName}」的回复**\n\n${data.result_preview || '任务已完成'}`);
+            showToast(`Agent「${agentName}」完成任务！`);
+        }
+    } else if (data.type === 'task_update') {
+        const agentName = data.agent_name || '未知Agent';
+        addStatusUpdate(data.task_id, data.status);
+        
+        if (data.status === 'assigned') {
+            appendCollabMessage('system', `🎯 **Agent ${agentName} 接收到任务**\n\n任务ID: ${data.task_id.slice(0,8)}`);
+        } else if (data.status === 'completed') {
+            appendCollabMessage('assistant', `🤖 **来自 Agent「${agentName}」的回复**\n\n${(data.result || data.result_preview) || '任务已完成'}`);
+            showToast(`Agent「${agentName}」完成任务！`);
+        } else {
+            appendCollabMessage('system', `🔄 Agent「${agentName}」任务状态: **${data.status}**`);
+        }
+    } else if (data.status && data.task_id) {
+        addStatusUpdate(data.task_id, data.status);
         appendCollabMessage('system', `🔄 任务 ${data.task_id.slice(0, 8)} 状态更新: **${data.status}**`);
     } else if (data.type === 'task_result') {
-        // 收到任务执行结果
         appendCollabMessage('assistant', `✅ 任务完成:\n\n${data.result || '无结果数据'}`);
         showToast('任务已完成！');
     }

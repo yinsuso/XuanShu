@@ -22,6 +22,15 @@ class TokenUsage:
     provider: str
 
 
+def estimate_tokens_by_chars(text: str) -> int:
+    """基于字符数估算token数（中文1字≈1.5token，英文1词≈1.3token，通用兜底）"""
+    if not text:
+        return 0
+    chinese_chars = sum(1 for c in text if '\u4e00' <= c <= '\u9fff')
+    other_chars = len(text) - chinese_chars
+    return int(chinese_chars * 1.5 + other_chars * 0.2) + 1
+
+
 class TokenTracker:
     def __init__(self):
         self._init_db()
@@ -61,7 +70,7 @@ class TokenTracker:
         completion_tokens: int,
         provider: str
     ):
-        """记录token使用情况"""
+        """记录token使用情况 - 支持为0的兜底情况"""
         total_tokens = prompt_tokens + completion_tokens
         timestamp = datetime.now().isoformat()
         
@@ -77,7 +86,19 @@ class TokenTracker:
         conn.commit()
         conn.close()
         
-        logger.debug(f"记录token使用: {model_name} - {total_tokens} tokens")
+        logger.debug(f"记录token使用: {model_name} - 总{total_tokens} (提示:{prompt_tokens}, 完成:{completion_tokens})")
+    
+    def record_usage_estimation(
+        self,
+        model_name: str,
+        prompt_text: str,
+        completion_text: str,
+        provider: str
+    ):
+        """智能记录token使用：优先直接数值，没有就用估算"""
+        prompt_tokens = estimate_tokens_by_chars(prompt_text)
+        completion_tokens = estimate_tokens_by_chars(completion_text)
+        self.record_usage(model_name, prompt_tokens, completion_tokens, provider)
 
     def _parse_timestamp(self, timestamp_str: str) -> datetime:
         """解析时间戳字符串"""

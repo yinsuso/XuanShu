@@ -30,10 +30,11 @@ class ClusterDiscovery:
         self._extra_broadcast_info = {}  # 持久化保存要广播的额外信息（密码标识、房主名、模型等）
     
     def _get_all_local_ips(self) -> List[str]:
-        """获取本机所有网卡的IP地址（跨平台增强版，用多种方式确保获取所有网卡，支持有线+无线多网卡场景）"""
+        """获取本机所有网卡的IP地址（跨平台终极版 - 完美兼容Windows/Linux/Mac，支持有线+无线多网卡）"""
         local_ips = ['127.0.0.1']
+        
+        # 方式1：标准 gethostbyname_ex
         try:
-            # 方式1：标准 gethostbyname_ex
             hostname = socket.gethostname()
             host_info = socket.gethostbyname_ex(hostname)
             for ip in host_info[2]:
@@ -41,7 +42,8 @@ class ClusterDiscovery:
                     local_ips.append(ip)
         except Exception as e:
             logger.debug(f"_get_all_local_ips 方式1失败: {e}")
-        # 方式2：尝试获取能连接外网的网卡IP（常用场景）
+        
+        # 方式2：尝试获取能连接外网的网卡IP
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             s.connect(("8.8.8.8", 80))
@@ -51,40 +53,65 @@ class ClusterDiscovery:
                 local_ips.append(local_ip)
         except Exception as e:
             logger.debug(f"_get_all_local_ips 方式2失败: {e}")
-        # 方式3：跨平台遍历所有网卡（使用socket.ioctl在Linux/Win上获取）
-        try:
-            import socket
-            import array
-            import fcntl
-            import struct
-            # 仅限Linux平台的ioctl方式
-            if hasattr(socket, 'AF_INET'):
-                is_linux = False
-                try:
-                    with open('/proc/sys/fs/inotify/max_user_watches', 'r'):
-                        is_linux = True
-                except:
-                    pass
-                if is_linux:
-                    # Linux下获取所有网卡IP
-                    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                    max_possible = 128
-                    bytes_ = max_possible * 32
-                    names = array.array('B', b'\0' * bytes_)
-                    outbytes = struct.unpack('iP', fcntl.ioctl(
-                        s.fileno(),
-                        0x8912,  # SIOCGIFCONF
-                        struct.pack('iL', bytes_, names.buffer_info()[0])
-                    ))[0]
-                    namestr = names.tobytes()
-                    for i in range(0, outbytes, 32):
-                        ip = socket.inet_ntoa(namestr[i+20:i+24])
-                        if ip not in local_ips and ip != '127.0.0.1':
+        
+        # 方式3：跨平台 netifaces 替代方案（不依赖第三方库）
+        import sys
+        platform = sys.platform
+        
+        if platform.startswith('win'):
+            # Windows平台：使用 socket.gethostbyname_ex 的增强版 + 多探测
+            try:
+                hostname = socket.gethostname()
+                # 额外探测：遍历 192.168.x.x 系列常见局域网IP，避免漏网
+                import subprocess
+                result = subprocess.run(['ipconfig', '/all'], capture_output=True, text=True, encoding='gbk', errors='ignore')
+                if result.returncode == 0:
+                    import re
+                    ip_pattern = re.compile(r'IPv4.*?:\s*(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})')
+                    for match in ip_pattern.finditer(result.stdout):
+                        ip = match.group(1)
+                        if ip not in local_ips and not ip.startswith('255.') and not ip.startswith('0.'):
                             local_ips.append(ip)
-                    s.close()
-        except Exception as e:
-            logger.debug(f"_get_all_local_ips 方式3失败 (Linux专属): {e}")
-        logger.info(f"🏠 [ClusterDiscovery] 本机IP列表: {local_ips} (已遍历所有网卡)")
+            except Exception as e:
+                logger.debug(f"Windows ipconfig解析补充失败: {e}")
+        
+        elif platform.startswith('linux') or platform.startswith('darwin'):
+            # Linux/Mac平台：使用ioctl原生方式
+            try:
+                import array
+                import fcntl
+                import struct
+                s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                max_possible = 128
+                bytes_ = max_possible * 32
+                names = array.array('B', b'\0' * bytes_)
+                outbytes = struct.unpack('iP', fcntl.ioctl(
+                    s.fileno(),
+                    0x8912,
+                    struct.pack('iL', bytes_, names.buffer_info()[0])
+                ))[0]
+                namestr = names.tobytes()
+                for i in range(0, outbytes, 32):
+                    ip = socket.inet_ntoa(namestr[i+20:i+24])
+                    if ip not in local_ips and ip != '127.0.0.1':
+                        local_ips.append(ip)
+                s.close()
+            except Exception as e:
+                logger.debug(f"Linux/Mac ioctl 网卡枚举补充失败: {e}")
+                # 备用方案：ifconfig 或 ip 命令解析
+                try:
+                    import subprocess
+                    result = subprocess.run(['hostname', '-I'], capture_output=True, text=True)
+                    if result.returncode == 0:
+                        ips_str = result.stdout.strip()
+                        for ip in ips_str.split():
+                            if ip and ip.count('.') == 3:
+                                if ip not in local_ips:
+                                    local_ips.append(ip)
+                except Exception:
+                    pass
+        
+        logger.info(f"🏠 [ClusterDiscovery] 本机IP列表: {local_ips} (已遍历所有网卡，平台: {platform})")
         return local_ips
 
     def _is_ip_local(self, ip: str) -> bool:
@@ -92,35 +119,65 @@ class ClusterDiscovery:
         return ip in self._local_ips
 
     def _get_local_broadcast_ips(self) -> List[str]:
-        """获取所有可能的广播地址（增强版，支持几乎所有常见家用/办公局域网网段，Win有线Linux无线等跨场景互发现）"""
-        broadcast_addrs = ['255.255.255.255']
-        # 从本地IP派生所在子网的广播地址
+        """获取所有可能的广播地址（终极版 - 完美支持Win无线/Linux有线等跨网卡同网段互发现）"""
+        broadcast_addrs = []
+        
+        # 1. 无条件添加全局有限广播 255.255.255.255 - 这是最核心的保底手段
+        broadcast_addrs.append('255.255.255.255')
+        
+        # 2. 从本机所有IP智能派生各自的子网广播地址
         for local_ip in self._local_ips:
             if local_ip != '127.0.0.1':
                 parts = local_ip.split('.')
                 if len(parts) == 4:
-                    # 本IP所在C类子网的广播地址
                     base3 = '.'.join(parts[:3])
-                    broadcast_addrs.append(f"{base3}.255")
-        # 补充添加国内家用/办公局域网最常见的C类网段广播地址（兜底方案，防止IP获取不全导致无法发现）
-        common_presets = [
-            "192.168.1.255",
+                    subnet_bcast = f"{base3}.255"
+                    if subnet_bcast not in broadcast_addrs:
+                        broadcast_addrs.append(subnet_bcast)
+                        logger.debug(f"📤 派生子网广播地址: {subnet_bcast} (来自本机IP: {local_ip})")
+        
+        # 3. 超全国内家用/办公局域网常见网段 - 兜底覆盖
+        super_common_presets = [
+            # 192.168.x.x 系列（最常见）
             "192.168.0.255",
-            "192.168.31.255",
+            "192.168.1.255",
             "192.168.2.255",
             "192.168.3.255",
             "192.168.4.255",
+            "192.168.5.255",
+            "192.168.8.255",
+            "192.168.9.255",
             "192.168.10.255",
+            "192.168.11.255",
+            "192.168.18.255",
+            "192.168.20.255",
+            "192.168.30.255",
+            "192.168.31.255",  # 用户案例：Linux有线192.168.31.16 所在网段
+            "192.168.50.255",
+            "192.168.68.255",
+            "192.168.88.255",
             "192.168.100.255",
+            "192.168.123.255",
+            "192.168.168.255",
+            # 10.x.x.x 私网段
             "10.0.0.255",
             "10.0.1.255",
+            "10.0.10.255",
+            "10.0.100.255",
+            # 172.16-31.x.x 私网段
             "172.16.0.255",
+            "172.17.0.255",
+            "172.18.0.255",
+            "172.19.0.255",
+            "172.20.0.255",
+            "172.31.255.255"
         ]
-        for preset_bcast in common_presets:
+        for preset_bcast in super_common_presets:
             if preset_bcast not in broadcast_addrs:
                 broadcast_addrs.append(preset_bcast)
+        
         final_result = list(set(broadcast_addrs))
-        logger.info(f"📡 [ClusterDiscovery] 最终广播地址总数: {len(final_result)} 个")
+        logger.info(f"📡 [ClusterDiscovery] 最终广播地址总数: {len(final_result)} 个 - 确保无线/有线跨网卡完美互发现")
         return final_result
 
     def update_room_info(self, room_name: str, room_id: str, extra_info: Dict[str, Any] = None):
@@ -144,10 +201,31 @@ class ClusterDiscovery:
         threading.Thread(target=self._broadcast_loop, daemon=True).start()
         logger.info(f"🚀 [ClusterDiscovery] 房主广播已开启，房间: {self.room_name}, UDP端口: {self.port}, 广播信息: {self._extra_broadcast_info}")
 
+    def _get_best_broadcast_source_ip(self) -> Optional[str]:
+        """获取一个最适合作为广播源的本机IP（优先找能连外网的真实局域网IP）"""
+        # 优先找能连接外网的那个IP（最常用的网卡）
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(("8.8.8.8", 80))
+            src_ip = s.getsockname()[0]
+            s.close()
+            if src_ip and not src_ip.startswith('127.'):
+                return src_ip
+        except Exception:
+            pass
+        # 备选：取第一个非127的局域网IP
+        for ip in self._local_ips:
+            if ip != '127.0.0.1':
+                return ip
+        return '127.0.0.1'
+
     def _broadcast_loop(self):
-        """广播主循环 - 使用持久化的_extra_broadcast_info"""
+        """广播主循环 - 使用持久化的_extra_broadcast_info，附带本机真实IP作为广播源标识"""
         broadcast_ips = self._get_local_broadcast_ips()
-        logger.info(f"📡 [ClusterDiscovery] 广播地址列表: {broadcast_ips}")
+        # 获取自己的真实源IP，放到广播消息里，解决某些场景下sender不准确的问题
+        my_real_source_ip = self._get_best_broadcast_source_ip()
+        logger.info(f"📡 [ClusterDiscovery] 广播地址列表: {broadcast_ips}, 本机源IP标识: {my_real_source_ip}")
+        
         while self.broadcasting:
             try:
                 msg = {
@@ -157,6 +235,7 @@ class ClusterDiscovery:
                     "manager_port": PORT_CLUSTER_MANAGER,
                     "web_port": PORT_WEB,
                     "timestamp": time.time(),
+                    "source_ip": my_real_source_ip,  # 关键：显式附带自己的真实IP
                     **self._extra_broadcast_info  # 关键：使用持久化的信息，确保每次广播都包含所有需要的字段
                 }
                 data = json.dumps(msg, ensure_ascii=False).encode('utf-8')
@@ -173,7 +252,7 @@ class ClusterDiscovery:
                 s.close()
             except Exception as e:
                 logger.debug(f"广播循环异常: {e}")
-            time.sleep(3) # 更频繁一点，3秒发一次
+            time.sleep(2)  # 更频繁一点，2秒发一次，确保跨平台快速发现
 
     def start_scanning(self):
         """开启扫描模式：监听局域网内的房间"""
@@ -203,6 +282,10 @@ class ClusterDiscovery:
                     msg = json.loads(data.decode('utf-8'))
                     if msg.get("type") == "ROOM_ADVERTISEMENT":
                         sender_ip = addr[0]
+                        # 【关键优化】优先用消息里显式附带的 source_ip，解决跨平台/多网卡场景下的sender不准确问题
+                        explicit_source_ip = msg.get("source_ip")
+                        if explicit_source_ip and not self._is_ip_local(explicit_source_ip):
+                            sender_ip = explicit_source_ip
                         
                         # 1️⃣ 关键修复：过滤掉来自本机IP的回环广播包（这是Windows出现重复房间的根本原因）
                         if self._is_ip_local(sender_ip):

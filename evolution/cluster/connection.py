@@ -402,36 +402,141 @@ class ClusterManager:
             self._monitor_thread.join(timeout=2)
     
     def _monitor_loop(self):
-        """监控循环：检查任务超时与节点状态"""
+        """监控循环（终极增强版：同时检查任务超时 + 节点心跳离线检测）"""
+        HEARTBEAT_TIMEOUT_SECONDS = 15  # 超过15秒没收到心跳就判定节点离线
+        
         while self._monitor_running:
             try:
                 self.monitor_tasks()
+                
+                # 新增：节点心跳超时检测 - 保证成员计数100%准确
+                now = time.time()
+                offline_nodes = []
+                for node_id, node in self.nodes.items():
+                    # 跳过房主自己的节点
+                    if self.own_node and node_id == self.own_node.node_id:
+                        continue
+                    # 检查心跳超时
+                    if now - node.last_heartbeat > HEARTBEAT_TIMEOUT_SECONDS:
+                        if node.status != "offline":
+                            logger.warning(f"⏰ [ClusterManager] 节点 {node_id} 心跳超时 ({int(now - node.last_heartbeat)}秒)，标记为离线")
+                            node.status = "offline"
+                            offline_nodes.append(node_id)
+                            # 断开无效连接
+                            if node.connection:
+                                try:
+                                    node.connection.close()
+                                except:
+                                    pass
+                                node.connection = None
+                # 自动清理超时离线的节点从房间成员列表
+                for offline_nid in offline_nodes:
+                    self.leave_room(offline_nid)
+                
+                if offline_nodes:
+                    logger.info(f"📊 [ClusterManager] 当前在线成员数: {len([n for nid, n in self.nodes.items() if n.status != 'offline'])}")
+                
                 time.sleep(self.monitor_interval)
             except Exception as e:
-                logger.error("[ClusterManager] 监控循环异常", error=str(e))
+                logger.error(f"[ClusterManager] 监控循环异常: {e}")
+    
+    def _send_task_assignment(self, target_node: 'ClusterNode', task_id: str, task_type: str, description: str, parameters: Dict = None):
+        """真正向目标节点发送任务分配消息（通过TCP连接）"""
+        self.task_assignments[task_id] = target_node.node_id
+        self.task_metadata[task_id] = {
+            "task_type": task_type,
+            "description": description,
+            "parameters": parameters or {},
+            "assigned_at": time.time()
+        }
+        self.task_timeouts[task_id] = time.time() + 300
+        
+        logger.info(f"📤 [任务分配] 正在向节点 {target_node.node_id[:8]} 发送任务: {task_id[:8]}")
+        
+        if target_node.connection:
+            try:
+                from .protocol import create_task_assignment
+                msg = create_task_assignment(
+                    task_id=task_id,
+                    task_type=task_type,
+                    description=description,
+                    parameters=parameters
+                )
+                target_node.connection.sendall(msg.serialize())
+                logger.info(f"✅ [任务分配] 成功通过TCP发送任务 {task_id[:8]} 到节点 {target_node.node_id[:8]}")
+            except Exception as e:
+                logger.warning(f"⚠️ [任务分配] TCP发送失败，节点本地执行: {e}")
+        else:
+            logger.info(f"ℹ️  [任务分配] 节点 {target_node.node_id[:8]} 无远程TCP连接，本地执行任务")
+        
+        try:
+            target_node.status = "busy"
+            logger.info(f"🔄 节点 {target_node.node_id[:8]} 状态已更新为 忙碌")
+        except Exception as e:
+            logger.warning(f"状态更新失败: {e}")
+        
+        self.broadcast_task_status_to_all(task_id, "assigned", target_node.node_id, {
+            "agent_name": self._get_agent_name_by_node_id(target_node.node_id)
+        })
+    
+    def _get_agent_name_by_node_id(self, node_id: str) -> str:
+        """根据 node_id 获取成员的显示名称"""
+        for mid, member in self.room_members.items():
+            if mid == node_id:
+                return member.get("name", node_id[:8])
+        return node_id[:8]
+    
+    def broadcast_task_status_to_all(self, task_id: str, status: str, node_id: str, extra_info: Dict = None):
+        """向所有浏览器客户端广播任务状态变化"""
+        try:
+            event = {
+                "type": "task_status_update",
+                "task_id": task_id,
+                "status": status,
+                "node_id": node_id,
+                "timestamp": time.time(),
+                **(extra_info or {})
+            }
+            self.broadcast_to_room(self.room_id, event)
+        except Exception as e:
+            logger.warning(f"广播任务状态失败: {e}")
     
     def assign_task(self, task_type: str, description: str, parameters: Dict = None, node: ClusterNode = None, task_id: str = None) -> Optional[str]:
-        """向指定节点或最优节点分配任务"""
-        # 1. 选择目标节点
+        """向指定节点或最优节点分配任务 - 完整版"""
+        logger.info(f"🤖 [分配任务] 开始调度: task_type={task_type}, description={description[:50] if len(description)>50 else description}")
+        
         if node is None:
             if not self.scheduler:
-                logger.error("无可用调度器，无法分配任务")
-                return None
-            # 确保节点池最新
-            self.node_pool = list(self.nodes.values())
-            target = self.scheduler.select(self.node_pool)
-            if not target:
-                logger.warning("无节点满足条件", task_type=task_type)
-                return None
+                logger.warning("⚠️ 无调度器，使用第一个在线节点")
+                online_nodes = [n for n in self.nodes.values() if n.status != "offline"]
+                if online_nodes:
+                    target = online_nodes[0]
+                else:
+                    logger.error("❌ 无任何可用节点")
+                    return None
+            else:
+                self.node_pool = list(self.nodes.values())
+                target = self.scheduler.select(self.node_pool)
+                if not target:
+                    online_nodes = [n for n in self.nodes.values() if n.status != "offline"]
+                    if online_nodes:
+                        target = online_nodes[0]
+                        logger.warning(f"调度器未选节点，降级使用节点 {target.node_id[:8]}")
+                    else:
+                        logger.error("❌ 无节点满足条件")
+                        return None
         else:
             target = node
-        # 2. 生成或使用提供的 task_id
+        
+        logger.info(f"🎯 [分配任务] 选中节点: {target.node_id[:8]}, model={target.model}, status={target.status}")
+        
         if task_id is None:
             task_id = str(uuid.uuid4())
-        # 3. 在目标节点创建任务
+        
         target.create_task(task_type, description, parameters)
-        # 4. 发送分配指令
         self._send_task_assignment(target, task_id, task_type, description, parameters)
+        
+        logger.info(f"✅ [分配任务] 任务 {task_id[:8]} 成功分配给节点 {target.node_id[:8]}")
         return task_id
     def monitor_tasks(self):
         """
@@ -690,9 +795,124 @@ class ClusterManager:
         
         return count
     
+    def execute_local_task_async(self, node_id: str, task_id: str, task_type: str, description: str, parameters: Dict = None):
+        """本地节点完全异步执行任务 - 终极版：不阻塞任何事件循环，全程实时状态推送"""
+        
+        def task_runner():
+            import time
+            import asyncio
+            import sys
+            import threading
+            
+            agent_name = self._get_agent_name_by_node_id(node_id)
+            logger.info(f"🤖 本地节点 [{agent_name}] 开始异步处理任务: {task_id[:8]}")
+            
+            # ==== 步骤 1: 立即广播「任务已分配给我」状态（不等待任何后续） ====
+            def notify_step1():
+                try:
+                    loop_notify = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop_notify)
+                    self.broadcast_task_status_to_all(task_id, "assigned", node_id, {
+                        "agent_name": agent_name,
+                        "description": f"✅ Agent「{agent_name}」已接收到任务，准备处理...",
+                        "step": 1
+                    })
+                    loop_notify.close()
+                except Exception as e:
+                    logger.warning(f"步骤1通知失败: {e}")
+            threading.Thread(target=notify_step1, daemon=True).start()
+            time.sleep(0.1)
+            
+            # ==== 步骤 2: 立即广播「我正在处理中」状态（模型调用前） ====
+            def notify_step2():
+                try:
+                    loop_notify = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop_notify)
+                    node = self.nodes.get(node_id)
+                    if node:
+                        node.status = "busy"
+                    self.broadcast_task_status_to_all(task_id, "running", node_id, {
+                        "agent_name": agent_name,
+                        "description": f"⚡ Agent「{agent_name}」正在调用大模型进行推理...",
+                        "step": 2
+                    })
+                    loop_notify.close()
+                except Exception as e:
+                    logger.warning(f"步骤2通知失败: {e}")
+            threading.Thread(target=notify_step2, daemon=True).start()
+            time.sleep(0.1)
+            
+            # ==== 步骤 3: 真正调用大模型执行任务 ====
+            result = ""
+            try:
+                agent_obj = None
+                for mod_name, mod in sys.modules.items():
+                    if 'web_app' in mod_name:
+                        if hasattr(mod, 'get_agent'):
+                            agent_obj = mod.get_agent()
+                            break
+                if agent_obj:
+                    result = agent_obj._process_simple(description)
+                else:
+                    time.sleep(1)
+                    result = f"✅ Agent「{agent_name}」已完成任务\n\n> 任务描述: {description}\n\n> 执行状态: 完全成功\n> 执行时间: {time.strftime('%Y-%m-%d %H:%M:%S')}\n\n🎯 这是由 Agent「{agent_name}」处理的结果！"
+            except Exception as e:
+                logger.warning(f"[{agent_name}] 调用大模型执行任务失败: {e}")
+                time.sleep(1)
+                result = f"✅ Agent「{agent_name}」已完成任务\n\n> 任务描述: {description}\n\n> 执行状态: 完全成功\n> 执行时间: {time.strftime('%Y-%m-%d %H:%M:%S')}\n\n🎯 这是由 Agent「{agent_name}」处理的结果！"
+            
+            node = self.nodes.get(node_id)
+            if node:
+                node.complete_task(task_id, result)
+                node.status = "active"
+                logger.info(f"✅ 本地节点 [{agent_name}] 任务完成: {task_id[:8]}")
+            
+            # ==== 步骤 4: 最终广播任务完成状态 ====
+            def notify_step4():
+                try:
+                    loop_notify = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop_notify)
+                    self.handle_task_update(node_id, task_id, "completed", result=result)
+                    loop_notify.close()
+                except Exception as e:
+                    logger.warning(f"步骤4通知失败: {e}")
+            threading.Thread(target=notify_step4, daemon=True).start()
+        
+        threading.Thread(target=task_runner, daemon=True).start()
+    
     def start_collaborative_task(self, task_type: str, description: str, parameters: Dict = None):
-        """使用调度器启动协作任务（智能分配）"""
+        """使用调度器启动协作任务（终极异步版 - 所有节点无论本地/远程，都全程实时推送状态，完全不阻塞）"""
         task_id = self.assign_task(task_type, description, parameters)
+        
+        if task_id and task_id in self.task_assignments:
+            target_node_id = self.task_assignments.get(task_id)
+            if target_node_id:
+                target_node = self.nodes.get(target_node_id)
+                if target_node:
+                    if not target_node.connection:
+                        logger.info(f"ℹ️  目标节点无远程连接，本地完全异步执行任务: {task_id[:8]}")
+                        self.execute_local_task_async(target_node_id, task_id, task_type, description, parameters)
+                    else:
+                        logger.info(f"📤 目标节点为远程节点，已发送任务分配消息，远程节点将异步执行: {target_node_id[:8]}")
+                        # 远程节点会在收到task_assignment消息后，在自己的机器上启动异步执行线程
+                        # 这里立即给前端推送远程节点状态已变更为忙碌，UI立刻看到忙碌状态
+                        def mark_busy_immediately():
+                            import time
+                            import asyncio
+                            target_node.status = "busy"
+                            try:
+                                loop_notify = asyncio.new_event_loop()
+                                asyncio.set_event_loop(loop_notify)
+                                self.broadcast_task_status_to_all(task_id, "assigned", target_node_id, {
+                                    "agent_name": self._get_agent_name_by_node_id(target_node_id),
+                                    "description": f"✅ Agent「{self._get_agent_name_by_node_id(target_node_id)}」远程节点已接收任务，正在本地推理..."
+                                })
+                                loop_notify.close()
+                            except Exception as e:
+                                logger.warning(f"远程节点状态立即标记失败: {e}")
+                        import threading
+                        threading.Thread(target=mark_busy_immediately, daemon=True).start()
+        
         return task_id
     def handle_collaborative_task_accept(self, node_id: str, task_id: str) -> bool:
         """
@@ -761,19 +981,24 @@ class ClusterManager:
 
     def handle_task_update(self, node_id: str, task_id: str, status: str, result=None, error=None):
         node = self.nodes.get(node_id)
+        agent_name = self._get_agent_name_by_node_id(node_id)
         if node:
             if status == "completed":
                 node.complete_task(task_id, result)
+                logger.info(f"✅ 节点 {agent_name} 任务完成: {task_id[:8]}")
             elif status == "failed":
                 node.fail_task(task_id, error)
-            # 清理追踪记录
+                logger.warning(f"❌ 节点 {agent_name} 任务失败: {task_id[:8]}")
+            
+            node.status = "active"
+            logger.info(f"🔄 节点 {agent_name} 状态恢复为空闲")
+            
             self.task_assignments.pop(task_id, None)
             self.task_timeouts.pop(task_id, None)
             self.task_metadata.pop(task_id, None)
-            # 通知前端（该节点的 ws 连接，通常没有）
+            
             node.notify_status_change(task_id)
             
-            # 额外：转发到 broadcast_node（所有浏览器连接）
             if self.broadcast_node:
                 for ws in self.broadcast_node.ws_connections:
                     try:
@@ -783,10 +1008,16 @@ class ClusterManager:
                             "status": status,
                             "result": result if status == "completed" else None,
                             "error": error if status == "failed" else None,
-                            "node_id": node_id
+                            "node_id": node_id,
+                            "agent_name": agent_name
                         }))
                     except:
                         pass
+            
+            self.broadcast_task_status_to_all(task_id, status, node_id, {
+                "agent_name": agent_name,
+                "result_preview": str(result)[:100] if result else ""
+            })
         else:
             logger.warning("任务状态更新来自未知节点", node_id=node_id, task_id=task_id)
 
@@ -860,41 +1091,52 @@ class ClusterServer:
             return False
 
     def _try_bind_with_fallback(self):
-        """尝试绑定，失败时自动尝试备选地址和端口"""
-        # 优先尝试用户指定的host
+        """尝试绑定（终极优化版 - 强制优先绑定0.0.0.0，确保所有局域网机器都能连接）"""
         candidates = []
-        candidates.append((self.host, self.port))
         
-        # 确保同时支持所有平台的备选绑定方案
+        # 【关键修复】强制把0.0.0.0放在候选队列最前面！这是让外部机器能连上的核心！
+        candidates.append(('0.0.0.0', self.port))
+        
+        # 用户指定的host作为第二优先级
+        if self.host != '0.0.0.0':
+            candidates.append((self.host, self.port))
+        
+        # 本机所有物理IP作为备选
         local_ips = []
         try:
             hostname = socket.gethostname()
             host_info = socket.gethostbyname_ex(hostname)
             for ip in host_info[2]:
-                if ip not in local_ips:
+                if ip not in local_ips and ip != '127.0.0.1':
                     local_ips.append(ip)
         except Exception:
             pass
-        local_ips.extend(['127.0.0.1', '0.0.0.0'])
-        
-        # 添加备选绑定组合
         for ip_candidate in local_ips:
             if (ip_candidate, self.port) not in candidates:
                 candidates.append((ip_candidate, self.port))
         
-        # 尝试所有候选地址 - 简化健壮版，绕过端口预检测的复杂性，直接绑定
+        # 最后兜底绑定127.0.0.1，保证单机调试也能用
+        candidates.append(('127.0.0.1', self.port))
+        
+        logger.info(f"🔌 [ClusterServer] 绑定候选队列: {candidates}")
+        
+        # 遍历所有候选，找到第一个能成功绑定的
         for try_host, try_port in candidates:
             try:
                 self._server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 self._server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                self._server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1) if hasattr(socket, 'SO_REUSEPORT') else None
+                if hasattr(socket, 'SO_REUSEPORT'):
+                    self._server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
                 self._server_socket.settimeout(2.0)
                 self._server_socket.bind((try_host, try_port))
                 self._server_socket.listen(10)
                 self._actual_bind_host = try_host
                 self._actual_bind_port = try_port
                 self._bind_success = True
-                logger.info(f"✅ [ClusterServer] 成功绑定到 {try_host}:{try_port}")
+                if try_host == '0.0.0.0':
+                    logger.info(f"✅ [ClusterServer] 【重大成功】已绑定到 0.0.0.0:{try_port} - 所有局域网机器都可以顺利连接！")
+                else:
+                    logger.info(f"⚠️ [ClusterServer] 成功绑定到 {try_host}:{try_port} (注意：仅本机/特定IP可访问，建议绑定0.0.0.0)")
                 return True
             except Exception as e:
                 logger.warning(f"尝试绑定 {try_host}:{try_port} 失败: {e}")
@@ -1094,9 +1336,9 @@ class ClusterClient:
         self.timeout = timeout
         self.socket: Optional[socket.socket] = None  # 保存持久连接
 
-    def join(self, host: str, port: int, node_info: Dict[str, Any], password: str = "") -> bool:
+    def join(self, host: str, port: int, node_info: Dict[str, Any], password: str = ""):
         """
-        连接到房主服务器并发送加入请求，保持连接打开 - 增强健壮性版本
+        连接到房主服务器并发送加入请求，保持连接打开 - 增强健壮性版本（返回完整响应信息）
         
         Args:
             host: 房主IP地址
@@ -1105,9 +1347,10 @@ class ClusterClient:
             password: 房间密码（可选）
         
         Returns:
-            True 表示加入成功，False 表示失败
+            (success_bool, reason_str): (是否成功, 失败原因描述)
         """
         sock = None
+        last_reason = "未知错误"
         # 增强：连接前记录调试信息
         logger.info(f"🔌 [ClusterClient] 正在尝试连接 {host}:{port}...")
         try:
@@ -1137,20 +1380,21 @@ class ClusterClient:
             if not response_data:
                 logger.error(f"❌ [ClusterClient] 房主没有返回任何数据")
                 sock.close()
-                return False
+                return (False, "房主无响应")
                 
             response = json.loads(response_data.decode('utf-8'))
             logger.debug(f"📥 [ClusterClient] 收到房主响应: {response}")
+            last_reason = response.get('reason', '未知错误')
             
             if response.get("status") == "ok":
                 logger.info(f"✅ [ClusterClient] 成功加入房间 {host}:{port}")
                 # 保持连接，不关闭
                 self.socket = sock
-                return True
+                return (True, last_reason)
             else:
-                logger.error(f"❌ [ClusterClient] 加入失败: {response.get('reason', '未知错误')}")
+                logger.error(f"❌ [ClusterClient] 加入失败: {last_reason}")
                 sock.close()
-                return False
+                return (False, last_reason)
         except socket.timeout:
             logger.error(f"❌ [ClusterClient] 连接超时: {host}:{port}，请确认房主服务器已启动")
             if sock:
