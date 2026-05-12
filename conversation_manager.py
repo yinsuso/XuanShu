@@ -12,6 +12,11 @@ CONVERSATIONS_DIR = os.path.join(PROJECT_ROOT, "data", "conversations")
 os.makedirs(CONVERSATIONS_DIR, exist_ok=True)
 
 
+class ConversationType(Enum):
+    STANDALONE = "standalone"
+    COLLABORATION = "collaboration"
+
+
 class MessageRole(Enum):
     USER = "user"
     ASSISTANT = "assistant"
@@ -55,6 +60,7 @@ class Conversation:
     created_at: datetime
     updated_at: datetime
     metadata: Dict[str, Any] = None
+    conversation_type: ConversationType = ConversationType.STANDALONE
 
     def __post_init__(self):
         if self.metadata is None:
@@ -78,7 +84,8 @@ class Conversation:
             "created_at": self.created_at.isoformat(),
             "updated_at": self.updated_at.isoformat(),
             "messages": [m.to_dict() for m in self.messages],
-            "metadata": self.metadata
+            "metadata": self.metadata,
+            "conversation_type": self.conversation_type.value
         }
 
     def save(self):
@@ -98,13 +105,15 @@ class Conversation:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'Conversation':
+        conv_type = ConversationType(data.get("conversation_type", ConversationType.STANDALONE.value))
         return cls(
             conversation_id=data["conversation_id"],
             title=data["title"],
             messages=[Message.from_dict(m) for m in data["messages"]],
             created_at=datetime.fromisoformat(data["created_at"]),
             updated_at=datetime.fromisoformat(data["updated_at"]),
-            metadata=data.get("metadata", {})
+            metadata=data.get("metadata", {}),
+            conversation_type=conv_type
         )
 
     def get_history(self, limit: int = 20) -> List[Message]:
@@ -166,23 +175,46 @@ class ConversationManager:
     def __init__(self, conversation_id: Optional[str] = None):
         self.current_conversation: Optional[Conversation] = None
         self.conversations: Dict[str, Conversation] = {}
+        self._standalone_current_id: Optional[str] = None
+        self._collab_current_id: Optional[str] = None
         if conversation_id:
             self.load_conversation(conversation_id)
         else:
             self.new_conversation()
 
-    def new_conversation(self, initial_title: str = "新对话") -> str:
+    def new_conversation(self, initial_title: str = "新对话", conversation_type: ConversationType = ConversationType.STANDALONE) -> str:
         conversation_id = str(uuid.uuid4())
         self.current_conversation = Conversation(
             conversation_id=conversation_id,
             title=initial_title,
             messages=[],
             created_at=datetime.now(),
-            updated_at=datetime.now()
+            updated_at=datetime.now(),
+            conversation_type=conversation_type
         )
         self.conversations[conversation_id] = self.current_conversation
-        logger.info(f"创建新对话: {conversation_id}")
+        
+        if conversation_type == ConversationType.STANDALONE:
+            self._standalone_current_id = conversation_id
+            logger.info(f"创建单机模式新对话: {conversation_id}")
+        else:
+            self._collab_current_id = conversation_id
+            logger.info(f"创建协作模式新对话: {conversation_id}")
+        
         return conversation_id
+
+    def switch_mode(self, conversation_type: ConversationType):
+        """切换到指定模式的对话，两套对话完全隔离"""
+        if conversation_type == ConversationType.STANDALONE:
+            if self._standalone_current_id and self.load_conversation(self._standalone_current_id):
+                logger.info(f"切换到单机模式对话: {self._standalone_current_id[:8]}...")
+            else:
+                self.new_conversation(initial_title="单机对话", conversation_type=ConversationType.STANDALONE)
+        else:
+            if self._collab_current_id and self.load_conversation(self._collab_current_id):
+                logger.info(f"切换到协作模式对话: {self._collab_current_id[:8]}...")
+            else:
+                self.new_conversation(initial_title="协作对话", conversation_type=ConversationType.COLLABORATION)
 
     def load_conversation(self, conversation_id: str) -> bool:
         filepath = os.path.join(CONVERSATIONS_DIR, f"{conversation_id}.json")
@@ -297,7 +329,7 @@ class ConversationManager:
             return self.current_conversation.get_history_as_text(limit)
         return ""
 
-    def list_conversations(self, limit: int = 20) -> List[Dict[str, Any]]:
+    def list_conversations(self, limit: int = 20, conversation_type: Optional[ConversationType] = None) -> List[Dict[str, Any]]:
         files = sorted(
             [f for f in os.listdir(CONVERSATIONS_DIR) if f.endswith('.json')],
             key=lambda x: os.path.getmtime(os.path.join(CONVERSATIONS_DIR, x)),
@@ -309,11 +341,18 @@ class ConversationManager:
             try:
                 with open(filepath, 'r', encoding='utf-8') as fp:
                     data = json.load(fp)
+                    conv_type_str = data.get("conversation_type", ConversationType.STANDALONE.value)
+                    
+                    if conversation_type:
+                        if conv_type_str != conversation_type.value:
+                            continue
+                    
                     result.append({
                         "conversation_id": data["conversation_id"],
                         "title": data["title"],
                         "updated_at": data["updated_at"],
-                        "message_count": len(data.get("messages", []))
+                        "message_count": len(data.get("messages", [])),
+                        "conversation_type": conv_type_str
                     })
             except:
                 pass
@@ -367,6 +406,15 @@ def get_global_conversation_manager() -> ConversationManager:
     global _global_conversation_manager
     if _global_conversation_manager is None:
         _global_conversation_manager = ConversationManager()
+        
+        standalone_list = _global_conversation_manager.list_conversations(limit=1, conversation_type=ConversationType.STANDALONE)
+        collab_list = _global_conversation_manager.list_conversations(limit=1, conversation_type=ConversationType.COLLABORATION)
+        
+        if standalone_list:
+            _global_conversation_manager._standalone_current_id = standalone_list[0]["conversation_id"]
+        if collab_list:
+            _global_conversation_manager._collab_current_id = collab_list[0]["conversation_id"]
+        
         _global_conversation_manager.try_load_last_conversation()
     return _global_conversation_manager
 

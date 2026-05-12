@@ -1,5 +1,6 @@
 import os
 import json
+import time
 import requests
 from typing import Dict, Any, List, Optional
 from dataclasses import dataclass, asdict
@@ -194,21 +195,41 @@ class ModelConfigManager:
         ]
 
 
-def call_model(config: ModelConfig, prompt: str, system_prompt: str = "", temperature: float = 0.7) -> str:
-    if config.provider == ProviderType.OLLAMA:
-        return _call_ollama(config, prompt, system_prompt, temperature)
-    else:
-        return _call_openai_compatible(config, prompt, system_prompt, temperature)
+def call_model(config: ModelConfig, prompt: str, system_prompt: str = "", temperature: float = 0.7, max_retries: int = 3) -> str:
+    last_exception = None
+    for attempt in range(max_retries):
+        try:
+            logger.info(f"模型调用尝试 {attempt + 1}/{max_retries}")
+            if config.provider == ProviderType.OLLAMA:
+                result = _call_ollama(config, prompt, system_prompt, temperature)
+            else:
+                result = _call_openai_compatible(config, prompt, system_prompt, temperature)
+            
+            if not result or not result.strip():
+                logger.warning(f"模型返回空内容，第 {attempt + 1} 次尝试")
+                if attempt < max_retries - 1:
+                    time.sleep(1)
+                    continue
+                raise Exception("模型连续多次返回空内容")
+            
+            logger.info(f"模型调用成功（第 {attempt + 1} 次尝试）")
+            return result
+            
+        except Exception as e:
+            last_exception = e
+            logger.warning(f"模型调用失败，第 {attempt + 1} 次尝试: {e}")
+            if attempt < max_retries - 1:
+                time.sleep(2)
+    
+    error_msg = f"模型调用失败，已尝试 {max_retries} 次，请重试。最后错误: {str(last_exception)}"
+    logger.error(error_msg)
+    raise Exception(error_msg) from last_exception
 
-async def call_model_async(config: ModelConfig, prompt: str, system_prompt: str = "", temperature: float = 0.7) -> str:
-    """异步版本的模型调用"""
+async def call_model_async(config: ModelConfig, prompt: str, system_prompt: str = "", temperature: float = 0.7, max_retries: int = 3) -> str:
+    """异步版本的模型调用 - 带完整重试机制"""
     import asyncio
-    if config.provider == ProviderType.OLLAMA:
-        loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(None, _call_ollama, config, prompt, system_prompt, temperature)
-    else:
-        loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(None, _call_openai_compatible, config, prompt, system_prompt, temperature)
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, call_model, config, prompt, system_prompt, temperature, max_retries)
 
 
 def _call_ollama(config: ModelConfig, prompt: str, system_prompt: str, temperature: float) -> str:

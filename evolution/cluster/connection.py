@@ -1080,11 +1080,17 @@ class ClusterManager:
             return True
             
         try:
-            from conversation_manager import get_global_conversation_manager
+            from conversation_manager import get_global_conversation_manager, ConversationType
             conv_mgr = get_global_conversation_manager()
             
             # 创建协作模式专用的新对话，标题明确标记为协作对话
-            new_conv_id = conv_mgr.new_conversation(initial_title=f"🤝 {self.room_name} - 协作对话")
+            new_conv_id = conv_mgr.new_conversation(
+                initial_title=f"🤝 {self.room_name} - 协作对话",
+                conversation_type=ConversationType.COLLABORATION
+            )
+            # 更新协作模式当前对话ID
+            conv_mgr._collab_current_id = new_conv_id
+            
             self.collab_conversation_id = new_conv_id
             self._collab_initialized = True
             self.collab_messages = []

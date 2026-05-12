@@ -221,7 +221,7 @@ _APP_VERSION = _get_app_version()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """FastAPI 生命周期管理器：推拉混合架构完整版"""
+    """FastAPI 生命周期管理器：推拉混合架构完整版 + 异步对话系统"""
     print("🚀 玄枢 Web 服务启动中...")
     try:
         # ===== 修复：启动时绝对不清空持久化状态！ =====
@@ -237,7 +237,13 @@ async def lifespan(app: FastAPI):
     # ===== 推拉混合架构：启动Worker端轻量级兜底轮询线程 =====
     start_worker_polling()
     
+    # ===== 核心增强：启动异步对话后台工作线程 =====
+    start_async_chat_worker()
+    
     yield
+    
+    # ===== 关闭时：停止异步对话后台工作线程 =====
+    stop_async_chat_worker()
     
     # ===== 关闭时：停止Worker端兜底轮询线程 =====
     stop_worker_polling()
@@ -1266,7 +1272,12 @@ async def api_collab_export():
         
         if not success_load or not conv_manager.current_conversation:
             # 对话不存在，重新创建一个新的协作对话
-            new_conv_id = conv_manager.new_conversation(initial_title=f"🤝 {manager.room_name or '协作房间'} - 协作对话")
+            from conversation_manager import ConversationType
+            new_conv_id = conv_manager.new_conversation(
+                initial_title=f"🤝 {manager.room_name or '协作房间'} - 协作对话",
+                conversation_type=ConversationType.COLLABORATION
+            )
+            conv_manager._collab_current_id = new_conv_id
             manager.collab_conversation_id = new_conv_id
             manager._collab_initialized = True
             
@@ -1357,7 +1368,12 @@ async def api_collab_export_json():
         
         if not success_load or not conv_manager.current_conversation:
             # 对话不存在，重新创建一个新的协作对话
-            new_conv_id = conv_manager.new_conversation(initial_title=f"🤝 {manager.room_name or '协作房间'} - 协作对话")
+            from conversation_manager import ConversationType
+            new_conv_id = conv_manager.new_conversation(
+                initial_title=f"🤝 {manager.room_name or '协作房间'} - 协作对话",
+                conversation_type=ConversationType.COLLABORATION
+            )
+            conv_manager._collab_current_id = new_conv_id
             manager.collab_conversation_id = new_conv_id
             manager._collab_initialized = True
             
@@ -2066,13 +2082,18 @@ async def delete_model(request: Request):
 
 @app.get("/api/ollama_models")
 async def list_ollama_models():
-    """获取Ollama中已下载的模型列表 - 静默失败模式，无警告"""
+    """获取Ollama中已下载的模型列表 - 异步非阻塞版，绝不卡主事件循环"""
     import requests
     ollama_url = "http://localhost:11434/api/tags"
     try:
-        response = requests.get(ollama_url, timeout=3)
-        response.raise_for_status()
-        data = response.json()
+        import asyncio
+        loop = asyncio.get_event_loop()
+        # 把耗时的同步网络IO扔到线程池后台，绝不阻塞主事件循环
+        def _do_request():
+            response = requests.get(ollama_url, timeout=3)
+            response.raise_for_status()
+            return response.json()
+        data = await loop.run_in_executor(None, _do_request)
         models = [{"name": m["name"], "model": m["name"], "modified_at": m.get("modified_at"), "size": m.get("size")} for m in data.get("models", [])]
         return {"success": True, "models": models}
     except Exception:
@@ -2130,12 +2151,30 @@ async def list_all_models():
 
 # ==================== API：对话历史管理 ====================
 @app.get("/api/conversations")
-async def list_conversations(limit: int = 20):
-    """列出对话历史"""
+async def list_conversations(limit: int = 20, conversation_type: Optional[str] = None):
+    """列出对话历史，支持按模式过滤"""
     try:
-        convs = conv_manager.list_conversations(limit=limit)
+        from conversation_manager import ConversationType
+        filter_type = None
+        if conversation_type:
+            filter_type = ConversationType(conversation_type)
+        convs = conv_manager.list_conversations(limit=limit, conversation_type=filter_type)
         return {"success": True, "conversations": convs}
     except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@app.post("/api/conversations/switch-mode")
+async def switch_conversation_mode_api(request: Request):
+    """切换对话模式（单机模式/协作模式），两套对话完全隔离"""
+    try:
+        data = await request.json()
+        mode = data.get("mode")  # "standalone" 或 "collaboration"
+        from conversation_manager import ConversationType
+        conv_type = ConversationType(mode)
+        conv_manager.switch_mode(conv_type)
+        return {"success": True, "message": f"已切换到{mode}模式对话"}
+    except Exception as e:
+        logger.error(f"切换对话模式失败: {e}", exc_info=True)
         return {"success": False, "error": str(e)}
 
 @app.get("/api/conversation/{conversation_id}")
@@ -2242,8 +2281,10 @@ async def get_token_stats():
 
 @app.get("/api/skills")
 async def api_skills():
-    """获取已加载的技能列表"""
-    try:
+    """获取已加载的技能列表 - 全异步非阻塞版"""
+    import asyncio
+    loop = asyncio.get_event_loop()
+    def _fetch_skills():
         agent = get_agent()
         skills = []
         if hasattr(agent, 'skills_registry') and agent.skills_registry:
@@ -2252,15 +2293,224 @@ async def api_skills():
                     desc = func.__doc__ or ""
                     skills.append({"name": name, "description": desc.strip()})
             else:
-                # 回退：使用 get_openai_schemas
                 schemas = agent.skills_registry.get_openai_schemas()
                 for s in schemas:
                     skills.append({
                         "name": s["function"]["name"],
                         "description": s["function"]["description"]
                     })
-        return {"success": True, "skills": skills}
+        return skills
+    skills = await loop.run_in_executor(None, _fetch_skills)
+    return {"success": True, "skills": skills}
+
+# ==================== 异步对话任务管理系统 ====================
+import queue
+from dataclasses import dataclass, field
+from typing import Dict, Any, Optional
+from enum import Enum
+
+class AsyncTaskStatus(str, Enum):
+    PENDING = "pending"
+    PROCESSING = "processing"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+@dataclass
+class AsyncChatTask:
+    task_id: str
+    message: str
+    conversation_id: Optional[str]
+    status: AsyncTaskStatus = AsyncTaskStatus.PENDING
+    result: Optional[str] = None
+    error: Optional[str] = None
+    created_at: float = field(default_factory=time.time)
+    started_at: Optional[float] = None
+    completed_at: Optional[float] = None
+
+# 全局异步任务状态存储与任务队列
+_async_chat_tasks: Dict[str, AsyncChatTask] = {}
+_async_chat_task_queue: queue.Queue = queue.Queue()
+_async_chat_worker_running: bool = False
+_async_chat_worker_thread: Optional[threading.Thread] = None
+_async_chat_lock = threading.Lock()
+
+def _async_chat_worker_loop():
+    """
+    后台异步对话任务处理循环 - 核心：在模型思考时，所有其他API完全可用
+    不会阻塞 FastAPI 的事件循环
+    """
+    global _async_chat_worker_running
+    logger.info("🚀 [异步对话系统] 后台任务工作线程已启动")
+    
+    while _async_chat_worker_running:
+        try:
+            # 从队列中获取任务，带超时避免无限阻塞
+            try:
+                task = _async_chat_task_queue.get(timeout=1.0)
+            except queue.Empty:
+                continue
+            
+            logger.info(f"⚡ [异步对话任务] 开始处理任务: {task.task_id}")
+            
+            # 更新任务状态为处理中
+            with _async_chat_lock:
+                task.status = AsyncTaskStatus.PROCESSING
+                task.started_at = time.time()
+            
+            # 实际调用Agent进行处理
+            try:
+                agent = get_agent()
+                final_response = agent.process_adaptive(task.message)
+                with _async_chat_lock:
+                    task.status = AsyncTaskStatus.COMPLETED
+                    task.result = final_response
+                    task.completed_at = time.time()
+                logger.info(f"✅ [异步对话任务] 任务 {task.task_id} 完成，响应长度: {len(final_response)}")
+            except Exception as e:
+                with _async_chat_lock:
+                    task.status = AsyncTaskStatus.FAILED
+                    task.error = str(e)
+                    task.completed_at = time.time()
+                logger.error(f"❌ [异步对话任务] 任务 {task.task_id} 失败: {e}", exc_info=True)
+            
+            # 标记任务完成
+            _async_chat_task_queue.task_done()
+            
+            # 通过WebSocket向所有浏览器广播任务完成事件
+            try:
+                from evolution.cluster.cluster_api import broadcast_to_all_clients
+                import asyncio
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    asyncio.create_task(broadcast_to_all_clients({
+                        "type": "async_chat_task_updated",
+                        "task_id": task.task_id,
+                        "status": task.status,
+                        "timestamp": time.time()
+                    }))
+            except Exception:
+                pass  # WebSocket广播失败不影响任务本身
+            
+        except Exception as loop_err:
+            logger.error(f"[异步对话系统] 工作循环异常: {loop_err}", exc_info=True)
+            time.sleep(0.5)
+    
+    logger.info("🛑 [异步对话系统] 后台任务工作线程已停止")
+
+def start_async_chat_worker():
+    """启动异步对话后台工作线程"""
+    global _async_chat_worker_running, _async_chat_worker_thread
+    if _async_chat_worker_thread and _async_chat_worker_thread.is_alive():
+        logger.warning("[异步对话系统] 工作线程已在运行，跳过重复启动")
+        return
+    _async_chat_worker_running = True
+    _async_chat_worker_thread = threading.Thread(target=_async_chat_worker_loop, daemon=True)
+    _async_chat_worker_thread.start()
+
+def stop_async_chat_worker():
+    """停止异步对话后台工作线程"""
+    global _async_chat_worker_running
+    _async_chat_worker_running = False
+
+@app.post("/api/chat/async-submit")
+async def api_chat_async_submit(request: Request):
+    """
+    异步对话提交 - 立即返回任务ID，完全不阻塞
+    单机对话模式下，发送信息后模型没有回复时所有其他功能依然可用！
+    """
+    try:
+        data = await request.json()
+        message = data.get('message', '').strip()
+        conversation_id = data.get('conversation_id')
+        if not message:
+            raise HTTPException(status_code=400, detail="消息不能为空")
+        
+        # 1. 确保对话管理器状态完整，先立即记录用户消息
+        if conversation_id:
+            conv_manager.load_conversation_or_create(conversation_id)
+        if not conv_manager.current_conversation:
+            conv_manager.new_conversation()
+        conv_manager.add_user_message(message)
+        conv_manager.save_current()
+        
+        # 2. 生成唯一任务ID并创建任务对象
+        task_id = str(uuid.uuid4())
+        task = AsyncChatTask(
+            task_id=task_id,
+            message=message,
+            conversation_id=conv_manager.current_conversation.conversation_id
+        )
+        
+        # 3. 保存任务到状态存储，并放入队列
+        with _async_chat_lock:
+            _async_chat_tasks[task_id] = task
+        _async_chat_task_queue.put(task)
+        
+        logger.info(f"📤 [异步对话提交] 新任务已提交，task_id={task_id}，当前队列大小={_async_chat_task_queue.qsize()}")
+        
+        # 4. 立即返回响应，不等待模型处理！
+        return {
+            "success": True,
+            "task_id": task_id,
+            "conversation_id": conv_manager.current_conversation.conversation_id,
+            "status": "pending",
+            "message": "任务已提交，正在后台处理，您可以继续使用其他功能！"
+        }
     except Exception as e:
+        logger.error(f"API async chat submit error: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
+
+@app.get("/api/chat/task/{task_id}")
+async def api_chat_get_task_status(task_id: str):
+    """查询异步对话任务状态 - 前端轮询此接口获取结果"""
+    try:
+        with _async_chat_lock:
+            task = _async_chat_tasks.get(task_id)
+        if not task:
+            raise HTTPException(status_code=404, detail="任务不存在")
+        
+        return {
+            "success": True,
+            "task_id": task.task_id,
+            "status": task.status,
+            "result": task.result,
+            "error": task.error,
+            "conversation_id": task.conversation_id,
+            "created_at": task.created_at,
+            "started_at": task.started_at,
+            "completed_at": task.completed_at
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"API get task status error: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
+
+@app.get("/api/chat/tasks")
+async def api_chat_list_tasks(limit: int = 20):
+    """列出最近的异步对话任务"""
+    try:
+        with _async_chat_lock:
+            sorted_tasks = sorted(
+                _async_chat_tasks.values(),
+                key=lambda t: t.created_at,
+                reverse=True
+            )[:limit]
+        return {
+            "success": True,
+            "total": len(sorted_tasks),
+            "tasks": [
+                {
+                    "task_id": t.task_id,
+                    "status": t.status,
+                    "message_preview": t.message[:50] + "..." if len(t.message) > 50 else t.message,
+                    "created_at": t.created_at
+                }
+                for t in sorted_tasks
+            ]
+        }
+    except Exception as e:
+        logger.error(f"API list tasks error: {e}", exc_info=True)
         return {"success": False, "error": str(e)}
 
 @app.post("/api/chat")
@@ -2306,8 +2556,10 @@ async def api_chat(request: Request):
 
 @app.get("/api/memory")
 async def api_memory():
-    """获取核心记忆列表"""
-    try:
+    """获取核心记忆列表 - 全异步非阻塞版"""
+    import asyncio
+    loop = asyncio.get_event_loop()
+    def _fetch_memories():
         agent = get_agent()
         memories = []
         if hasattr(agent, 'memory'):
@@ -2320,9 +2572,9 @@ async def api_memory():
                 if isinstance(raw, dict):
                     for key, value in raw.items():
                         memories.append({"key": key, "value": value})
-        return {"success": True, "memories": memories}
-    except Exception as e:
-        return {"success": False, "error": str(e)}
+        return memories
+    memories = await loop.run_in_executor(None, _fetch_memories)
+    return {"success": True, "memories": memories}
 
 @app.get("/api/token-stats")
 async def api_token_stats():

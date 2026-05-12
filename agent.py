@@ -101,7 +101,7 @@ class UniversalAgent:
         except Exception as e:
             logger.error(f"加载技能失败：{e}")
 
-    def _build_system_prompt(self, query: str = "", is_collab_mode: bool = False) -> str:
+    def _build_system_prompt(self, query: str = "", is_collab_mode: bool = False, collab_context: Dict[str, Any] = None) -> str:
         skill_schemas = registry.get_openai_schemas()
         skills_info = [f"📌 {s['function']['name']}: {s['function']['description']}" for s in skill_schemas]
 
@@ -118,23 +118,38 @@ class UniversalAgent:
         # 1. 角色定义（使用 XML 标签增强模型识别）
         system_prompt += "<system_prompt>\n"
         system_prompt += "<identity>\n"
-        system_prompt += "你是玄枢智能助手，一个具备深度思考、工具使用和自主进化能力的AI助手。\n"
-        system_prompt += "你的目标是帮助用户完成各种任务，从简单问答到复杂的代码编写和数据分析。\n"
+        
+        # --- 单机模式 vs 协作模式 完全不同的提示词分支 ---
+        if not is_collab_mode:
+            system_prompt += "你是玄枢智能助手，一个单纯的单机Agent助手。\n"
+            system_prompt += "你完全独立运行，没有其他助手可以帮你干活。\n"
+            system_prompt += "所有任务必须由你自己直接完成。\n"
+            system_prompt += "你的目标是帮助用户完成各种任务，从简单问答到复杂的代码编写和数据分析。\n"
+        else:
+            system_prompt += "⚠️ 你现在是玄枢协作房间的房主！你是一位优秀的团队领导者和任务调度大师！\n"
+            system_prompt += "你手下管理着多台Worker Agent，每一台都有自己的大模型和技能集。\n"
+            system_prompt += "你的职责不是自己亲自干所有活！你的工作是：\n"
+            system_prompt += "  1. 把用户的大任务合理拆解成多个子任务\n"
+            system_prompt += "  2. 查看当前房间里有哪些空闲的Agent成员\n"
+            system_prompt += "  3. 给最合适的成员分配最适合他能力的任务\n"
+            system_prompt += "  4. 等待所有成员执行完任务，收集全部结果汇总成完整报告给用户\n"
+            system_prompt += "你不是孤胆英雄，你是高效分布式团队的CEO！\n"
+        
         system_prompt += "</identity>\n\n"
         
-        # --- 协作模式专属提示词 ---
-        if is_collab_mode:
-            system_prompt += "<collaboration_mode>\n"
-            system_prompt += "⚠️ 当前处于玄枢局域网多Agent协作房间模式！\n"
-            system_prompt += "你是房主节点，拥有完整的任务调度权，房间内当前有多个Worker节点等待分配任务。\n"
-            system_prompt += "协作模式核心原则：\n"
-            system_prompt += "1. 不要大包大揽所有工作，学会利用分布式算力将复杂任务拆解\n"
-            system_prompt += "2. 遇到需要多台机器并行处理的任务，优先考虑将子任务分配给局域网内空闲的Worker节点执行\n"
-            system_prompt += "3. 时刻关注房间内成员状态，随时准备根据各节点能力分进行智能任务调度\n"
-            system_prompt += "4. 保持和所有协作成员的高效沟通，不要让任何节点长时间处于空闲等待状态\n"
-            system_prompt += "5. 任务完成后及时汇总各节点执行结果，向用户输出完整报告\n"
-            system_prompt += "你现在是分布式团队的管理者，不是单打独斗的孤胆英雄！\n"
-            system_prompt += "</collaboration_mode>\n\n"
+        # --- 协作模式专属：注入实时的成员环境信息 ---
+        if is_collab_mode and collab_context:
+            import json
+            system_prompt += "<collaboration_context>\n"
+            system_prompt += "【当前房间所有成员实时状态】\n"
+            if 'members' in collab_context:
+                system_prompt += json.dumps(collab_context['members'], ensure_ascii=False, indent=2)
+            system_prompt += "\n\n【协作任务分配工具说明】\n"
+            system_prompt += "你现在可以直接利用团队能力！分配任务给成员的方式是：\n"
+            system_prompt += "当你需要某个Agent干活时，通过房主的调度系统把任务发给他即可。\n"
+            system_prompt += "分配时请指定任务类型和详细描述，空闲的成员就会立即开始执行。\n"
+            system_prompt += "优先选择当前状态显示为 空闲🟢 的Agent，不要给忙碌🔴 的Agent派活！\n"
+            system_prompt += "</collaboration_context>\n\n"
         
         # 2. 核心指令（结构化）
         system_prompt += "<instructions>\n"
@@ -324,6 +339,22 @@ class UniversalAgent:
                 logger.error(f"进化循环触发失败: {e}")
 
         return final_response
+
+    async def process_adaptive_async(self, user_input: str) -> str:
+        """
+        异步版本的自适应处理 - 不阻塞事件循环，让其他功能在模型思考时也可用
+        """
+        import asyncio
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, self.process_adaptive, user_input)
+
+    async def _process_simple_async(self, user_input: str) -> str:
+        """
+        异步版本的简单对话处理
+        """
+        import asyncio
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, self._process_simple, user_input)
 
     def _process_simple(self, user_input: str) -> str:
         conversation_history = self.conversation_manager.get_history_text(limit=10)
