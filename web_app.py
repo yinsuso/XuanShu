@@ -14,7 +14,7 @@ from datetime import datetime
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from config import WEB_APP_URL,  APPROVAL_API_TOKEN,  APPROVAL_DB_PATH,  PROJECT_ROOT, CAPABILITY_MODEL_RANKINGS, SCHEDULER_STRATEGY, MANAGER_MONITOR_INTERVAL, CLUSTER_MANAGER_HOST, CLUSTER_MANAGER_PORT
+from config import WEB_APP_URL,  APPROVAL_API_TOKEN,  APPROVAL_DB_PATH,  PROJECT_ROOT, CAPABILITY_MODEL_RANKINGS, SCHEDULER_STRATEGY, MANAGER_MONITOR_INTERVAL, CLUSTER_MANAGER_HOST, CLUSTER_MANAGER_PORT, CLUSTER_WORKER_STATE_PATH
 from logger import logger
 from evolution.cluster.capability import CapabilityAssessor
 from evolution.cluster.scheduler import TaskScheduler
@@ -36,6 +36,47 @@ from conversation_manager import get_global_conversation_manager
 
 # 全局对话管理器实例（用于 API 处理）
 conv_manager = get_global_conversation_manager()
+
+# ==================== Worker 房间状态持久化管理 ====================
+def _ensure_data_dir_exists():
+    """确保 data 目录存在"""
+    data_dir = os.path.dirname(CLUSTER_WORKER_STATE_PATH)
+    if not os.path.exists(data_dir):
+        os.makedirs(data_dir, exist_ok=True)
+
+def save_worker_state(state: dict):
+    """保存 Worker 房间连接状态到本地 JSON 文件"""
+    try:
+        _ensure_data_dir_exists()
+        with open(CLUSTER_WORKER_STATE_PATH, 'w', encoding='utf-8') as f:
+            json.dump(state, f, ensure_ascii=False, indent=2)
+        logger.info(f"💾 [Worker持久化] 状态已保存到: {CLUSTER_WORKER_STATE_PATH}")
+        return True
+    except Exception as e:
+        logger.error(f"❌ [Worker持久化] 保存失败: {e}")
+        return False
+
+def load_worker_state() -> dict:
+    """从本地 JSON 文件加载 Worker 之前保存的房间连接状态"""
+    try:
+        if os.path.exists(CLUSTER_WORKER_STATE_PATH):
+            with open(CLUSTER_WORKER_STATE_PATH, 'r', encoding='utf-8') as f:
+                state = json.load(f)
+            logger.info(f"📂 [Worker持久化] 已从本地加载历史状态")
+            return state
+        return {}
+    except Exception as e:
+        logger.warning(f"⚠️ [Worker持久化] 加载失败: {e}")
+        return {}
+
+def clear_worker_state():
+    """清除 Worker 状态（退出房间时调用）"""
+    try:
+        if os.path.exists(CLUSTER_WORKER_STATE_PATH):
+            os.remove(CLUSTER_WORKER_STATE_PATH)
+            logger.info("🗑️ [Worker持久化] 房间连接状态已清除")
+    except Exception as e:
+        logger.warning(f"⚠️ [Worker持久化] 清除失败: {e}")
 
 # 全局 UniversalAgent 实例（懒加载）
 _agent = None
@@ -312,6 +353,10 @@ async def get_info():
     if config_manager and config_manager.current_config:
         current_model = config_manager.current_config
         current_model_name = current_model.model_name
+    
+    # 加载本地持久化状态
+    saved_state = load_worker_state()
+    
     if not CLUSTER_ENABLED:
         return {
             "role": "standalone", 
@@ -320,6 +365,7 @@ async def get_info():
         }
     role = CLUSTER_ROLE
     node = getattr(app.state, "cluster_node", None)
+    
     if role == "manager":
         manager = getattr(app.state, "cluster_manager", None)
         if manager:
@@ -332,11 +378,48 @@ async def get_info():
         else:
             return {"role": "manager", "room": None, "current_model_name": current_model_name}
     else:  # worker
+        # 核心修复：即使TCP连接断开，只要持久化状态表明已加入房间，就显示协作模式
+        is_connected = False
+        if node:
+            is_connected = node.connection is not None
+            # 从持久化状态补充信息
+            if not saved_state.get("in_room", False):
+                if hasattr(node, 'in_collab_mode') and node.in_collab_mode:
+                    pass  # 内存已标记
+                else:
+                    node.in_collab_mode = False
+            else:
+                # 持久化状态有值，直接标记
+                node.in_collab_mode = True
+        else:
+            # 没有node对象时也根据持久化状态判断
+            pass
+        
+        # 关键判断：如果持久化状态表明已加入房间，则视为connected，确保前端协作模式显示
+        if saved_state.get("in_room", False):
+            return {
+                "role": "worker",
+                "node_id": saved_state.get("node_id", "") or (node.node_id if node else ""),
+                "connected": True,  # 持久化有值，强制标记为已连接
+                "mode": saved_state.get("mode", "auto"),
+                "model": saved_state.get("model", "") or (node.model if node else ""),
+                "host": saved_state.get("host", ""),
+                "port": saved_state.get("port", 30001),
+                "room_name": saved_state.get("room_name", ""),
+                "room_id": saved_state.get("room_id", ""),
+                "owner_name": saved_state.get("owner_name", ""),
+                "owner_model": saved_state.get("owner_model", ""),
+                "members_detail": saved_state.get("members_detail", []),
+                "room_ready": True,
+                "current_model_name": current_model_name
+            }
+        
+        # 正常无持久化状态时返回原有逻辑
         if node:
             return {
                 "role": "worker",
                 "node_id": node.node_id,
-                "connected": node.connection is not None,
+                "connected": is_connected,
                 "mode": node.mode,
                 "model": node.model,
                 "current_model_name": current_model_name
@@ -427,16 +510,39 @@ async def get_current_room(request: Request):
     """获取当前房间信息（Manager / Worker / standalone 都可查看）"""
     # 取消严格的角色限制，Worker节点也可以查看房间详情
 
-    # 懒加载集群组件
-    await ensure_cluster_initialized()
-    manager = getattr(app.state, "cluster_manager", None)
+    # 【核心修复】Worker节点优先使用本地持久化的房间信息，不要依赖空的Manager！
+    saved_state = load_worker_state()
+    is_in_collab_mode = saved_state.get("in_room", False)
+    
+    if is_in_collab_mode:
+        logger.info(f"📤 [Worker房间信息API] 从本地持久化读取协作房间信息")
+        info = {
+            "room_id": saved_state.get("room_id", ""),
+            "room_name": saved_state.get("room_name", "协作房间"),
+            "owner_name": saved_state.get("owner_name", "房主"),
+            "owner_model": saved_state.get("owner_model", "unknown"),
+            "members": saved_state.get("members_detail", []),
+            "members_detail": saved_state.get("members_detail", []),
+            "has_password": False,
+            "total_members": len(saved_state.get("members_detail", [])),
+            "room_ready": True,
+            "is_collab_mode": True,
+            "my_node_id": saved_state.get("node_id", ""),
+            "my_name": saved_state.get("name", ""),
+            "my_model": saved_state.get("model", "")
+        }
+    else:
+        # 不是协作模式，走 Manager 的正常逻辑
+        await ensure_cluster_initialized()
+        manager = getattr(app.state, "cluster_manager", None)
 
-    if not manager:
-        return {"success": False, "error": "房间管理器未初始化"}
+        if not manager:
+            return {"success": False, "error": "房间管理器未初始化"}
 
-    info = manager.get_room_info()
-    info["members_detail"] = manager.get_member_info()
-    info["success"] = True  # 总是返回 success，即使房间是 Default-Room
+        info = manager.get_room_info()
+        info["members_detail"] = manager.get_member_info()
+        info["is_collab_mode"] = False
+        info["success"] = True  # 总是返回 success，即使房间是 Default-Room
     
     # 【问题1修复】从 model_config.json 中读取所有模型配置，返回给前端下拉框
     from model_providers import config_manager
@@ -635,7 +741,35 @@ async def join_room(request: Request):
             node.mode = mode
             # 在节点上标记已加入协作房间状态
             setattr(node, "in_collab_mode", True)
-            
+        
+        # ==================== 核心修复1：立即保存完整的 Worker 状态到本地文件 ====================
+        # 连接成功后，先把所有关键信息保存到持久化状态，防止在房主推送房间信息前闪退回加入房间页
+        try:
+            from model_providers import config_manager
+            current_model_name = ""
+            if config_manager and config_manager.current_config:
+                current_model_name = config_manager.current_config.model_name
+            saved_state = {
+                "in_room": True,
+                "node_id": node.node_id if node else "",
+                "name": name,
+                "mode": mode,
+                "model": model or current_model_name,
+                "host": host,
+                "port": port,
+                # 预填充初始值（后续房主会推送真实信息覆盖）
+                "room_name": "协作房间",
+                "room_id": "pending-fetch",
+                "owner_name": "房主",
+                "owner_model": "unknown",
+                "members_detail": [],
+                "saved_at": time.time()
+            }
+            save_worker_state(saved_state)
+        except Exception as e_save:
+            logger.warning(f"持久化状态保存警告: {e_save}")
+        # =============================================================================
+        
         def listener():
             while True:
                 try:
@@ -648,6 +782,23 @@ async def join_room(request: Request):
                     msg_type = msg.get("type")
                     
                     logger.info(f"📩 [Worker TCP] 从房主收到事件: {msg_type}")
+                    
+                    # 当收到房主推送的房间状态更新时，更新本地持久化状态
+                    if msg_type == "room_info_update":
+                        try:
+                            room_info = msg.get("room_info", {})
+                            updated_saved_state = load_worker_state()
+                            updated_saved_state.update({
+                                "room_name": room_info.get("room_name", ""),
+                                "room_id": room_info.get("room_id", ""),
+                                "owner_name": room_info.get("owner_name", ""),
+                                "owner_model": room_info.get("owner_model", ""),
+                                "members_detail": room_info.get("members_detail", []),
+                                "saved_at": time.time()
+                            })
+                            save_worker_state(updated_saved_state)
+                        except Exception as e_update:
+                            logger.warning(f"更新房间状态持久化失败: {e_update}")
                     
                     # 【关键功能】任何从房主通过TCP发来的事件，直接通过本地WebSocket转发给Worker的浏览器
                     try:
@@ -735,6 +886,9 @@ async def leave_room(request: Request):
         if not success:
             raise HTTPException(status_code=500, detail="集群未就绪，无法执行操作")
     node = getattr(app.state, "cluster_node", None)
+    
+    # 核心修复：无论如何都清除本地持久化状态
+    clear_worker_state()
     
     if node and node.connection:
         try:
@@ -876,30 +1030,97 @@ async def add_collab_message_api(request: Request):
     success = manager.add_collab_message(role, content, metadata)
     return {"success": success}
 
-# 导出协作对话专用版本
+# 导出协作对话专用版本 - 增强错误处理版
 @app.get("/api/rooms/collab/export")
 async def api_collab_export():
     """导出当前协作对话为 Markdown - 协作模式专用，直接导出本次协作内容"""
     await ensure_cluster_initialized()
     manager = getattr(app.state, "cluster_manager", None)
     
-    if not manager or not manager._collab_initialized:
-        raise HTTPException(status_code=404, detail="当前没有活跃的协作对话")
-    
-    # 确保 conv_mgr 加载的是协作对话
-    collab_conv_id = manager.collab_conversation_id
-    conv_manager.load_conversation(collab_conv_id)
-    
-    if not conv_manager.current_conversation:
-        raise HTTPException(status_code=404, detail="协作对话不存在")
-    
-    content = conv_manager.current_conversation.export_as_markdown()
-    
-    return Response(
-        content=content,
-        media_type="text/markdown; charset=utf-8",
-        headers={"Content-Disposition": f"attachment; filename=collab-{manager.room_name}-{datetime.now().strftime('%Y%m%d-%H%M%S')}.md"}
-    )
+    try:
+        # 如果没有活跃协作对话但有collab_messages缓存，先生成一个虚拟导出
+        if not manager:
+            raise HTTPException(status_code=404, detail="集群管理器未初始化")
+        
+        # 如果没有协作对话ID，自动初始化它
+        if not manager._collab_initialized or not manager.collab_conversation_id:
+            manager._init_collab_conversation()
+        
+        # 确保 conv_mgr 加载的是协作对话
+        collab_conv_id = manager.collab_conversation_id
+        success_load = conv_manager.load_conversation(collab_conv_id)
+        
+        if not success_load or not conv_manager.current_conversation:
+            # 对话不存在，重新创建一个新的协作对话
+            new_conv_id = conv_manager.new_conversation(initial_title=f"🤝 {manager.room_name or '协作房间'} - 协作对话")
+            manager.collab_conversation_id = new_conv_id
+            manager._collab_initialized = True
+            
+            # 把已有的 collab_messages 恢复到新对话里
+            for msg in manager.collab_messages:
+                role = msg.get("role")
+                content = msg.get("content", "")
+                if role == "user":
+                    conv_manager.add_user_message(content)
+                elif role == "assistant":
+                    conv_manager.add_assistant_message(content)
+            
+            conv_manager.save_current()
+        
+        content = conv_manager.current_conversation.export_as_markdown()
+        
+        safe_room_name = "collab"
+        if manager.room_name:
+            safe_room_name = "".join([c for c in manager.room_name if c.isalnum() or c in (' ', '-', '_')]).strip()
+        
+        return Response(
+            content=content,
+            media_type="text/markdown; charset=utf-8",
+            headers={"Content-Disposition": f"attachment; filename={safe_room_name}-{datetime.now().strftime('%Y%m%d-%H%M%S')}.md"}
+        )
+    except Exception as e:
+        logger.error(f"导出Markdown失败: {e}", exc_info=True)
+        # 降级导出：直接从内存collab_messages生成markdown
+        try:
+            lines = []
+            lines.append(f"# 协作对话记录")
+            lines.append(f"> 生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+            lines.append("")
+            lines.append("---")
+            lines.append("")
+            
+            if manager and hasattr(manager, 'collab_messages'):
+                for msg in manager.collab_messages:
+                    role = msg.get("role", "unknown")
+                    content = msg.get("content", "")
+                    ts = msg.get("timestamp", time.time())
+                    time_str = datetime.fromtimestamp(ts).strftime('%H:%M:%S') if isinstance(ts, (int, float)) else str(ts)
+                    
+                    if role == "user":
+                        lines.append(f"## 🧑 用户 ({time_str})")
+                        lines.append("")
+                        lines.append(content)
+                        lines.append("")
+                    elif role == "assistant":
+                        lines.append(f"## 🤖 助手 ({time_str})")
+                        lines.append("")
+                        lines.append(content)
+                        lines.append("")
+                    elif role == "system":
+                        lines.append(f"## 🔧 系统通知 ({time_str})")
+                        lines.append("")
+                        lines.append(content)
+                        lines.append("")
+            
+            fallback_content = "\n".join(lines)
+            return Response(
+                content=fallback_content,
+                media_type="text/markdown; charset=utf-8",
+                headers={"Content-Disposition": f"attachment; filename=collab-fallback-{datetime.now().strftime('%Y%m%d-%H%M%S')}.md"}
+            )
+        except Exception as e2:
+            logger.error(f"降级导出Markdown也失败: {e2}")
+            raise HTTPException(status_code=500, detail=f"导出失败: {str(e)}")
 
 @app.get("/api/rooms/collab/export/json")
 async def api_collab_export_json():
@@ -907,23 +1128,99 @@ async def api_collab_export_json():
     await ensure_cluster_initialized()
     manager = getattr(app.state, "cluster_manager", None)
     
+    try:
+        # 如果没有活跃协作对话但有collab_messages缓存，先生成
+        if not manager:
+            raise HTTPException(status_code=404, detail="集群管理器未初始化")
+        
+        # 如果没有协作对话ID，自动初始化它
+        if not manager._collab_initialized or not manager.collab_conversation_id:
+            manager._init_collab_conversation()
+        
+        # 确保 conv_mgr 加载的是协作对话
+        collab_conv_id = manager.collab_conversation_id
+        success_load = conv_manager.load_conversation(collab_conv_id)
+        
+        if not success_load or not conv_manager.current_conversation:
+            # 对话不存在，重新创建一个新的协作对话
+            new_conv_id = conv_manager.new_conversation(initial_title=f"🤝 {manager.room_name or '协作房间'} - 协作对话")
+            manager.collab_conversation_id = new_conv_id
+            manager._collab_initialized = True
+            
+            # 把已有的 collab_messages 恢复到新对话里
+            for msg in manager.collab_messages:
+                role = msg.get("role")
+                content = msg.get("content", "")
+                if role == "user":
+                    conv_manager.add_user_message(content)
+                elif role == "assistant":
+                    conv_manager.add_assistant_message(content)
+            
+            conv_manager.save_current()
+        
+        json_content = conv_manager.current_conversation.export_as_json()
+        
+        safe_room_name = "collab"
+        if manager.room_name:
+            safe_room_name = "".join([c for c in manager.room_name if c.isalnum() or c in (' ', '-', '_')]).strip()
+        
+        return Response(
+            content=json_content,
+            media_type="application/json; charset=utf-8",
+            headers={"Content-Disposition": f"attachment; filename={safe_room_name}-{datetime.now().strftime('%Y%m%d-%H%M%S')}.json"}
+        )
+    except Exception as e:
+        logger.error(f"导出JSON失败: {e}", exc_info=True)
+        # 降级导出：直接从内存collab_messages生成JSON
+        try:
+            fallback_data = {
+                "conversation_id": "fallback-collab",
+                "title": "协作对话 (降级导出)",
+                "created_at": datetime.now().isoformat(),
+                "updated_at": datetime.now().isoformat(),
+                "messages": [
+                    {
+                        "role": m.get("role"),
+                        "content": m.get("content", ""),
+                        "timestamp": datetime.fromtimestamp(m.get("timestamp", time.time())).isoformat() if isinstance(m.get("timestamp"), (int, float)) else str(m.get("timestamp", ""))
+                    } for m in (manager.collab_messages if hasattr(manager, 'collab_messages') else [])
+                ],
+                "metadata": {
+                    "exported_at": datetime.now().isoformat(),
+                    "fallback": True
+                }
+            }
+            
+            fallback_json_str = json.dumps(fallback_data, ensure_ascii=False, indent=2)
+            
+            return Response(
+                content=fallback_json_str,
+                media_type="application/json; charset=utf-8",
+                headers={"Content-Disposition": f"attachment; filename=collab-fallback-{datetime.now().strftime('%Y%m%d-%H%M%S')}.json"}
+            )
+        except Exception as e2:
+            logger.error(f"降级导出JSON也失败: {e2}")
+            raise HTTPException(status_code=500, detail=f"导出失败: {str(e)}")
+
+@app.get("/api/rooms/collab/messages")
+async def get_collab_messages_api():
+    """获取当前协作对话的所有历史消息（前端刷新后恢复用）"""
+    await ensure_cluster_initialized()
+    manager = getattr(app.state, "cluster_manager", None)
+    
     if not manager or not manager._collab_initialized:
-        raise HTTPException(status_code=404, detail="当前没有活跃的协作对话")
+        return {
+            "success": True,
+            "messages": [],
+            "message_count": 0
+        }
     
-    # 确保 conv_mgr 加载的是协作对话
-    collab_conv_id = manager.collab_conversation_id
-    conv_manager.load_conversation(collab_conv_id)
-    
-    if not conv_manager.current_conversation:
-        raise HTTPException(status_code=404, detail="协作对话不存在")
-    
-    json_content = conv_manager.current_conversation.export_as_json()
-    
-    return Response(
-        content=json_content,
-        media_type="application/json; charset=utf-8",
-        headers={"Content-Disposition": f"attachment; filename=collab-{manager.room_name}-{datetime.now().strftime('%Y%m%d-%H%M%S')}.json"}
-    )
+    return {
+        "success": True,
+        "messages": manager.collab_messages,
+        "collab_conversation_id": manager.collab_conversation_id,
+        "message_count": len(manager.collab_messages)
+    }
 
 @app.post("/api/rooms/dismiss")
 async def dismiss_room(request: Request):
@@ -1084,13 +1381,30 @@ async def ensure_cluster_initialized():
             _cluster_initialized = True
             return True
         elif CLUSTER_ROLE == "worker":
-            node = ClusterNode(
-                node_id=CLUSTER_NODE_ID or str(uuid.uuid4()),
-                ip="0.0.0.0",
-                model=MODEL_NAME,
-                role=CLUSTER_ROLE,
-                mode="auto"
-            )
+            global _global_cluster_client
+            # 核心修复：Worker启动时优先从本地持久化状态恢复！
+            saved_state = load_worker_state()
+            logger.info(f"📂 [Worker启动恢复] 检测到持久化状态: in_room={saved_state.get('in_room', False)}")
+            
+            # 优先使用持久化状态中保存的node_id，避免每次重启生成完全不同的新节点ID
+            saved_node_id = saved_state.get("node_id", "")
+            if saved_node_id:
+                logger.info(f"🔑 [Worker恢复] 使用历史节点ID: {saved_node_id[:8]}...")
+                node = ClusterNode(
+                    node_id=saved_node_id,
+                    ip="0.0.0.0",
+                    model=saved_state.get("model", MODEL_NAME),
+                    role=CLUSTER_ROLE,
+                    mode=saved_state.get("mode", "auto")
+                )
+            else:
+                node = ClusterNode(
+                    node_id=CLUSTER_NODE_ID or str(uuid.uuid4()),
+                    ip="0.0.0.0",
+                    model=MODEL_NAME,
+                    role=CLUSTER_ROLE,
+                    mode="auto"
+                )
             app.state.cluster_node = node
             agent = UniversalAgent(auto_load_skills=True, enable_evolution=False)
             app.state.agent = agent
@@ -1133,72 +1447,225 @@ async def ensure_cluster_initialized():
                     else:
                         await asyncio.sleep(0.2)
             asyncio.create_task(task_worker())
-            client = ClusterClient()
-            node_info = {
-                "node_id": node.node_id,
-                "model": MODEL_NAME,
-                "role": "worker",
-                "mode": "auto"
-            }
-            try:
-                loop = asyncio.get_event_loop()
-                success = await asyncio.wait_for(
-                    loop.run_in_executor(None, client.join, CLUSTER_MANAGER_HOST, CLUSTER_MANAGER_PORT, node_info),
-                    timeout=5.0
-                )
-            except asyncio.TimeoutError:
-                success = False
-                print("Worker 连接 manager 超时（5秒），集群功能不可用，将运行在单机模式")
-            except Exception as e:
-                success = False
-                print(f"Worker 连接 manager 失败: {e}")
-            if success:
-                node.connection = client.socket
-                def listener():
-                    while True:
+            
+            join_success = False
+            
+            # === 核心修复：如果持久化状态表明之前已加入房间，启动时自动尝试重连房主 ===
+            if saved_state.get("in_room", False):
+                try:
+                    # 使用持久化保存的host和port信息
+                    restore_host = saved_state.get("host", CLUSTER_MANAGER_HOST)
+                    restore_port = saved_state.get("port", CLUSTER_MANAGER_PORT)
+                    restore_name = saved_state.get("name", "未命名工作者")
+                    restore_model = saved_state.get("model", MODEL_NAME)
+                    
+                    logger.info(f"🔄 [Worker自动重连] 正在从持久化状态恢复: {restore_host}:{restore_port}, 花名={restore_name}")
+                    
+                    from evolution.cluster.connection import ClusterClient
+                    global _global_cluster_client
+                    _global_cluster_client = ClusterClient(timeout=10.0)
+                    
+                    node_info = {
+                        "node_id": node.node_id,
+                        "name": restore_name,
+                        "model": restore_model,
+                        "role": "worker",
+                        "mode": saved_state.get("mode", "auto")
+                    }
+                    
+                    loop = asyncio.get_event_loop()
+                    join_result = await asyncio.wait_for(
+                        loop.run_in_executor(None, _global_cluster_client.join, restore_host, restore_port, node_info),
+                        timeout=8.0
+                    )
+                    
+                    if isinstance(join_result, tuple):
+                        join_success, _ = join_result
+                    else:
+                        join_success = join_result
+                    
+                    if join_success:
+                        node.connection = _global_cluster_client.socket
+                        node.model = restore_model
+                        node.status = "active"
+                        node.mode = saved_state.get("mode", "auto")
+                        setattr(node, "in_collab_mode", True)
+                        
+                        # 启动持久化状态恢复后的监听线程
+                        def restore_listener():
+                            while True:
+                                try:
+                                    if not _global_cluster_client or not _global_cluster_client.socket:
+                                        break
+                                    data = _global_cluster_client.socket.recv(8192)
+                                    if not data:
+                                        break
+                                    msg = json.loads(data.decode('utf-8'))
+                                    msg_type = msg.get("type")
+                                    logger.debug(f"📩 [Worker恢复监听] 收到房主消息: {msg_type}")
+                                    
+                                    # 和手动加入房间完全一样的处理逻辑
+                                    if msg_type == "room_info_update":
+                                        try:
+                                            room_info = msg.get("room_info", {})
+                                            updated_saved_state = load_worker_state()
+                                            updated_saved_state.update({
+                                                "room_name": room_info.get("room_name", ""),
+                                                "room_id": room_info.get("room_id", ""),
+                                                "owner_name": room_info.get("owner_name", ""),
+                                                "owner_model": room_info.get("owner_model", ""),
+                                                "members_detail": room_info.get("members_detail", []),
+                                                "saved_at": time.time()
+                                            })
+                                            save_worker_state(updated_saved_state)
+                                            logger.info(f"✅ [Worker恢复] 已从房主收到最新房间信息并更新本地状态")
+                                        except Exception as e_update:
+                                            logger.warning(f"更新房间持久化状态失败: {e_update}")
+                                    
+                                    # 转发所有房主事件到本地浏览器WebSocket
+                                    try:
+                                        from evolution.cluster.cluster_api import broadcast_to_all_clients
+                                        import asyncio as aio
+                                        try:
+                                            current_loop = aio.get_event_loop()
+                                            if current_loop.is_running():
+                                                aio.create_task(broadcast_to_all_clients(msg))
+                                            else:
+                                                new_loop2 = aio.new_event_loop()
+                                                aio.set_event_loop(new_loop2)
+                                                new_loop2.run_until_complete(broadcast_to_all_clients(msg))
+                                                new_loop2.close()
+                                        except Exception:
+                                            new_loop2 = aio.new_event_loop()
+                                            aio.set_event_loop(new_loop2)
+                                            new_loop2.run_until_complete(broadcast_to_all_clients(msg))
+                                            new_loop2.close()
+                                    except Exception as e_forward:
+                                        logger.warning(f"转发房主事件失败: {e_forward}")
+                                    
+                                    if msg_type == "task_assignment":
+                                        payload = msg.get("payload", {})
+                                        node.receive_assignment(
+                                            task_id=payload["task_id"],
+                                            task_type=payload["task_type"],
+                                            description=payload["description"],
+                                            parameters=payload.get("parameters")
+                                        )
+                                except Exception as e_listen:
+                                    logger.debug(f"Worker恢复监听线程异常: {e_listen}")
+                                    break
+                        
+                        threading.Thread(target=restore_listener, daemon=True).start()
+                        
+                        # 启动恢复后的心跳线程
+                        def restore_heartbeat_loop():
+                            while True:
+                                try:
+                                    if _global_cluster_client and _global_cluster_client.socket:
+                                        hb = create_heartbeat(
+                                            node.node_id,
+                                            {
+                                                "load_cpu": 0.5,
+                                                "load_memory": 0.5,
+                                                "queue_length": 0
+                                            }
+                                        )
+                                        _global_cluster_client.socket.sendall(hb.serialize())
+                                except Exception as e_hb:
+                                    logger.debug(f"恢复心跳发送失败: {e_hb}")
+                                    break
+                                time.sleep(5)
+                        
+                        threading.Thread(target=restore_heartbeat_loop, daemon=True).start()
+                        
+                        logger.info(f"✅ [Worker自动重连成功] 刷新页面后成功恢复协作模式！")
+                        
+                        # 向本地浏览器广播：恢复成功
+                        from evolution.cluster.cluster_api import broadcast_to_all_clients
                         try:
-                            data = node.connection.recv(4096)
-                            if not data:
-                                break
-                            msg = json.loads(data.decode('utf-8'))
-                            msg_type = msg.get("type")
-                            if msg_type == "task_assignment":
-                                payload = msg.get("payload", {})
-                                node.receive_assignment(
-                                    task_id=payload["task_id"],
-                                    task_type=payload["task_type"],
-                                    description=payload["description"],
-                                    parameters=payload.get("parameters")
-                                )
-                            else:
-                                print(f"Worker 收到其他消息类型: {msg_type}")
-                        except Exception as e:
-                            print(f"Worker 监听线程异常: {e}")
-                            break
-                threading.Thread(target=listener, daemon=True).start()
-                def heartbeat_loop():
-                    while True:
-                        try:
-                            if node.connection:
-                                hb = create_heartbeat(
-                                    node.node_id,
-                                    {
-                                        "load_cpu": node.load_cpu,
-                                        "load_memory": node.load_memory,
-                                        "queue_length": len(node.pending_tasks)
-                                    }
-                                )
-                                node.connection.sendall(hb.serialize())
-                        except Exception as e:
-                            print(f"心跳发送失败: {e}")
-                            break
-                        time.sleep(5)
-                threading.Thread(target=heartbeat_loop, daemon=True).start()
-                print("✅ Worker 已加入集群（懒加载）")
+                            import asyncio as aio
+                            new_loop3 = aio.new_event_loop()
+                            aio.set_event_loop(new_loop3)
+                            new_loop3.run_until_complete(broadcast_to_all_clients({
+                                "type": "restored_room_success",
+                                "room_name": saved_state.get("room_name", "协作房间"),
+                                "timestamp": time.time()
+                            }))
+                            new_loop3.close()
+                        except: pass
+                        
+                except Exception as e_restore:
+                    logger.warning(f"⚠️ [Worker自动重连失败] 房主当前不可访问，继续保留持久化状态让UI显示协作模式: {e_restore}")
+                    join_success = True  # 标记为成功，即使TCP连接暂时不可用，UI仍正常显示为协作模式
+        
+            # 如果持久化状态没有历史记录，走全新首次加入逻辑
             else:
+                from evolution.cluster.connection import ClusterClient
+                _global_cluster_client = ClusterClient()
+                node_info = {
+                    "node_id": node.node_id,
+                    "model": MODEL_NAME,
+                    "role": "worker",
+                    "mode": "auto"
+                }
+                try:
+                    loop = asyncio.get_event_loop()
+                    success = await asyncio.wait_for(
+                        loop.run_in_executor(None, _global_cluster_client.join, CLUSTER_MANAGER_HOST, CLUSTER_MANAGER_PORT, node_info),
+                        timeout=5.0
+                    )
+                    if isinstance(success, tuple):
+                        join_success, _ = success
+                    else:
+                        join_success = success
+                except asyncio.TimeoutError:
+                    join_success = False
+                    print("Worker 连接 manager 超时（5秒），集群功能不可用，将运行在单机模式")
+                except Exception as e:
+                    join_success = False
+                    print(f"Worker 连接 manager 失败: {e}")
+                
+                if join_success:
+                    node.connection = _global_cluster_client.socket
+                    def listener():
+                        while True:
+                            try:
+                                if not _global_cluster_client or not _global_cluster_client.socket: break
+                                data = _global_cluster_client.socket.recv(4096)
+                                if not data: break
+                                msg = json.loads(data.decode('utf-8'))
+                                msg_type = msg.get("type")
+                                logger.debug(f"Worker 收到其他消息类型: {msg_type}")
+                                if msg_type == "task_assignment":
+                                    payload = msg.get("payload", {})
+                                    node.receive_assignment(
+                                        task_id=payload["task_id"],
+                                        task_type=payload["task_type"],
+                                        description=payload["description"],
+                                        parameters=payload.get("parameters")
+                                    )
+                            except Exception as e:
+                                print(f"Worker 监听线程异常: {e}")
+                                break
+                    threading.Thread(target=listener, daemon=True).start()
+                    def heartbeat_loop():
+                        while True:
+                            try:
+                                if node.connection and _global_cluster_client and _global_cluster_client.socket:
+                                    hb = create_heartbeat(node.node_id, {"load_cpu": 0.3, "load_memory": 0.4, "queue_length": 0})
+                                    _global_cluster_client.socket.sendall(hb.serialize())
+                            except Exception as e:
+                                print(f"心跳发送失败: {e}")
+                                break
+                            time.sleep(5)
+                    threading.Thread(target=heartbeat_loop, daemon=True).start()
+                    print("✅ Worker 已加入集群（懒加载）")
+            
+            if not join_success:
                 print("Worker 加入集群失败（懒加载），将运行在单机模式")
+            
             _cluster_initialized = True
-            return success
+            return join_success
         else:
             _cluster_initialized = True
             return True

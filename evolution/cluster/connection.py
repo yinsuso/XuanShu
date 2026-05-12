@@ -728,7 +728,7 @@ class ClusterManager:
     
     def join_room(self, node_info: Dict[str, Any]) -> bool:
         """
-        节点加入房间（由 ClusterServer 调用）
+        节点加入房间（由 ClusterServer 调用）- 增强版：加入成功后立即向全体成员广播房间完整更新信息
         
         Args:
             node_info: 包含 node_id, name, mode, model 等
@@ -750,6 +750,40 @@ class ClusterManager:
             "is_owner": False
         }
         logger.info(f"👥 [ClusterManager] 成员 {node_info.get('name', node_id)} 已加入房间")
+        
+        # === 核心修复：加入成功后立即向所有成员（包括刚加入的成员）广播最新完整房间信息 ===
+        try:
+            room_info = {
+                "room_name": self.room_name,
+                "room_id": self.room_id,
+                "owner_name": self.owner_name,
+                "owner_model": self.owner_model,
+                "members_detail": self.get_member_info()
+            }
+            full_update_msg = json.dumps({
+                "type": "room_info_update",
+                "room_info": room_info
+            }).encode('utf-8')
+            
+            # 遍历所有节点，通过TCP发送完整更新
+            for nid, node in self.nodes.items():
+                if node.connection:
+                    try:
+                        node.connection.sendall(full_update_msg)
+                        logger.info(f"📡 [房间同步广播] 已向节点 {nid[:8]} 推送最新成员列表")
+                    except Exception as e_send:
+                        logger.warning(f"⚠️ 向节点 {nid[:8]} 推送房间更新失败: {e_send}")
+            
+            # 同时向本地所有浏览器WebSocket也广播这个房间信息更新
+            self.broadcast_to_room(self.room_id, {
+                "type": "room_info_update",
+                "room_info": room_info
+            })
+            
+            logger.info(f"✅ [房间信息同步完成] 当前房间共 {len(self.room_members)} 个成员")
+        except Exception as e_broadcast:
+            logger.warning(f"⚠️ 成员加入后广播房间更新失败: {e_broadcast}")
+        
         return True
     
     def leave_room(self, node_id: str):
@@ -1133,20 +1167,19 @@ class ClusterManager:
             
             node.notify_status_change(task_id)
             
-            if self.broadcast_node:
-                for ws in self.broadcast_node.ws_connections:
-                    try:
-                        asyncio.create_task(ws.send_json({
-                            "type": "task_update",
-                            "task_id": task_id,
-                            "status": status,
-                            "result": result if status == "completed" else None,
-                            "error": error if status == "failed" else None,
-                            "node_id": node_id,
-                            "agent_name": agent_name
-                        }))
-                    except:
-                        pass
+            # ========== 统一广播机制：一次推送，所有浏览器都能收到 ==========
+            # 合并两个广播事件为一个，避免重复显示消息
+            self.broadcast({
+                "type": "task_update",
+                "task_id": task_id,
+                "status": status,
+                "result": result if status == "completed" else None,
+                "error": error if status == "failed" else None,
+                "node_id": node_id,
+                "agent_name": agent_name,
+                "collab_new_message": True,  # 标记需要在协作对话中显示
+                "timestamp": time.time()
+            })
             
             self.broadcast_task_status_to_all(task_id, status, node_id, {
                 "agent_name": agent_name,
@@ -1416,6 +1449,24 @@ class ClusterServer:
                     "mode": node_info.get('mode', 'auto'),
                     "model": node_info.get('model', 'unknown')
                 })
+
+                # 【关键修复】房主向新加入的Worker立即推送完整房间信息，确保Worker本地持久化状态完整
+                try:
+                    room_info = {
+                        "room_name": self.manager.room_name,
+                        "room_id": self.manager.room_id,
+                        "owner_name": self.manager.owner_name,
+                        "owner_model": self.manager.owner_model,
+                        "members_detail": self.manager.get_member_info()
+                    }
+                    msg_to_send = json.dumps({
+                        "type": "room_info_update",
+                        "room_info": room_info
+                    }).encode('utf-8')
+                    conn.sendall(msg_to_send)
+                    logger.info(f"📡 [房主推送] 已向新加入的Worker {node_info['node_id'][:8]} 推送完整房间信息")
+                except Exception as e_push:
+                    logger.warning(f"⚠️ 推送房间初始信息给Worker失败: {e_push}")
 
             # 进入消息循环，处理心跳和任务状态更新 - 简化统一格式
             while True:

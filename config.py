@@ -168,6 +168,9 @@ WEB_DEBUG = os.getenv("WEB_DEBUG", "false").lower() == "true"
 # =============================================================================
 # 结构化日志配置（新增）
 # =============================================================================
+import json
+# Worker 持久化配置：加入房间后的连接信息保存到本地文件，页面刷新后自动恢复
+CLUSTER_WORKER_STATE_PATH = os.getenv("CLUSTER_WORKER_STATE_PATH", os.path.join(PROJECT_ROOT, "data", "worker_room_state.json"))
 
 # 日志级别：控制日志输出的详细程度
 # 可选值：DEBUG, INFO, WARNING, ERROR, CRITICAL
