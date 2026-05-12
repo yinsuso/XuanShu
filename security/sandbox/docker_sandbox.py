@@ -43,7 +43,7 @@ from config import (
     SANDBOX_NETWORK_MODE,
     SANDBOX_READ_ONLY,
     SANDBOX_TEMP_DIR,
-    SAND_BOX_SECURITY_OPTIONS,
+    SANDBOX_SECURITY_OPTIONS,
 )
 from logger import get_logger
 
@@ -134,7 +134,8 @@ class DockerSandbox:
 
     def execute(self, code: str, skill_name: str = None, args: Dict[str, Any] = None) -> str:
         """
-        在 Docker 容器中执行 Python 代码
+        在 Docker 容器中执行 Python 代码 - 安全强制模式
+        绝对禁止降级到宿主机 subprocess 模式，确保容器隔离安全。
 
         Args:
             code: 要执行的 Python 代码字符串
@@ -144,13 +145,13 @@ class DockerSandbox:
         Returns:
             执行结果（stdout/stderr）或错误信息
 
-        异常处理：
-        - Docker 不可用：返回错误信息，不阻塞主流程（降级提示）
-        - 容器执行失败：捕获异常，返回详细错误
-        - 超时：容器会自动终止
+        安全策略：
+        - Docker 不可用时：不提供任何执行方式，完全阻断
+        - 绝对不降级到宿主机 subprocess，防止沙箱逃逸
         """
         if not self.is_available():
-            return "❌ Docker 沙箱不可用，请安装 docker 包或检查 Docker 守护进程"
+            logger.critical("沙箱隔离失效，代码执行完全阻断")
+            raise RuntimeError("❌ 安全策略拒绝执行：Docker沙箱不可用，禁止宿主机直接执行")
 
         start_time = time.time()
         container = None

@@ -483,7 +483,8 @@
             <div>
                 <strong>📚 当前对话</strong>
                 <div id="current-conversation" style="font-size:13px;margin-top:8px;">未选择</div>
-                <button class="btn" id="btn-new-conversation" onclick="createNewConversation()" style="margin-top:8px;">➕ 新建对话</button>
+                <button class="btn" id="btn-new-standalone-conversation" onclick="createNewStandaloneConversation()" style="margin-top:8px;">➕ 新建单机对话</button>
+                <button class="btn" id="btn-new-collab-conversation" onclick="createNewCollabConversation()" style="margin-top:8px; display: none;">🤝 新建协作对话</button>
             </div>
 
 
@@ -589,7 +590,7 @@ async function loadRoomModels(selectId) {
         if (allRes.success && allRes.models.length > 0) {
             allRes.models.forEach(m => {
                 const suffix = m.model === allRes.current_model ? ' (当前)' : '';
-                const typeLabel = m.type === 'ollama' ? ' (本地)' : m.type === 'api' ? ' (云端)' : '';
+                const typeLabel = m.provider === 'ollama' ? ' (本地)' : ' (云端)';
                 models.push({ name: m.model, desc: `${m.model}${suffix}${typeLabel}` });
             });
         }
@@ -649,7 +650,25 @@ async function init() {
     try {
         const data = await api('/api/info');
         STATE.role = data.role;
-        // 角色相关的 UI 调整
+        
+        // ========== 【问题1核心修复】强化房主模式按钮显示 ==========
+        const collabBtn = document.getElementById('btn-new-collab-conversation');
+        const navCollabChatBtn = document.getElementById('nav-collab-chat');
+        const currentRoomInfoDiv = document.getElementById('current-room-info');
+        const clusterBadge = document.getElementById('cluster-badge');
+        
+        // 房主/单机模式只要检测到有活跃房间，就直接全部开启协作相关UI
+        if (STATE.role === 'manager' || STATE.role === 'standalone') {
+            if (collabBtn) {
+                collabBtn.style.display = 'block';
+            }
+            console.log('✅ 房主模式：已显示「新建协作对话」按钮');
+        } else {
+            if (collabBtn) {
+                collabBtn.style.display = 'none';
+            }
+        }
+        
         const startBtn = document.getElementById('btn-start-task');
         const joinBtn = document.querySelector('button[onclick="showView(\'join-room\')"]');
 
@@ -880,24 +899,84 @@ async function resendMessage(userMessage) {
                 payload.conversation_id = lastConversationId;
             }
 
-            // 使用api()函数保持一致性
-            const data = await api('/api/chat', {
+            const submitRes = await api('/api/chat/async-submit', {
                 method: 'POST',
                 body: JSON.stringify(payload)
             });
-            if (data.success) {
-                appendMessage('assistant', data.response);
-                STATE.currentConversationId = data.conversation_id;
-            } else {
-                appendMessage('assistant', '❌ ' + (data.error || '请求失败'));
+            
+            if (!submitRes.success) {
+                appendMessage('assistant', '❌ ' + (submitRes.error || '提交任务失败'));
+                return;
             }
+
+            STATE.currentConversationId = submitRes.conversation_id;
+            document.getElementById('current-conversation').textContent = '当前对话';
+            
+            appendMessage('assistant', '⏳ 正在重新生成...');
+            
+            const result = await pollAsyncChatTask(submitRes.task_id, sendBtn);
+            
+            const messagesContainer = document.getElementById('messages');
+            if (messagesContainer) {
+                const lastChild = messagesContainer.lastElementChild;
+                if (lastChild && lastChild.classList.contains('message') && 
+                    lastChild.classList.contains('assistant-message')) {
+                    lastChild.remove();
+                }
+            }
+            
+            appendMessage('assistant', result);
+            
         } catch (e) {
-            appendMessage('assistant', '❌ 网络错误: ' + e.message);
+            const messagesContainer = document.getElementById('messages');
+            if (messagesContainer) {
+                const lastChild = messagesContainer.lastElementChild;
+                if (lastChild && lastChild.classList.contains('message') && 
+                    lastChild.classList.contains('assistant-message')) {
+                    const lastContent = lastChild.querySelector('.message-content');
+                    if (lastContent && (lastContent.textContent.includes('⏳'))) {
+                        lastChild.remove();
+                    }
+                }
+            }
+            appendMessage('assistant', '❌ ' + (e.message || '网络错误'));
         } finally {
             sendBtn.disabled = false;
             sendBtn.textContent = '发送';
         }
     }
+}
+
+function createNewStandaloneConversation() {
+    showToast('正在创建新的单机对话...');
+    api('/api/conversations/switch-mode', {
+        method: 'POST',
+        body: JSON.stringify({ mode: 'standalone' })
+    }).then(res => {
+        showToast('已切换到单机对话模式');
+        showView('chat');
+        document.getElementById('messages').innerHTML = '';
+        STATE.currentConversationId = null;
+        document.getElementById('current-conversation').textContent = '新对话';
+    }).catch(e => {
+        showToast('创建单机对话失败', true);
+    });
+}
+
+function createNewCollabConversation() {
+    showToast('正在创建新的协作对话...');
+    api('/api/conversations/switch-mode', {
+        method: 'POST',
+        body: JSON.stringify({ mode: 'collaboration' })
+    }).then(res => {
+        showToast('已切换到协作对话模式');
+        showView('collab-chat');
+        document.getElementById('collab-messages').innerHTML = '';
+        STATE.currentConversationId = null;
+        document.getElementById('current-conversation').textContent = '新协作对话';
+    }).catch(e => {
+        showToast('创建协作对话失败', true);
+    });
 }
 
 function exportConversation(format) {
@@ -1689,6 +1768,31 @@ STATE.currentActiveTask = null;
 function handleClusterEvent(data) {
     console.log('收到集群事件:', data);
     
+    // ========== 【问题2核心修复】房主收到房间信息更新事件，立即刷新成员列表UI ==========
+    if (data.type === 'room_info_update') {
+        const roomInfo = data.room_info;
+        if (roomInfo) {
+            // 立即更新成员列表
+            if (roomInfo.members_detail && roomInfo.members_detail.length > 0) {
+                renderMembers(roomInfo.members_detail);
+                renderCollabMembers(roomInfo.members_detail);
+                document.getElementById('online-count').textContent = roomInfo.members_detail.filter(m => 
+                    m.status === 'active' || m.status === 'busy' || m.status === 'online'
+                ).length;
+                console.log('✅ 房主成员列表已实时更新，新成员数:', roomInfo.members_detail.length);
+            }
+            // 同时更新房间名等信息
+            if (roomInfo.room_name) {
+                document.getElementById('detail-room-name').textContent = roomInfo.room_name;
+                document.getElementById('room-name-display').textContent = roomInfo.room_name;
+            }
+            if (roomInfo.room_id) {
+                document.getElementById('detail-room-id').textContent = roomInfo.room_id;
+            }
+        }
+        return;
+    }
+    
     if (data.type === 'collab_new_message') {
         // 【核心修复】专门处理协作对话新消息事件，保证模型回复100%能显示
         const role = data.role || 'assistant';
@@ -2109,20 +2213,57 @@ async function createNewConversation() {
 }
 
 // ==================== 单机对话增强功能 ====================
+let _activeAsyncPollTimer = null;
+
+function pollAsyncChatTask(taskId, sendBtn) {
+    const pollInterval = 500;
+    const maxPollTime = 300000;
+    const startTime = Date.now();
+    
+    return new Promise((resolve, reject) => {
+        const poll = async () => {
+            try {
+                const elapsed = Date.now() - startTime;
+                if (elapsed > maxPollTime) {
+                    reject(new Error('任务超时，请稍后查看结果'));
+                    return;
+                }
+                
+                const statusRes = await api(`/api/chat/task/${taskId}`);
+                if (!statusRes.success) {
+                    setTimeout(poll, pollInterval);
+                    return;
+                }
+                
+                const status = statusRes.status;
+                if (status === 'completed') {
+                    resolve(statusRes.result);
+                } else if (status === 'failed') {
+                    reject(new Error(statusRes.error || '任务失败'));
+                } else {
+                    setTimeout(poll, pollInterval);
+                }
+            } catch (pollError) {
+                setTimeout(poll, pollInterval);
+            }
+        };
+        poll();
+    });
+}
+
 async function sendMessage() {
     const input = document.getElementById('message-input');
     const sendBtn = document.getElementById('send-btn');
     const text = input.value.trim();
     if (!text) return;
 
-    // 保存用户消息用于重新回复
     lastUserMessage = text;
     lastConversationId = STATE.currentConversationId;
 
     appendMessage('user', text);
     input.value = '';
     sendBtn.disabled = true;
-    sendBtn.textContent = '思考中...';
+    sendBtn.textContent = '处理中...';
 
     try {
         const payload = { message: text };
@@ -2130,21 +2271,47 @@ async function sendMessage() {
             payload.conversation_id = STATE.currentConversationId;
         }
 
-        const res = await fetch('/api/chat', {
+        const submitRes = await api('/api/chat/async-submit', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload)
         });
-        const data = await res.json();
-        if (data.success) {
-            appendMessage('assistant', data.response);
-            STATE.currentConversationId = data.conversation_id;
-            document.getElementById('current-conversation').textContent = '当前对话';
-        } else {
-            appendMessage('assistant', '❌ ' + (data.error || '请求失败'));
+        
+        if (!submitRes.success) {
+            appendMessage('assistant', '❌ ' + (submitRes.error || '提交任务失败'));
+            return;
         }
+
+        STATE.currentConversationId = submitRes.conversation_id;
+        document.getElementById('current-conversation').textContent = '当前对话';
+        
+        appendMessage('assistant', '⏳ 正在思考中...');
+        
+        const result = await pollAsyncChatTask(submitRes.task_id, sendBtn);
+        
+        const messagesContainer = document.getElementById('messages');
+        if (messagesContainer) {
+            const lastChild = messagesContainer.lastElementChild;
+            if (lastChild && lastChild.classList.contains('message') && 
+                lastChild.classList.contains('assistant-message')) {
+                lastChild.remove();
+            }
+        }
+        
+        appendMessage('assistant', result);
+        
     } catch (e) {
-        appendMessage('assistant', '❌ 网络错误: ' + e.message);
+        const messagesContainer = document.getElementById('messages');
+        if (messagesContainer) {
+            const lastChild = messagesContainer.lastElementChild;
+            if (lastChild && lastChild.classList.contains('message') && 
+                lastChild.classList.contains('assistant-message')) {
+                const lastContent = lastChild.querySelector('.message-content');
+                if (lastContent && lastContent.textContent.includes('⏳')) {
+                    lastChild.remove();
+                }
+            }
+        }
+        appendMessage('assistant', '❌ ' + (e.message || '网络错误'));
     } finally {
         sendBtn.disabled = false;
         sendBtn.textContent = '发送';

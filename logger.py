@@ -209,12 +209,17 @@ class AsyncHandler(logging.Handler):
         return mtime < cutoff
 
     def _rotate_logs(self):
-        """执行日志轮转：压缩归档超过保留天数的日志"""
+        """执行日志轮转：压缩归档超过保留天数的日志（支持 .jsonl 和 .log 后缀）"""
         try:
             log_dir = Path(self.filename).parent
-            # 查找所有 .jsonl 或 .log 文件
-            for log_file in log_dir.glob("*.jsonl"):
-                if log_file.name == Path(self.filename).name:
+            active_log_name = Path(self.filename).name
+            # 同时查找所有 .jsonl 和 .log 文件
+            all_log_files = []
+            for pattern in ["*.jsonl", "*.log"]:
+                all_log_files.extend(log_dir.glob(pattern))
+            # 遍历所有找到的日志文件
+            for log_file in all_log_files:
+                if log_file.name == active_log_name:
                     continue  # 跳过当前活跃日志
                 mtime = log_file.stat().st_mtime
                 age_days = (time.time() - mtime) / 86400
@@ -225,9 +230,11 @@ class AsyncHandler(logging.Handler):
                         with open(log_file, "rb") as f_in, gzip.open(gz_path, "wb") as f_out:
                             shutil.copyfileobj(f_in, f_out)
                         log_file.unlink(missing_ok=True)
+                        print(f"[AsyncHandler] 已压缩轮转日志: {log_file.name}", file=sys.stderr)
                     else:
                         # 直接删除
                         log_file.unlink(missing_ok=True)
+                        print(f"[AsyncHandler] 已删除过期日志: {log_file.name}", file=sys.stderr)
             self._last_rotation_check = time.time()
         except Exception as e:
             print(f"[AsyncHandler] 日志轮转失败: {e}", file=sys.stderr)

@@ -72,8 +72,9 @@ CODE_EXECUTION_TIMEOUT = 10
 # Docker 沙箱配置（新增强）
 # =============================================================================
 
-# 是否启用 Docker 沙箱执行（若 False 则降级到 subprocess 模式）
-SANDBOX_ENABLED = os.getenv("SANDBOX_ENABLED", "true").lower() == "true"
+# Docker 沙箱安全强制策略：始终启用，绝对禁止降级到宿主机subprocess
+# 安全说明：禁止降级可防止容器逃逸后直接获取宿主机权限
+SANDBOX_ENABLED = True
 
 # 沙箱 Docker 镜像：使用轻量级 Python 镜像
 SANDBOX_IMAGE = os.getenv("SANDBOX_IMAGE", "python:3.10-slim")
@@ -305,8 +306,14 @@ def _read_version():
     version_file = os.path.join(PROJECT_ROOT, "VERSION")
     try:
         with open(version_file, 'r', encoding='utf-8') as f:
-            return f.read().strip()
-    except Exception:
+            version_str = f.read().strip()
+            print(f"[CONFIG] 成功读取版本号: {version_str}", file=sys.stderr)
+            return version_str
+    except FileNotFoundError:
+        print(f"[CONFIG] 警告: VERSION文件不存在于路径 {version_file}，使用默认版本 0.0.0", file=sys.stderr)
+        return "0.0.0"
+    except Exception as e:
+        print(f"[CONFIG] 警告: 读取VERSION文件失败: {str(e)}，使用默认版本 0.0.0", file=sys.stderr)
         return "0.0.0"
 
 VERSION = _read_version()
@@ -322,7 +329,8 @@ CLUSTER_MANAGER_PORT = PORT_CLUSTER_MANAGER
 CLUSTER_NODE_ID = os.getenv("CLUSTER_NODE_ID", None)
 CLUSTER_NODE_NICKNAME = os.getenv("CLUSTER_NODE_NICKNAME", "玄枢成员")
 CLUSTER_WORKER_THREADS = int(os.getenv("CLUSTER_WORKER_THREADS", 1))
-CLUSTER_API_TOKEN = os.getenv("CLUSTER_API_TOKEN", None)
+# 安全增强：集群API Token强制默认值，禁止None状态下开放无认证访问
+CLUSTER_API_TOKEN = os.getenv("CLUSTER_API_TOKEN", "please-change-me-to-a-secure-random-token-32-chars-min")
 # Worker 节点对外 API 端口（使用PORT_CLUSTER_API）
 CLUSTER_API_PORT = PORT_CLUSTER_API
 

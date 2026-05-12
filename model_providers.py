@@ -217,13 +217,13 @@ def call_model(config: ModelConfig, prompt: str, system_prompt: str = "", temper
             
         except Exception as e:
             last_exception = e
-            logger.warning(f"模型调用失败，第 {attempt + 1} 次尝试: {e}")
+            logger.warning(f"模型调用失败，第 {attempt + 1} 次尝试", details={"error": str(e), "attempt": attempt + 1}, exc_info=True)
             if attempt < max_retries - 1:
                 time.sleep(2)
     
-    error_msg = f"模型调用失败，已尝试 {max_retries} 次，请重试。最后错误: {str(last_exception)}"
-    logger.error(error_msg)
-    raise Exception(error_msg) from last_exception
+    public_safe_msg = f"模型调用失败，已尝试 {max_retries} 次，请检查模型服务配置和网络连接后重试"
+    logger.error(public_safe_msg, exc_info=True)
+    raise Exception(public_safe_msg) from last_exception
 
 async def call_model_async(config: ModelConfig, prompt: str, system_prompt: str = "", temperature: float = 0.7, max_retries: int = 3) -> str:
     """异步版本的模型调用 - 带完整重试机制"""

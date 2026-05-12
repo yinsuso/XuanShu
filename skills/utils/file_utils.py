@@ -10,8 +10,9 @@ from typing import Optional, List
 from config import ALLOWED_DIR
 
 def validate_path(path: str) -> str:
-    """
-    验证并转换路径为绝对路径，确保不越界。
+    r"""
+    验证并转换路径为绝对路径，确保不越界 - 安全增强版。
+    严格防范路径遍历攻击（../ /..\ 等方式）
     
     Args:
         path: 相对路径或绝对路径
@@ -22,9 +23,21 @@ def validate_path(path: str) -> str:
     Raises:
         ValueError: 如果路径越界
     """
+    # 确保 ALLOWED_DIR 尾部带目录分隔符，防止 /project 匹配 /projectevil
+    safe_root = os.path.abspath(ALLOWED_DIR)
+    if not safe_root.endswith(os.sep):
+        safe_root += os.sep
+        
     abs_path = os.path.abspath(os.path.join(ALLOWED_DIR, path))
-    if not abs_path.startswith(ALLOWED_DIR):
-        raise ValueError(f"路径越界：{path}")
+    
+    # 双重安全检查
+    if not abs_path.startswith(safe_root):
+        raise ValueError(f"路径越界：{path}，禁止访问ALLOWED_DIR以外的位置")
+    
+    # 额外阻止 null bytes 等危险字符
+    if '\0' in path:
+        raise ValueError(f"路径包含非法字符")
+        
     return abs_path
 
 def read_file_safe(path: str, lines: int = 0, max_length: int = 8000) -> str:

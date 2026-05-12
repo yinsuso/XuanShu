@@ -182,8 +182,9 @@ async def approve_task(request: Request, task_id: str, node: ClusterNode = Depen
 @router.post("/rooms/manual-join")
 async def manual_join_room(request: Request):
     """
-    【核心功能】手动指定房主IP/端口，强制跨地区加入房间
+    【核心增强修复版】手动指定房主IP/端口，强制跨地区加入房间
     支持场景：本地显卡电脑 + 远程GPU服务器通过互联网串联协作
+    关键优化：加入新房间前自动完全清除旧状态，不会卡在旧房间里无法出来
     
     请求体参数：
     - host_ip: str      - 房主的IP地址（支持公网IP/域名，例如 "123.45.67.89" 或 "mygpu-server.com"）
@@ -195,6 +196,26 @@ async def manual_join_room(request: Request):
     """
     global _global_cluster_client
     verify_token(request)
+    
+    # ========= 【关键修复1】加入新房间前，强制完全清除所有旧状态！=========
+    import os
+    import json as json_module
+    from config import CLUSTER_WORKER_STATE_PATH
+    
+    # 第一步：关闭任何现有活跃连接
+    if _global_cluster_client is not None:
+        logger.info(f"ℹ️  检测到旧连接，正在安全关闭...")
+        _global_cluster_client.close()
+        _global_cluster_client = None
+    
+    # 第二步：完全删除旧的持久化状态文件，彻底清除所有残留
+    if os.path.exists(CLUSTER_WORKER_STATE_PATH):
+        logger.info(f"🗑️  正在清除旧的协作状态文件，避免冲突...")
+        try:
+            os.remove(CLUSTER_WORKER_STATE_PATH)
+            logger.info(f"✅ 旧协作状态已完全清除，可以全新加入其他房间")
+        except Exception as e_clear:
+            logger.warning(f"⚠️ 清除旧状态失败（忽略，继续）: {e_clear}")
     
     data = await request.json()
     
@@ -216,18 +237,13 @@ async def manual_join_room(request: Request):
     role = data.get("role", "worker")
     password = data.get("password", "")
     
-    # 生成唯一节点ID
+    # 生成全新唯一节点ID（因为已经清除了旧状态，用全新ID避免和之前混淆）
     import uuid
     node_id = str(uuid.uuid4())[:12]
     
     logger.info(f"🚀 [手动跨地区加入] 用户请求加入: 房主={host_ip}:{host_port}, 别名={alias_name}, 模型={model}, 角色={role}")
     
-    # 防止重复加入：先关闭已有连接
-    if _global_cluster_client is not None:
-        logger.info(f"ℹ️  检测到已有活跃连接，先关闭旧连接")
-        _global_cluster_client.close()
-    
-    # 创建新客户端实例
+    # 创建全新的干净客户端实例
     from .connection import evaluate_capability_simple
     _global_cluster_client = ClusterClient(timeout=15.0)
     
@@ -249,9 +265,13 @@ async def manual_join_room(request: Request):
     
     if success:
         logger.info(f"✅ [手动跨地区加入] 成功！已与房主 {host_ip}:{host_port} 建立稳定连接")
+        # 【关键】自动启动后台自动重连机制，确保意外退出后自动尝试恢复连接
+        _global_cluster_client.start_auto_reconnect()
+        logger.info(f"🔄 [自动重连] 后台自动重连机制已激活")
+        
         return {
             "success": True,
-            "message": "🎉 成功加入远程协作房间！心跳保活线程和任务监听线程已启动",
+            "message": "🎉 成功加入远程协作房间！心跳保活+自动重连+任务监听线程已启动",
             "data": {
                 "node_id": node_id,
                 "alias_name": alias_name,
@@ -261,22 +281,39 @@ async def manual_join_room(request: Request):
         }
     else:
         logger.error(f"❌ [手动跨地区加入] 失败: {reason}")
+        # 加入失败也不要留任何残留状态
+        _global_cluster_client = None
         raise HTTPException(status_code=400, detail=reason)
 
 
 @router.post("/rooms/manual-leave")
 async def manual_leave_room(request: Request):
-    """手动断开手动跨地区加入的远程房主连接"""
+    """【增强版】手动断开手动跨地区加入的远程房主连接，彻底清理所有状态，完全可以加入其他新房间"""
     global _global_cluster_client
     verify_token(request)
     
+    import os
+    from config import CLUSTER_WORKER_STATE_PATH
+    
+    # 第一步：关闭连接
     if _global_cluster_client is not None:
         _global_cluster_client.close()
         _global_cluster_client = None
-        logger.info(f"👋 [手动跨地区离开] 连接已完全断开")
-        return {"success": True, "message": "已安全离开远程房间，所有资源已释放"}
-    else:
-        return {"success": True, "message": "当前没有活跃的远程连接"}
+        logger.info(f"🔌 [手动离开] 远程TCP连接已安全断开")
+    
+    # 第二步：完全删除持久化状态文件，彻底清除所有协作残留
+    if os.path.exists(CLUSTER_WORKER_STATE_PATH):
+        try:
+            os.remove(CLUSTER_WORKER_STATE_PATH)
+            logger.info(f"🗑️  [状态清理] 持久化协作状态文件已完全删除")
+        except Exception as e:
+            logger.warning(f"⚠️ 删除状态文件时出错（忽略）: {e}")
+    
+    logger.info(f"✅ 【完全退出完成】现在可以自由加入任意其他新房间了！")
+    return {
+        "success": True,
+        "message": "👋 已安全离开协作房间，所有状态已完全清理，现在可以自由加入其他房间了"
+    }
 
 
 @router.get("/discovery/local-rooms")

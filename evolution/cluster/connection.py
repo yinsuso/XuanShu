@@ -10,110 +10,26 @@ from typing import Dict, Any, Optional, List, TYPE_CHECKING
 from logger import logger
 from .protocol import MessageType, ClusterMessage, create_capability_advertisement, create_leave_notification, create_auth_response
 from .discovery import ClusterDiscovery
+from .capability import CapabilityAssessor
 
-if TYPE_CHECKING:
-    from .scheduler import TaskScheduler
-    from .capability import CapabilityAssessor
+# 全局单例评估器实例（统一入口）
+_global_capability_assessor: Optional[CapabilityAssessor] = None
 
-# 简易能力评估函数（与CapabilityAssessor保持兼容）
-MODEL_RANKINGS = {
-    "qwen3.5:9b": 0.90,
-    "qwen3": 0.88,
-    "qwen2.5-coder:7b": 0.95,
-    "qwen2.5-coder:14b": 0.98,
-    "qwen2.5-coder:32b": 0.99,
-    "qwen2.5:7b": 0.85,
-    "qwen2.5:14b": 0.90,
-    "qwen2.5:32b": 0.95,
-    "qwen-plus": 0.92,
-    "qwen-turbo": 0.88,
-    "llama3:8b": 0.80,
-    "llama3:70b": 0.94,
-    "llama3.1:8b": 0.82,
-    "llama3.1:70b": 0.95,
-    "llama3.2": 0.75,
-    "phi3:3.8b": 0.70,
-    "phi4": 0.80,
-    "mistral:7b": 0.78,
-    "mistral-nemo": 0.82,
-    "deepseek-coder:6.7b": 0.92,
-    "deepseek-chat": 0.88,
-    "gpt-4o": 0.98,
-    "gpt-4": 0.95,
-    "gpt-4-turbo": 0.96,
-    "gpt-3.5-turbo": 0.80,
-    "glm-4": 0.90,
-    "glm-4-plus": 0.93,
-    "claude-3-opus": 0.99,
-    "claude-3-sonnet": 0.90,
-    "claude-3.5-sonnet": 0.93,
-    "gemini-pro": 0.90,
-    "gemini-1.5-pro": 0.93
-}
-
-def _get_model_score_simple(model_name: str) -> float:
-    """简易子串匹配获取模型分数 - 修复匹配逻辑"""
-    model_lower = model_name.lower()
-    
-    # 精确匹配
-    if model_name in MODEL_RANKINGS:
-        return MODEL_RANKINGS[model_name]
-    
-    # 子串匹配：优先长词匹配
-    matched_scores = []
-    for key, score in MODEL_RANKINGS.items():
-        key_lower = key.lower()
-        if key_lower in model_lower:
-            matched_scores.append((len(key), score))
-    
-    if matched_scores:
-        matched_scores.sort(reverse=True, key=lambda x: x[0])
-        return matched_scores[0][1]
-    
-    # 按参数量估算：从大到小，避免误匹配
-    if "72b" in model_lower or "70b" in model_lower:
-        return 0.90
-    elif "34b" in model_lower or "32b" in model_lower:
-        return 0.85
-    elif "14b" in model_lower or "12b" in model_lower:
-        return 0.80
-    elif "9b" in model_lower or "8b" in model_lower:
-        return 0.75
-    elif "7b" in model_lower:
-        return 0.72
-    elif "3b" in model_lower or "2b" in model_lower or "1.8b" in model_lower:
-        return 0.60
-    
-    # 云端API默认0.85，本地未知模型0.7
-    if "api" in model_lower or "remote" in model_lower or "glm" in model_lower or "gpt" in model_lower:
-        return 0.85
-    return 0.70
+def get_global_capability_assessor() -> CapabilityAssessor:
+    """获取全局唯一的能力评估器实例 - 确保全系统使用同一套评估逻辑"""
+    global _global_capability_assessor
+    if _global_capability_assessor is None:
+        _global_capability_assessor = CapabilityAssessor()
+    return _global_capability_assessor
 
 def evaluate_capability_simple(node_info: Dict[str, Any]) -> float:
     """
-    简易能力评估（增强版，智能子串匹配）
+    能力评估函数 - 统一委托给 CapabilityAssessor（已消除重复代码）
     
-    评估维度：
-    - 模型分（智能排行榜子串匹配）
-    - GPU分（如果提供）
-    
-    Returns:
-        0.0-1.0 的能力分
+    原简易评估逻辑已完全整合到 CapabilityAssessor 类中，保证全系统评分一致
     """
-    model = node_info.get("model", "unknown")
-    model_score = _get_model_score_simple(model)
-    
-    # GPU加成（如果有显存信息）
-    gpu_bonus = 0.0
-    if "gpu" in node_info:
-        gpu_name = str(node_info["gpu"]).lower()
-        if "rtx 4090" in gpu_name or "rtx 40" in gpu_name or "a100" in gpu_name or "h100" in gpu_name:
-            gpu_bonus = 0.1
-        elif "rtx 30" in gpu_name or "rtx 20" in gpu_name or "3090" in gpu_name:
-            gpu_bonus = 0.05
-    
-    total = model_score + gpu_bonus
-    return min(total, 1.0)
+    assessor = get_global_capability_assessor()
+    return assessor.assess(node_info)
 
 
 class TaskStatus(Enum):
@@ -492,8 +408,9 @@ class ClusterManager:
                 time.sleep(self.room_sync_interval)
     
     def _monitor_loop(self):
-        """监控循环（终极增强版：同时检查任务超时 + 节点心跳离线检测）"""
-        HEARTBEAT_TIMEOUT_SECONDS = 15  # 超过15秒没收到心跳就判定节点离线
+        """监控循环（终极增强重入版：同时检查任务超时 + 节点心跳离线检测 + 临时离线保留重入窗口）"""
+        HEARTBEAT_TIMEOUT_SECONDS = 15      # 超过15秒没收到心跳就标记临时离线
+        MAX_OFFLINE_KEEP_SECONDS = 600      # 10分钟=600秒，超过这个时间还没重入的节点才真正清理
         
         while self._monitor_running:
             try:
@@ -501,17 +418,22 @@ class ClusterManager:
                 
                 # 新增：节点心跳超时检测 - 保证成员计数100%准确
                 now = time.time()
-                offline_nodes = []
+                newly_offline_nodes = []
+                permanent_remove_nodes = []
+                
                 for node_id, node in self.nodes.items():
                     # 跳过房主自己的节点
                     if self.own_node and node_id == self.own_node.node_id:
                         continue
+                    
                     # 检查心跳超时
                     if now - node.last_heartbeat > HEARTBEAT_TIMEOUT_SECONDS:
                         if node.status != "offline":
-                            logger.warning(f"⏰ [ClusterManager] 节点 {node_id} 心跳超时 ({int(now - node.last_heartbeat)}秒)，标记为离线")
+                            # 第一次标记为临时离线，记录时间戳
+                            logger.warning(f"⏰ [ClusterManager] 节点 {node_id[:8]} 心跳超时 ({int(now - node.last_heartbeat)}秒)，标记为临时离线（10分钟内可重入恢复）")
                             node.status = "offline"
-                            offline_nodes.append(node_id)
+                            node._first_offline_ts = now  # 记录首次离线时间戳
+                            newly_offline_nodes.append(node_id)
                             # 断开无效连接
                             if node.connection:
                                 try:
@@ -519,12 +441,20 @@ class ClusterManager:
                                 except:
                                     pass
                                 node.connection = None
-                # 自动清理超时离线的节点从房间成员列表
-                for offline_nid in offline_nodes:
-                    self.leave_room(offline_nid)
+                        
+                        # === 关键：检查离线时间是否超过10分钟，超过才真正从房间永久移除 ===
+                        first_offline_ts = getattr(node, '_first_offline_ts', 0)
+                        if first_offline_ts > 0 and (now - first_offline_ts) > MAX_OFFLINE_KEEP_SECONDS:
+                            logger.info(f"🗑️  [ClusterManager] 节点 {node_id[:8]} 已离线超过10分钟，永久清理")
+                            permanent_remove_nodes.append(node_id)
                 
-                if offline_nodes:
-                    logger.info(f"📊 [ClusterManager] 当前在线成员数: {len([n for nid, n in self.nodes.items() if n.status != 'offline'])}")
+                # 对真正超时的节点执行永久清理
+                for remove_nid in permanent_remove_nodes:
+                    self.leave_room(remove_nid)
+                    self.remove_node(remove_nid)  # 同时从nodes字典删除，彻底清理
+                
+                if newly_offline_nodes or permanent_remove_nodes:
+                    logger.info(f"📊 [ClusterManager] 当前在线成员数: {len([n for nid, n in self.nodes.items() if n.status == 'active'])}")
                 
                 time.sleep(self.monitor_interval)
             except Exception as e:
@@ -817,7 +747,7 @@ class ClusterManager:
     
     def join_room(self, node_info: Dict[str, Any]) -> bool:
         """
-        节点加入房间（由 ClusterServer 调用）- 增强版：加入成功后立即向全体成员广播房间完整更新信息
+        节点加入房间（由 ClusterServer 调用）- 终极重入增强版：支持离线节点重新激活恢复
         
         Args:
             node_info: 包含 node_id, name, mode, model 等
@@ -830,14 +760,26 @@ class ClusterManager:
             logger.warning(f"❌ 节点 {node_id} 不存在，无法加入房间")
             return False
         
-        self.room_members[node_id] = {
-            "node_id": node_id,
-            "name": node_info.get('name', node_id),
-            "mode": node_info.get('mode', 'auto'),
-            "model": node_info.get('model', 'unknown'),
-            "joined_at": time.time(),
-            "is_owner": False
-        }
+        # === 【核心重入增强】如果该节点已经是房间成员（临时离线重入），直接更新信息，不需要新建记录 ===
+        is_rejoin = node_id in self.room_members
+        if is_rejoin:
+            logger.info(f"🔄 [重入机制] 节点 {node_id[:8]} 重新加入房间，成员状态已恢复")
+            # 只更新必要字段，保留原 joined_at 等历史信息
+            existing_member = self.room_members[node_id]
+            existing_member["name"] = node_info.get('name', existing_member.get('name', node_id))
+            existing_member["mode"] = node_info.get('mode', existing_member.get('mode', 'auto'))
+            existing_member["model"] = node_info.get('model', existing_member.get('model', 'unknown'))
+            existing_member["last_rejoined_at"] = time.time()
+        else:
+            # 全新节点首次加入
+            self.room_members[node_id] = {
+                "node_id": node_id,
+                "name": node_info.get('name', node_id),
+                "mode": node_info.get('mode', 'auto'),
+                "model": node_info.get('model', 'unknown'),
+                "joined_at": time.time(),
+                "is_owner": False
+            }
         logger.info(f"👥 [ClusterManager] 成员 {node_info.get('name', node_id)} 已加入房间")
         
         # === 核心修复：加入成功后立即向所有成员（包括刚加入的成员）广播最新完整房间信息 ===
@@ -968,12 +910,19 @@ class ClusterManager:
 
     def broadcast_to_room(self, room_id: str, event: Dict[str, Any]) -> int:
         """
-        向房间内所有成员广播事件（通过 WebSocket）
-        
+        向房间内所有成员广播事件（通过 WebSocket）- 终极修复版：同时调用全局连接池确保房主收到
+        保证100%所有浏览器（包括房主自己的浏览器）都能收到推送
         Returns:
             成功推送的连接数
         """
         count = 0
+        
+        # 新增：调用全局连接池中的全局broadcast_to_all_clients函数，确保所有浏览器都收到，不管什么节点连接的
+        try:
+            from evolution.cluster.cluster_api import broadcast_to_all_clients
+            count += broadcast_to_all_clients(event)
+        except Exception as e_global:
+            logger.warning(f"调用全局WebSocket广播失败: {e_global}")
         
         # 1. 向所有 Worker 节点广播
         for node in self.nodes.values():
@@ -987,6 +936,7 @@ class ClusterManager:
                 self._safe_ws_send_json(ws, event)
                 count += 1
         
+        logger.debug(f"📡 [房间广播完成] 事件类型={event.get('type')}, 总成功推送数={count}")
         return count
     
     def execute_local_task_async(self, node_id: str, task_id: str, task_type: str, description: str, parameters: Dict = None):
@@ -1720,23 +1670,40 @@ class ClusterServer:
                     logger.info(f"[ClusterServer] 房间无密码，但客户端提供了密码，忽略")
             
             # 构建节点信息，并进行能力评估
+            raw_node_id = msg.get('node_id')
             node_info = {
-                "node_id": msg.get('node_id'),
+                "node_id": raw_node_id,
                 "ip": addr[0],  # 使用客户端IP
                 "model": msg.get('model', 'unknown'),
                 "role": msg.get('role', 'worker'),
                 "mode": msg.get('mode', 'auto')
             }
-            # 能力评估（Phase 1简易版）
-            node_info['capability_score'] = evaluate_capability_simple({
-                'model': node_info['model'],
-                'gpu': msg.get('gpu'),
-                'vram': msg.get('vram')
-            })
-            logger.info(f"📊 [ClusterServer] 节点 {node_info['node_id']} 能力评估: {node_info['capability_score']:.2f}")
-
-            self.manager.add_node(node_info)
-            node = self.manager.nodes.get(node_info['node_id'])
+            
+            # === 【核心重入增强】如果该 node_id 已存在，直接重新激活节点，不用新建 ===
+            existing_node = None
+            if raw_node_id in self.manager.nodes:
+                existing_node = self.manager.nodes[raw_node_id]
+                logger.info(f"🔄 [重入机制] 检测到节点 {raw_node_id[:8]} 之前已离线，正在重新激活！")
+            
+            if not existing_node:
+                # 全新节点，走原流程
+                node_info['capability_score'] = evaluate_capability_simple({
+                    'model': node_info['model'],
+                    'gpu': msg.get('gpu'),
+                    'vram': msg.get('vram')
+                })
+                logger.info(f"📊 [ClusterServer] 新节点 {node_info['node_id']} 能力评估: {node_info['capability_score']:.2f}")
+                self.manager.add_node(node_info)
+                node = self.manager.nodes.get(node_info['node_id'])
+            else:
+                # 离线节点重新激活，复用原有状态，更新关键信息
+                node = existing_node
+                node.connection = conn
+                node.ip = addr[0]
+                node.status = "active"
+                node.last_heartbeat = time.time()  # 重置心跳时间
+                logger.info(f"✅ [重入成功] 节点 {raw_node_id[:8]} 已成功从离线状态恢复，重新加入集群！")
+            
             if node:
                 node.connection = conn
                 node.ip = addr[0]
@@ -1834,8 +1801,8 @@ class ClusterServer:
             if node:
                 node.connection = None
                 node.status = "offline"
-                # 离开房间
-                self.manager.leave_room(node.node_id)
+                # === 【重入关键增强】断开连接不立即从房间成员列表删除节点！只标记离线，10分钟内重入可直接恢复 ===
+                logger.warning(f"⏸️ 节点 {node.node_id[:8]} 临时离线，暂保留在房间成员列表中，10分钟内可直接重入恢复")
             try:
                 conn.close()
             except:
@@ -2236,6 +2203,78 @@ class ClusterClient:
             if sock:
                 sock.close()
             return (False, f"连接异常: {str(e)}")
+    
+    def _auto_reconnect_loop(self):
+        """【核心重连增强版】后台自动重连循环 - 利用本地持久化状态自动恢复连接"""
+        import os
+        import json as json_module
+        from config import CLUSTER_WORKER_STATE_PATH
+        
+        logger.info(f"🔄 [自动重连] 自动重连后台线程已启动")
+        
+        while True:
+            try:
+                # 1. 先从本地持久化文件读取之前的房主连接信息
+                state_path_exists = os.path.exists(CLUSTER_WORKER_STATE_PATH)
+                if not state_path_exists:
+                    time.sleep(5)
+                    continue
+                
+                with open(CLUSTER_WORKER_STATE_PATH, 'r', encoding='utf-8') as f:
+                    saved_state = json_module.load(f)
+                
+                # 如果状态标记不是 in_room，不需要自动重连
+                if not saved_state.get("in_room", False):
+                    time.sleep(5)
+                    continue
+                
+                # 2. 检查当前连接状态，如果已经有活跃连接就跳过
+                if self.running and self.socket:
+                    time.sleep(5)
+                    continue
+                
+                # 3. 尝试用保存的参数重新连接房主
+                saved_host = saved_state.get("host")
+                saved_port = saved_state.get("port")
+                saved_node_id = saved_state.get("node_id")
+                saved_name = saved_state.get("name")
+                saved_model = saved_state.get("model")
+                saved_role = saved_state.get("role", "worker")
+                saved_mode = saved_state.get("mode", "auto")
+                
+                if not saved_host or not saved_port or not saved_node_id:
+                    time.sleep(5)
+                    continue
+                
+                logger.info(f"🔄 [自动重连] 检测到之前的协作状态，正在尝试自动恢复连接到 {saved_host}:{saved_port}...")
+                
+                # 4. 执行重连
+                node_info = {
+                    "node_id": saved_node_id,  # 关键：复用完全相同的node_id！房主端会直接重激活而不是新建节点
+                    "name": saved_name,
+                    "model": saved_model,
+                    "role": saved_role,
+                    "mode": saved_mode
+                }
+                
+                success, reason = self.join(saved_host, saved_port, node_info)
+                
+                if success:
+                    logger.info(f"✅ [自动重连成功] 已自动恢复协作连接，继续工作！")
+                else:
+                    logger.warning(f"⏳ [自动重连失败] 原因: {reason}, 5秒后重试...")
+                
+                # 重连尝试间隔
+                time.sleep(5)
+                
+            except Exception as e:
+                logger.warning(f"[自动重连循环异常] {e}")
+                time.sleep(5)
+    
+    def start_auto_reconnect(self):
+        """启动后台自动重连线程"""
+        threading.Thread(target=self._auto_reconnect_loop, daemon=True).start()
+        logger.info(f"🔄 [ClusterClient] 自动重连机制已启动")
     
     def close(self):
         """关闭持久连接，停止所有后台线程"""

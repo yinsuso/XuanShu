@@ -2,12 +2,17 @@
 # -*- coding: utf-8 -*-
 """
 集群管理器（自包含简化版）
+增强版：真实心跳、负载采集、任务重试次数限制
 """
 import threading
 import time
 import uuid
+import sys
 from typing import Dict, List, Any
-from config import SCHEDULER_STRATEGY
+from config import SCHEDULER_STRATEGY, MANAGER_MAX_RETRIES
+from logger import get_logger
+
+logger = get_logger("evolution.cluster.manager")
 
 class SimpleNode:
     def __init__(self, node_id: str, model: str = "qwen2.5-coder:7b", host: str = "127.0.0.1", port: int = 30001):
@@ -20,6 +25,8 @@ class SimpleNode:
         self.load_memory: float = 0.0
         self.pending_tasks: List[Any] = []
         self.metadata: Dict[str, Any] = {}
+        self.last_heartbeat: float = time.time()
+        self.task_retry_count: Dict[str, int] = {}  # task_id -> retry count
 
 class SimpleScheduler:
     def __init__(self, manager):
@@ -119,10 +126,91 @@ class ClusterManager:
             room = self.rooms.get(room_id)
             return room["tasks"] if room else []
 
+    def _collect_system_load(self):
+        """采集本机CPU和内存负载（跨平台兼容）"""
+        cpu_load = 0.0
+        mem_load = 0.0
+        try:
+            import psutil
+            cpu_load = psutil.cpu_percent(interval=0.5) / 100.0
+            mem = psutil.virtual_memory()
+            mem_load = mem.percent / 100.0
+        except ImportError:
+            # psutil未安装时用简化估算
+            cpu_load = 0.3
+            mem_load = 0.5
+        return (cpu_load, mem_load)
+
+    def _reassign_task_with_limit(self, node_id: str, task_id: str, max_retries: int = None):
+        """带次数限制的任务重派，超过max_retries后标记失败"""
+        if max_retries is None:
+            max_retries = MANAGER_MAX_RETRIES
+        node = self.nodes.get(node_id)
+        if not node:
+            return False
+        
+        # 增加重试计数
+        if task_id not in node.task_retry_count:
+            node.task_retry_count[task_id] = 0
+        node.task_retry_count[task_id] += 1
+        
+        current_retry = node.task_retry_count[task_id]
+        logger.info(
+            "任务重派中",
+            details={
+                "task_id": task_id,
+                "node_id": node_id,
+                "retry": current_retry,
+                "max_retries": max_retries,
+            }
+        )
+        
+        if current_retry >= max_retries:
+            logger.error(
+                "任务超过最大重试次数，标记为失败",
+                details={
+                    "task_id": task_id,
+                    "max_retries": max_retries,
+                }
+            )
+            task = self.tasks.get(task_id)
+            if task:
+                task["status"] = "failed"
+                task["error"] = f"超过最大重试次数 {max_retries}"
+            node.status = "suspect"  # 标记节点异常
+            return False
+        return True
+
     def _heartbeat_loop(self):
+        """增强版心跳循环：采集负载、更新节点存活状态、清理超时节点"""
+        logger.info("集群心跳循环已启动")
         while True:
-            time.sleep(5)
-            pass
+            try:
+                # 采集本机系统负载
+                cpu, mem = self._collect_system_load()
+                local_nodes = [n for n in self.nodes.values() if hasattr(n, 'host') and n.host in ("127.0.0.1", "localhost")]
+                for node in local_nodes:
+                    node.load_cpu = cpu
+                    node.load_memory = mem
+                    node.last_heartbeat = time.time()
+
+                # 检查其他节点是否超时（超过30秒无心跳）
+                now = time.time()
+                with self.lock:
+                    for nid, node in list(self.nodes.items()):
+                        if now - node.last_heartbeat > 30 and node.host not in ("127.0.0.1", "localhost"):
+                            if node.status != "offline":
+                                logger.warning(
+                                    "节点心跳超时，标记为离线",
+                                    details={"node_id": nid, "elapsed": round(now - node.last_heartbeat, 1)}
+                                )
+                                node.status = "offline"
+
+                # 每5秒执行一次
+                time.sleep(5)
+            except Exception as e:
+                logger.exception("心跳循环异常")
+                time.sleep(5)
 
     def get_stats(self) -> Dict[str, Any]:
         return {

@@ -12,11 +12,12 @@ def get_cluster_manager():
     except ImportError:
         return None
 
-# 验证集群Token（与现有cluster_api一致）
+# 验证集群Token - 安全增强版，禁止空Token
 def verify_cluster_token(request: Request):
     from config import CLUSTER_API_TOKEN
-    if not CLUSTER_API_TOKEN:
-        return True
+    # 强制Token非空，无配置则直接拒绝所有请求
+    if not CLUSTER_API_TOKEN or CLUSTER_API_TOKEN.strip() == "":
+        raise HTTPException(status_code=503, detail="集群API未正确配置Token，操作已拒绝")
     token = request.headers.get("X-Cluster-Token") or request.headers.get("Authorization", "").replace("Bearer ", "")
     if token == CLUSTER_API_TOKEN:
         return True

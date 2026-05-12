@@ -4,9 +4,13 @@ import uuid
 import asyncio
 import json
 import time
+import queue
 from threading import Lock
 from pathlib import Path
 from contextlib import asynccontextmanager
+from dataclasses import dataclass, field
+from typing import Dict, Any, Optional
+from enum import Enum
 from agent import UniversalAgent
 import threading
 from fastapi import Response
@@ -57,7 +61,7 @@ def save_worker_state(state: dict):
         return False
 
 def load_worker_state() -> dict:
-    """从本地 JSON 文件加载 Worker 之前保存的房间连接状态 - 增强版：完美处理空文件和无效JSON，只要包含有效房间信息就识别为协作模式"""
+    """从本地 JSON 文件加载 Worker 状态 - 智能分层机制：区分临时过渡状态和完全无效状态"""
     try:
         if not os.path.exists(CLUSTER_WORKER_STATE_PATH):
             return {}
@@ -65,33 +69,38 @@ def load_worker_state() -> dict:
         with open(CLUSTER_WORKER_STATE_PATH, 'r', encoding='utf-8') as f:
             content = f.read().strip()
         if not content:
-            logger.info(f"📂 [Worker持久化] 状态文件为空，自动清理")
-            clear_worker_state()
+            logger.info(f"📂 [Worker持久化] 状态文件为空，返回空状态")
             return {}
         # 解析JSON
         state = json.loads(content)
         
-        # 智能判断：只要包含房间名称/房间ID/房主名等关键协作信息，就算in_room没有明确标记为True，也视为有效协作状态
-        has_valid_room_info = (
-            (state.get("room_name") and state.get("room_name") != "协作房间") or 
-            state.get("room_id") or 
-            state.get("owner_name") or
-            state.get("members_detail")
+        # ============== 智能分层校验逻辑 ==============
+        # 第一层：完全无效状态 → 必须清空
+        # 条件：既没有 host/port，又没有 in_room 标记 → 说明是完全无效的残留
+        is_completely_invalid = (
+            not state.get("host") and
+            not state.get("port") and
+            not state.get("in_room")
         )
-        
-        # 如果状态文件中有明确的 in_room=False，或者关键信息全为空，才清空
-        if state.get("in_room") is False or (not state and not has_valid_room_info):
-            logger.info(f"📂 [Worker持久化] 状态文件无效，自动清空")
+        if is_completely_invalid:
+            logger.info(f"📂 [Worker持久化] 检测到完全无效的残留状态，自动清理")
             clear_worker_state()
             return {}
         
-        # 如果有有效房间信息但缺少 in_room 标记，自动补全
-        if has_valid_room_info and not state.get("in_room", False):
-            state["in_room"] = True
-            logger.info(f"📂 [Worker持久化] 检测到有效房间信息，自动补全in_room标记")
-            save_worker_state(state)
+        # 第二层：临时过渡状态 → 允许保留，成员刚加入房间还在等房主推送完整信息
+        # 条件：有 host、port、in_room=True，即使 room_id 是 pending-fetch 也允许
+        is_transition_state = (
+            state.get("in_room") is True and
+            state.get("host") and
+            state.get("port") and
+            state.get("name")  # 成员有自己的花名
+        )
+        if is_transition_state:
+            logger.info(f"📂 [Worker持久化] 检测到临时过渡状态，保留等待房主同步完整信息")
+            return state
         
-        logger.info(f"📂 [Worker持久化] 已从本地加载历史状态，in_room={state.get('in_room')}")
+        # 第三层：完全有效完整状态 → 正常使用
+        logger.info(f"📂 [Worker持久化] 已加载状态，room_name={state.get('room_name', '未命名')}")
         return state
     except json.JSONDecodeError as e:
         logger.warning(f"⚠️ [Worker持久化] JSON解析失败，自动清理无效文件: {e}")
@@ -645,15 +654,52 @@ async def create_room(request: Request):
 
 @app.get("/api/rooms/current")
 async def get_current_room(request: Request):
-    """获取当前房间信息（Manager / Worker / standalone 都可查看）"""
-    # 取消严格的角色限制，Worker节点也可以查看房间详情
-
-    # 【核心修复】Worker节点优先使用本地持久化的房间信息，不要依赖空的Manager！
+    """获取当前房间信息 - 增强版：Worker节点主动向房主同步完整房间信息"""
+    import requests
+    
+    # 【核心修复】Worker节点优先使用本地持久化的房间信息
     saved_state = load_worker_state()
     is_in_collab_mode = saved_state.get("in_room", False)
     
     if is_in_collab_mode:
-        logger.info(f"📤 [Worker房间信息API] 从本地持久化读取协作房间信息")
+        # 判断：是否是临时过渡状态（缺少完整房间信息）
+        is_transition_state = (
+            not saved_state.get("room_id") or 
+            saved_state.get("room_id") == "pending-fetch" or
+            not saved_state.get("room_name") or 
+            saved_state.get("room_name") == "协作房间"
+        )
+        
+        if is_transition_state:
+            # 轻量级主动同步：直接向房主的 /api/rooms/current 拉取完整房间信息
+            host = saved_state.get("host")
+            port = saved_state.get("port")
+            if host and port:
+                try:
+                    poll_url = f"http://{host}:{port}/api/rooms/current"
+                    resp = requests.get(poll_url, timeout=3.0)
+                    if resp.status_code == 200:
+                        master_info = resp.json()
+                        if master_info and master_info.get("is_collab_mode"):
+                            # 更新本地持久化状态为完整信息
+                            updated_state = saved_state.copy()
+                            updated_state.update({
+                                "in_room": True,
+                                "room_name": master_info.get("room_name", updated_state.get("room_name", "")),
+                                "room_id": master_info.get("room_id", updated_state.get("room_id", "")),
+                                "owner_name": master_info.get("owner_name", updated_state.get("owner_name", "")),
+                                "owner_model": master_info.get("owner_model", updated_state.get("owner_model", "")),
+                                "members_detail": master_info.get("members_detail", updated_state.get("members_detail", [])),
+                                "synced_at": time.time()
+                            })
+                            save_worker_state(updated_state)
+                            logger.info(f"🔄 [Worker主动同步] 成功从房主拉取完整房间信息: {updated_state.get('room_name')}")
+                            # 使用同步后的完整信息
+                            saved_state = updated_state
+                except Exception as e_poll:
+                    logger.debug(f"⏳ [Worker主动同步] 房主暂时不可达，稍后重试: {str(e_poll)[:50]}")
+        
+        # 最终返回信息（同步过或没同步过都至少有可用值）
         info = {
             "room_id": saved_state.get("room_id", ""),
             "room_name": saved_state.get("room_name", "协作房间"),
@@ -669,6 +715,7 @@ async def get_current_room(request: Request):
             "my_name": saved_state.get("name", ""),
             "my_model": saved_state.get("model", "")
         }
+        logger.info(f"📤 [Worker房间信息API] 返回协作房间信息: room_name={info.get('room_name')}")
     else:
         # 不是协作模式，走 Manager 的正常逻辑
         await ensure_cluster_initialized()
@@ -682,7 +729,7 @@ async def get_current_room(request: Request):
         info["is_collab_mode"] = False
         info["success"] = True  # 总是返回 success，即使房间是 Default-Room
     
-    # 【问题1修复】从 model_config.json 中读取所有模型配置，返回给前端下拉框
+    # 从 model_config.json 中读取所有模型配置，返回给前端下拉框
     from model_providers import config_manager
     all_models = []
     configs = config_manager.list_configs()
@@ -694,7 +741,7 @@ async def get_current_room(request: Request):
             "model": cfg["model"],
             "desc": f"{cfg['model']}{suffix}{type_label}"
         })
-    # 补充 Ollama 模型到列表 - 静默模式（完全不输出警告）
+    # 补充 Ollama 模型到列表 - 静默模式
     try:
         ollama_models_res = await list_ollama_models()
         if ollama_models_res.get("success"):
@@ -707,7 +754,8 @@ async def get_current_room(request: Request):
                         "desc": f"{m['name']} (Ollama)"
                     })
     except Exception:
-        pass  # 静默忽略所有Ollama相关错误，完全不打扰用户
+        pass  # 静默忽略所有Ollama相关错误
+    
     info["available_models"] = all_models
     info["current_model"] = config_manager.current_config.model_name if config_manager.current_config else None
     
@@ -797,6 +845,19 @@ async def join_room(request: Request):
         raise HTTPException(status_code=400, detail="缺少必要参数")
 
     node = getattr(app.state, "cluster_node", None)
+    
+    # 【关键修复】先检查本地持久化状态：如果状态不完整或已有无效TCP连接，先全部清除干净
+    saved_state = load_worker_state()
+    if saved_state and not (node and node.connection):
+        # 有残留持久化状态但没有有效的TCP连接，说明之前的状态是不完整的，直接清空
+        logger.info("🔧 [JoinRoom] 检测到残留无效状态，正在清理...")
+        clear_worker_state()
+        if node:
+            node.connection = None
+            if hasattr(node, 'in_collab_mode'):
+                node.in_collab_mode = False
+    
+    # 现在再检查：只有真正建立了有效TCP连接时才禁止重连
     if node and node.connection:
         return {"success": False, "error": "已经连接到一个房间，请先退出当前房间"}
 
@@ -1073,7 +1134,7 @@ async def join_room(request: Request):
 
 @app.post("/api/rooms/leave")
 async def leave_room(request: Request):
-    """Worker 离开房间，退出协作模式"""
+    """Worker 离开房间，退出协作模式 - 100% 彻底清理版本"""
     from evolution.cluster.cluster_api import broadcast_to_all_clients
 
     # 懒加载集群组件
@@ -1081,42 +1142,40 @@ async def leave_room(request: Request):
         success = await ensure_cluster_initialized()
         if not success:
             raise HTTPException(status_code=500, detail="集群未就绪，无法执行操作")
+    
     node = getattr(app.state, "cluster_node", None)
     
-    # 核心修复：无论如何都清除本地持久化状态
+    # 【核心强化1】无论如何都要彻底清除本地持久化状态文件
     clear_worker_state()
     
-    if node and node.connection:
-        try:
-            node.connection.close()
-        except:
-            pass
-        node.connection = None
-        
-        # 清除协作模式状态标记
-        if hasattr(node, "in_collab_mode"):
-            node.in_collab_mode = False
-            
-        # 向本地浏览器客户端广播：已成功退出房间，退出协作模式
-        await broadcast_to_all_clients({
-            "type": "left_room_success",
-            "timestamp": time.time()
-        })
-        
-        logger.info("🚪 已成功退出协作房间，退出协作模式")
-        return {"success": True, "message": "已退出房间，退出协作模式"}
-    
-    # 即使未真正建立TCP连接，也重置状态标记
+    # 【核心强化2】彻底重置内存中的所有相关标记
     if node:
-        if hasattr(node, "in_collab_mode"):
-            node.in_collab_mode = False
-        await broadcast_to_all_clients({
-            "type": "left_room_success",
-            "timestamp": time.time()
-        })
-        return {"success": True, "message": "已重置协作模式状态"}
+        # 关闭并清除连接
+        if hasattr(node, 'connection') and node.connection:
+            try:
+                node.connection.close()
+            except Exception:
+                pass
+            node.connection = None
         
-    return {"success": False, "error": "未连接到任何房间"}
+        # 重置所有协作模式相关属性
+        if hasattr(node, 'in_collab_mode'):
+            node.in_collab_mode = False
+        if hasattr(node, 'status'):
+            node.status = "idle"
+        if hasattr(node, 'pending_tasks'):
+            node.pending_tasks = []
+        
+        logger.info("🧹 [LeaveRoom] 内存中所有协作状态已彻底重置")
+    
+    # 【核心强化3】广播通知浏览器已成功退出
+    await broadcast_to_all_clients({
+        "type": "left_room_success",
+        "timestamp": time.time()
+    })
+    
+    logger.info("🚪 已完全退出协作房间，所有状态已彻底清理")
+    return {"success": True, "message": "已退出房间，所有协作状态已完全清理"}
 
 @app.post("/api/rooms/dismiss")
 async def dismiss_room(request: Request):
@@ -2304,10 +2363,6 @@ async def api_skills():
     return {"success": True, "skills": skills}
 
 # ==================== 异步对话任务管理系统 ====================
-import queue
-from dataclasses import dataclass, field
-from typing import Dict, Any, Optional
-from enum import Enum
 
 class AsyncTaskStatus(str, Enum):
     PENDING = "pending"

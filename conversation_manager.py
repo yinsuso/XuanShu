@@ -411,11 +411,11 @@ def get_global_conversation_manager() -> ConversationManager:
         collab_list = _global_conversation_manager.list_conversations(limit=1, conversation_type=ConversationType.COLLABORATION)
         
         if standalone_list:
-            _global_conversation_manager._standalone_current_id = standalone_list[0]["conversation_id"]
+            _global_conversation_manager._standalone_current_id = None
         if collab_list:
-            _global_conversation_manager._collab_current_id = collab_list[0]["conversation_id"]
+            _global_conversation_manager._collab_current_id = None
         
-        _global_conversation_manager.try_load_last_conversation()
+        logger.info("🚀 项目启动：默认创建全新对话，不自动加载历史记录")
     return _global_conversation_manager
 
 # 保持向后兼容的别名
