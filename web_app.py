@@ -57,16 +57,49 @@ def save_worker_state(state: dict):
         return False
 
 def load_worker_state() -> dict:
-    """从本地 JSON 文件加载 Worker 之前保存的房间连接状态"""
+    """从本地 JSON 文件加载 Worker 之前保存的房间连接状态 - 增强版：完美处理空文件和无效JSON，只要包含有效房间信息就识别为协作模式"""
     try:
-        if os.path.exists(CLUSTER_WORKER_STATE_PATH):
-            with open(CLUSTER_WORKER_STATE_PATH, 'r', encoding='utf-8') as f:
-                state = json.load(f)
-            logger.info(f"📂 [Worker持久化] 已从本地加载历史状态")
-            return state
+        if not os.path.exists(CLUSTER_WORKER_STATE_PATH):
+            return {}
+        # 先读取文件内容，检查是否为空
+        with open(CLUSTER_WORKER_STATE_PATH, 'r', encoding='utf-8') as f:
+            content = f.read().strip()
+        if not content:
+            logger.info(f"📂 [Worker持久化] 状态文件为空，自动清理")
+            clear_worker_state()
+            return {}
+        # 解析JSON
+        state = json.loads(content)
+        
+        # 智能判断：只要包含房间名称/房间ID/房主名等关键协作信息，就算in_room没有明确标记为True，也视为有效协作状态
+        has_valid_room_info = (
+            (state.get("room_name") and state.get("room_name") != "协作房间") or 
+            state.get("room_id") or 
+            state.get("owner_name") or
+            state.get("members_detail")
+        )
+        
+        # 如果状态文件中有明确的 in_room=False，或者关键信息全为空，才清空
+        if state.get("in_room") is False or (not state and not has_valid_room_info):
+            logger.info(f"📂 [Worker持久化] 状态文件无效，自动清空")
+            clear_worker_state()
+            return {}
+        
+        # 如果有有效房间信息但缺少 in_room 标记，自动补全
+        if has_valid_room_info and not state.get("in_room", False):
+            state["in_room"] = True
+            logger.info(f"📂 [Worker持久化] 检测到有效房间信息，自动补全in_room标记")
+            save_worker_state(state)
+        
+        logger.info(f"📂 [Worker持久化] 已从本地加载历史状态，in_room={state.get('in_room')}")
+        return state
+    except json.JSONDecodeError as e:
+        logger.warning(f"⚠️ [Worker持久化] JSON解析失败，自动清理无效文件: {e}")
+        clear_worker_state()
         return {}
     except Exception as e:
-        logger.warning(f"⚠️ [Worker持久化] 加载失败: {e}")
+        logger.warning(f"⚠️ [Worker持久化] 加载失败，自动清理状态文件: {e}")
+        clear_worker_state()
         return {}
 
 def clear_worker_state():
@@ -77,6 +110,88 @@ def clear_worker_state():
             logger.info("🗑️ [Worker持久化] 房间连接状态已清除")
     except Exception as e:
         logger.warning(f"⚠️ [Worker持久化] 清除失败: {e}")
+
+# ==================== 推拉结合混合架构：Worker端轻量级轮询兜底机制 ====================
+_worker_polling_thread = None
+_worker_polling_running = False
+
+def _worker_room_info_polling_loop():
+    """
+    Worker端后台兜底轮询线程 - 推拉结合架构核心
+    每10秒尝试从房主拉取最新房间信息，确保本地持久化文件100%与房主同步
+    这是TCP房主推送机制的双重保险，即使TCP丢包/延迟也不会丢失房间信息
+    严格使用成员加入房间时用户输入的房主真实内网IP，绝不使用默认127.0.0.1
+    """
+    import requests
+    while _worker_polling_running:
+        try:
+            # 先从本地加载当前持久化状态，检查是否在协作模式
+            current_state = load_worker_state()
+            if not current_state or not current_state.get("in_room"):
+                # 当前不在协作模式，直接等待下一轮
+                time.sleep(5)
+                continue
+            
+            # 从状态获取房主的连接信息 - 100%使用用户加入房间时输入的真实内网IP
+            host = current_state.get("host")
+            port = current_state.get("port")
+            
+            # 严格校验：host和port必须都存在，跳过无效状态
+            if not host or not port:
+                logger.debug(f"[Worker兜底轮询] 房主host/port信息不完整，跳过本次轮询")
+                time.sleep(5)
+                continue
+            
+            # 构建房主的API地址 - 完全使用用户输入的真实IP，绝不篡改
+            manager_base_url = f"http://{host}:{port}"
+            
+            # 尝试调用房主的 /api/rooms/current API 获取最新完整房间信息
+            try:
+                poll_url = f"{manager_base_url}/api/rooms/current"
+                resp = requests.get(poll_url, timeout=5.0)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    if data and data.get("is_collab_mode", False):
+                        # 获取到房主最新房间信息，更新本地持久化文件
+                        updated_state = current_state.copy()
+                        updated_state.update({
+                            "in_room": True,
+                            "room_name": data.get("room_name", updated_state.get("room_name", "")),
+                            "room_id": data.get("room_id", updated_state.get("room_id", "")),
+                            "owner_name": data.get("owner_name", updated_state.get("owner_name", "")),
+                            "owner_model": data.get("owner_model", updated_state.get("owner_model", "")),
+                            "members_detail": data.get("members_detail", updated_state.get("members_detail", [])),
+                            "polled_at": time.time()
+                        })
+                        save_worker_state(updated_state)
+                        logger.debug(f"🔄 [Worker兜底轮询] 成功从房主 {host}:{port} 同步最新房间信息: room_name={data.get('room_name')}, 成员数={len(data.get('members_detail', []))}")
+            except requests.exceptions.RequestException as e_req:
+                # 网络异常（房主暂时不可达），静默不打错误日志，不打扰用户
+                logger.debug(f"⏳ [Worker兜底轮询] 房主 {host}:{port} 暂时不可达，稍后重试: {str(e_req)[:50]}")
+                pass
+            
+        except Exception as e_global:
+            logger.debug(f"[Worker兜底轮询] 循环异常: {e_global}")
+        
+        # 等待10秒再进行下一次轮询（轻量级，不占用资源）
+        time.sleep(10)
+
+def start_worker_polling():
+    """启动Worker端轻量级兜底轮询线程"""
+    global _worker_polling_thread, _worker_polling_running
+    if _worker_polling_thread and _worker_polling_thread.is_alive():
+        logger.warning("[Worker兜底轮询] 线程已在运行，跳过重复启动")
+        return
+    _worker_polling_running = True
+    _worker_polling_thread = threading.Thread(target=_worker_room_info_polling_loop, daemon=True)
+    _worker_polling_thread.start()
+    logger.info("✅ [推拉混合架构] Worker端轻量级兜底轮询线程已启动，每10秒同步一次房主房间信息")
+
+def stop_worker_polling():
+    """停止Worker端兜底轮询线程"""
+    global _worker_polling_running
+    _worker_polling_running = False
+    logger.info("🛑 [推拉混合架构] Worker端兜底轮询线程已停止")
 
 # 全局 UniversalAgent 实例（懒加载）
 _agent = None
@@ -106,11 +221,28 @@ _APP_VERSION = _get_app_version()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """FastAPI 生命周期管理器：替代废弃的 on_event"""
-    # 启动时：执行初始化（目前为空，因为集群已改为懒加载）
+    """FastAPI 生命周期管理器：推拉混合架构完整版"""
     print("🚀 玄枢 Web 服务启动中...")
+    try:
+        # ===== 修复：启动时绝对不清空持久化状态！ =====
+        # 成员agent刷新web页面后需要从worker_room_state.json读取状态识别协作模式
+        old_state = load_worker_state()
+        if old_state and old_state.get("in_room"):
+            logger.info(f"💾 [启动状态恢复] 检测到历史协作状态: room_name={old_state.get('room_name')}")
+        else:
+            logger.info("📂 无历史协作状态，正常启动")
+    except Exception as e_clean:
+        logger.warning(f"启动时加载协作状态失败: {e_clean}")
+    
+    # ===== 推拉混合架构：启动Worker端轻量级兜底轮询线程 =====
+    start_worker_polling()
+    
     yield
-    # 关闭时：执行清理工作（如有）
+    
+    # ===== 关闭时：停止Worker端兜底轮询线程 =====
+    stop_worker_polling()
+    
+    # 关闭时：不清空持久化状态，让用户下次启动/刷新还能恢复协作模式
     print("🛑 玄枢 Web 服务关闭中...")
 
 app = FastAPI(title="玄枢智能体", version=_APP_VERSION, lifespan=lifespan)
@@ -783,12 +915,69 @@ async def join_room(request: Request):
                     
                     logger.info(f"📩 [Worker TCP] 从房主收到事件: {msg_type}")
                     
-                    # 当收到房主推送的房间状态更新时，更新本地持久化状态
+                    # 核心：收到房主解散房间通知 - 第一时间清空本地状态
+                    if msg_type == "room_dismissed":
+                        logger.info(f"🏠 [Worker处理] 房主已解散房间，立即清空所有本地状态")
+                        clear_worker_state()
+                        if node:
+                            try:
+                                if client and client.socket:
+                                    client.socket.close()
+                            except:
+                                pass
+                            node.connection = None
+                            if hasattr(node, "in_collab_mode"):
+                                node.in_collab_mode = False
+                        from evolution.cluster.cluster_api import broadcast_to_all_clients
+                        try:
+                            new_loop = asyncio.new_event_loop()
+                            asyncio.set_event_loop(new_loop)
+                            new_loop.run_until_complete(broadcast_to_all_clients({
+                                "type": "room_dismissed",
+                                "message": "房主已解散房间，协作会话结束",
+                                "timestamp": time.time()
+                            }))
+                            new_loop.close()
+                        except:
+                            pass
+                        logger.info("✅ [Worker状态清理] 解散通知处理完成，已完全退出协作模式")
+                        break
+                    
+                    # 核心：收到协作结束通知 - 第一时间清空本地状态
+                    if msg_type == "collaboration_ended":
+                        logger.info(f"🏁 [Worker处理] 协作会话结束，立即清空所有本地状态")
+                        clear_worker_state()
+                        if node:
+                            try:
+                                if client and client.socket:
+                                    client.socket.close()
+                            except:
+                                pass
+                            node.connection = None
+                            if hasattr(node, "in_collab_mode"):
+                                node.in_collab_mode = False
+                        from evolution.cluster.cluster_api import broadcast_to_all_clients
+                        try:
+                            new_loop = asyncio.new_event_loop()
+                            asyncio.set_event_loop(new_loop)
+                            new_loop.run_until_complete(broadcast_to_all_clients({
+                                "type": "collaboration_ended",
+                                "message": "所有成员已离开，协作会话结束",
+                                "timestamp": time.time()
+                            }))
+                            new_loop.close()
+                        except:
+                            pass
+                        logger.info("✅ [Worker状态清理] 协作结束通知处理完成，已完全退出协作模式")
+                        break
+                    
+                    # 当收到房主推送的房间状态更新时，更新本地持久化状态，强制标记为 in_room=True
                     if msg_type == "room_info_update":
                         try:
                             room_info = msg.get("room_info", {})
                             updated_saved_state = load_worker_state()
                             updated_saved_state.update({
+                                "in_room": True,  # 核心：只要收到房主推送的房间信息，就一定标记为已在协作模式
                                 "room_name": room_info.get("room_name", ""),
                                 "room_id": room_info.get("room_id", ""),
                                 "owner_name": room_info.get("owner_name", ""),
@@ -797,6 +986,7 @@ async def join_room(request: Request):
                                 "saved_at": time.time()
                             })
                             save_worker_state(updated_saved_state)
+                            logger.info(f"✅ [WebApp持久化] 房主推送房间信息更新成功，强制标记 in_room=True")
                         except Exception as e_update:
                             logger.warning(f"更新房间状态持久化失败: {e_update}")
                     
@@ -921,6 +1111,30 @@ async def leave_room(request: Request):
         return {"success": True, "message": "已重置协作模式状态"}
         
     return {"success": False, "error": "未连接到任何房间"}
+
+@app.post("/api/rooms/dismiss")
+async def dismiss_room(request: Request):
+    """房主解散房间 - 完整功能API端点：通知所有成员并重置房主自身状态"""
+    from evolution.cluster.cluster_api import verify_token
+    
+    # 懒加载集群组件
+    await ensure_cluster_initialized()
+    manager = getattr(app.state, "cluster_manager", None)
+    if not manager:
+        logger.error("解散房间失败：集群管理器未初始化")
+        raise HTTPException(status_code=500, detail="集群管理器未初始化")
+    
+    # 调用ClusterManager的dismiss_room方法
+    success = manager.dismiss_room()
+    
+    # 房主自己也要清空本地的任何可能残留的状态（虽然房主本身是Manager角色，没有worker状态文件）
+    clear_worker_state()
+    
+    logger.info("🏠 房主解散房间操作已完成")
+    return {
+        "success": success, 
+        "message": "房间已成功解散，所有成员已收到通知，房主状态已重置"
+    }
 
 @app.post("/api/rooms/update_member")
 async def update_member(request: Request):
@@ -1234,6 +1448,36 @@ async def dismiss_room(request: Request):
         raise HTTPException(status_code=500, detail="集群管理器未初始化")
 
     try:
+        # 第0步：在断开连接前，先向所有在线Worker发送房间解散通知，让Worker优雅地退出协作模式
+        try:
+            import json
+            dismiss_msg = json.dumps({
+                "type": "room_dismissed",
+                "message": "房主已解散房间，协作会话结束",
+                "timestamp": time.time()
+            }).encode('utf-8')
+            owner_node_id = manager.own_node.node_id if hasattr(manager, 'own_node') and manager.own_node else None
+            sent_count = 0
+            for nid, node in manager.nodes.items():
+                if nid != owner_node_id and node.connection:
+                    try:
+                        node.connection.sendall(dismiss_msg)
+                        sent_count += 1
+                        logger.info(f"📢 [解散通知] 已通知成员节点 {nid[:8]} 房间即将解散")
+                    except Exception as e_send:
+                        logger.debug(f"向节点 {nid[:8]} 发送解散通知失败: {e_send}")
+            logger.info(f"📢 已向 {sent_count} 个在线Worker发送房间解散通知")
+            
+            # 同时向本地浏览器WebSocket也广播房间解散事件
+            from evolution.cluster.cluster_api import broadcast_to_all_clients
+            await broadcast_to_all_clients({
+                "type": "room_dismissed",
+                "message": "房主已解散房间，协作会话结束",
+                "timestamp": time.time()
+            })
+        except Exception as e_notify:
+            logger.warning(f"广播房间解散通知时遇到问题: {e_notify}")
+        
         # 第一步：停止房主UDP广播，这样其他agent的扫描器就不会再收到旧房间信息了
         discovery = getattr(manager, 'discovery', None) or globals().get('_discovery_instance')
         if discovery:
@@ -1341,6 +1585,7 @@ async def ensure_cluster_initialized():
             scheduler = TaskScheduler(assessor, strategy=SCHEDULER_STRATEGY)
             manager.set_scheduler(scheduler, assessor)
             manager.start_monitoring(interval=MANAGER_MONITOR_INTERVAL)
+            manager.start_room_sync(interval=3)
             # 【关键修复1】单机模式下只启动扫描模式，绝对不启动默认房间的UDP广播！
             # 等用户手动调用创建房间API后，再广播真实的自定义房间信息
             if not globals().get('_discovery_instance'):
@@ -1370,6 +1615,7 @@ async def ensure_cluster_initialized():
             scheduler = TaskScheduler(assessor, strategy=SCHEDULER_STRATEGY)
             manager.set_scheduler(scheduler, assessor)
             manager.start_monitoring(interval=MANAGER_MONITOR_INTERVAL)
+            manager.start_room_sync(interval=3)
             mgr_thread = threading.Thread(
                 target=manager.start_server,
                 kwargs={"host": "0.0.0.0", "port": CLUSTER_MANAGER_PORT},

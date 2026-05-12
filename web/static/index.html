@@ -1731,6 +1731,46 @@ function handleClusterEvent(data) {
         return;
     }
     
+    if (data.type === 'room_dismissed') {
+        // 房主解散房间，所有成员自动重置协作状态并跳转到房间列表页面
+        showToast('🏠 房主已解散房间，协作会话结束');
+        document.getElementById('cluster-badge').classList.add('hidden');
+        document.getElementById('nav-collab-chat').classList.add('hidden');
+        document.getElementById('current-room-info').classList.add('hidden');
+        if (memberRefreshTimer) {
+            clearInterval(memberRefreshTimer);
+            memberRefreshTimer = null;
+        }
+        if (STATE.collabMemberTimer) {
+            clearInterval(STATE.collabMemberTimer);
+            STATE.collabMemberTimer = null;
+        }
+        STATE.role = 'standalone';
+        showView('room-list');
+        refreshRooms();
+        return;
+    }
+    
+    if (data.type === 'collaboration_ended') {
+        // 所有成员已离开，协作会话结束，自动跳转到房间列表页面
+        showToast('🏁 协作会话已结束');
+        document.getElementById('cluster-badge').classList.add('hidden');
+        document.getElementById('nav-collab-chat').classList.add('hidden');
+        document.getElementById('current-room-info').classList.add('hidden');
+        if (memberRefreshTimer) {
+            clearInterval(memberRefreshTimer);
+            memberRefreshTimer = null;
+        }
+        if (STATE.collabMemberTimer) {
+            clearInterval(STATE.collabMemberTimer);
+            STATE.collabMemberTimer = null;
+        }
+        STATE.role = 'standalone';
+        showView('room-list');
+        refreshRooms();
+        return;
+    }
+    
     if (data.type === 'task_assigned') {
         const entry = addTaskLog('新任务', data.task_type, data.description);
         

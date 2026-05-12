@@ -213,10 +213,8 @@ class ClusterNode:
                 event["result"] = task["result"]
             elif task["status"] == TaskStatus.FAILED.value:
                 event["error"] = task["error"]
-            try:
-                asyncio.create_task(self._broadcast_event(event))
-            except RuntimeError:
-                pass
+            for ws in self.ws_connections:
+                self._safe_ws_send_json(ws, event)
 
     def receive_assignment(self, task_id: str, task_type: str, description: str, parameters: Dict[str, Any] = None):
         """接收来自 manager 的任务分配"""
@@ -257,6 +255,25 @@ class ClusterNode:
             self.connection.sendall(msg.serialize())
         except Exception as e:
             logger.error(f"发送任务结果失败: {e}")
+
+    def _safe_ws_send_json(self, ws, event: dict):
+        """线程安全地向单个WebSocket发送JSON消息，处理所有场景"""
+        async def _inner_send():
+            try:
+                await ws.send_json(event)
+            except:
+                pass
+        try:
+            loop = asyncio.get_running_loop()
+            asyncio.create_task(_inner_send())
+        except RuntimeError:
+            try:
+                new_loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(new_loop)
+                new_loop.run_until_complete(_inner_send())
+                new_loop.close()
+            except:
+                pass
 
     async def _broadcast_event(self, event: dict):
         for ws in self.ws_connections:
@@ -299,10 +316,7 @@ class ClusterManager:
                 "parameters": task["parameters"]
             }
             for ws in self.ws_connections:
-                try:
-                    asyncio.create_task(ws.send_json(event))
-                except:
-                    pass
+                self._safe_ws_send_json(ws, event)
 
     def __init__(self):
         self.nodes: Dict[str, ClusterNode] = {}
@@ -337,9 +351,14 @@ class ClusterManager:
         self._monitor_thread: Optional[threading.Thread] = None
         self._monitor_running = False
         
+        # 房间信息同步线程 - 定期向所有Worker推送完整房间信息，确保Worker本地持久化状态正确
+        self._room_sync_thread: Optional[threading.Thread] = None
+        self._room_sync_running = False
+        
         # 配置参数（可从 config.py 读取）
         self.max_retries = 3
         self.monitor_interval = 5  # 秒
+        self.room_sync_interval = 3  # 秒 - 每3秒同步一次房间信息给所有Worker
 
     def add_node(self, node_info: Dict[str, Any]):
         """
@@ -405,6 +424,72 @@ class ClusterManager:
         self._monitor_running = False
         if self._monitor_thread:
             self._monitor_thread.join(timeout=2)
+    
+    def start_room_sync(self, interval: int = 3):
+        """启动房间信息后台同步线程 - 定期向所有Worker推送完整房间信息"""
+        if self._room_sync_thread and self._room_sync_thread.is_alive():
+            logger.warning("[ClusterManager] 房间信息同步线程已在运行")
+            return
+        
+        self.room_sync_interval = interval
+        self._room_sync_running = True
+        self._room_sync_thread = threading.Thread(target=self._room_sync_loop, daemon=True)
+        self._room_sync_thread.start()
+        logger.info("✅ [ClusterManager] 房间信息同步线程已启动", interval=interval)
+    
+    def stop_room_sync(self):
+        """停止房间信息同步线程"""
+        self._room_sync_running = False
+        if self._room_sync_thread:
+            self._room_sync_thread.join(timeout=2)
+    
+    def _broadcast_full_room_info(self):
+        """向所有在线Worker推送完整的房间信息，确保Worker本地持久化JSON文件始终正确"""
+        try:
+            room_info = {
+                "room_name": self.room_name,
+                "room_id": self.room_id,
+                "owner_name": self.owner_name,
+                "owner_model": self.owner_model,
+                "members_detail": self.get_member_info()
+            }
+            full_update_msg = json.dumps({
+                "type": "room_info_update",
+                "room_info": room_info
+            }).encode('utf-8')
+            
+            # 遍历所有节点，通过TCP发送完整更新
+            success_count = 0
+            for nid, node in self.nodes.items():
+                # 跳过房主自己（如果房主也有本地连接，也可以同步）
+                if node.connection:
+                    try:
+                        node.connection.sendall(full_update_msg)
+                        success_count += 1
+                    except Exception as e_send:
+                        # 连接失效，清理连接
+                        node.connection = None
+                        logger.debug(f"⚠️ 向节点 {nid[:8]} 推送房间信息失败: {e_send}")
+            
+            # 同时向本地所有浏览器WebSocket也广播这个房间信息更新
+            self.broadcast_to_room(self.room_id, {
+                "type": "room_info_update",
+                "room_info": room_info
+            })
+            
+            logger.debug(f"📡 [房间定时同步] 已向 {success_count} 个在线Worker推送完整房间信息")
+        except Exception as e_broadcast:
+            logger.warning(f"⚠️ 定时广播房间信息失败: {e_broadcast}")
+    
+    def _room_sync_loop(self):
+        """房间信息同步循环 - 定期向所有Worker推送最新完整房间信息，保证Worker本地持久化状态100%正确"""
+        while self._room_sync_running:
+            try:
+                self._broadcast_full_room_info()
+                time.sleep(self.room_sync_interval)
+            except Exception as e:
+                logger.error(f"[ClusterManager] 房间信息同步循环异常: {e}")
+                time.sleep(self.room_sync_interval)
     
     def _monitor_loop(self):
         """监控循环（终极增强版：同时检查任务超时 + 节点心跳离线检测）"""
@@ -723,6 +808,10 @@ class ClusterManager:
         }
         # 标记房间数据已就绪
         self.room_ready = True
+        
+        # 创建房间后立即启动房间信息后台同步线程 - 核心修复：确保新加入成员能持续获得正确完整的房间信息
+        self.start_room_sync(interval=3)
+        
         logger.info(f"🏠 [ClusterManager] 房间已创建: {room_name} (ID: {self.room_id}, 房主: {owner_name}, 模型: {model})")
         return self.room_id
     
@@ -787,10 +876,63 @@ class ClusterManager:
         return True
     
     def leave_room(self, node_id: str):
-        """成员离开房间"""
+        """成员离开房间 - 增强版：广播离开事件并检测协作是否结束"""
+        left_member = None
         if node_id in self.room_members:
+            left_member = self.room_members[node_id]
             del self.room_members[node_id]
-            logger.info(f"🚪 [ClusterManager] 成员 {node_id} 已离开房间")
+            logger.info(f"🚪 [ClusterManager] 成员 {left_member.get('name', node_id)} 已离开房间")
+        
+        # 向所有在线Worker广播成员离开事件
+        try:
+            leave_event_msg = json.dumps({
+                "type": "member_left",
+                "node_id": node_id,
+                "member_name": left_member.get('name', node_id) if left_member else node_id,
+                "timestamp": time.time()
+            }).encode('utf-8')
+            
+            for nid, node in self.nodes.items():
+                if node.connection:
+                    try:
+                        node.connection.sendall(leave_event_msg)
+                    except:
+                        node.connection = None
+            
+            # 同时向本地浏览器WebSocket广播
+            self.broadcast_to_room(self.room_id, {
+                "type": "member_left",
+                "node_id": node_id,
+                "member_name": left_member.get('name', node_id) if left_member else node_id,
+                "timestamp": time.time()
+            })
+        except Exception as e_broadcast:
+            logger.warning(f"⚠️ 广播成员离开事件失败: {e_broadcast}")
+        
+        # 检测协作是否结束：除了房主自己外没有其他成员
+        non_owner_count = sum(1 for mid, m in self.room_members.items() if not m.get('is_owner', False))
+        if non_owner_count == 0:
+            logger.info("🏁 [协作结束识别] 所有非房主成员都已离开，协作模式自然结束")
+            # 向所有（剩余的）连接广播协作结束通知
+            try:
+                collab_end_msg = json.dumps({
+                    "type": "collaboration_ended",
+                    "message": "所有成员已离开，协作会话自然结束",
+                    "timestamp": time.time()
+                }).encode('utf-8')
+                for nid, node in self.nodes.items():
+                    if node.connection:
+                        try:
+                            node.connection.sendall(collab_end_msg)
+                        except:
+                            pass
+                self.broadcast_to_room(self.room_id, {
+                    "type": "collaboration_ended",
+                    "message": "所有成员已离开，协作会话自然结束",
+                    "timestamp": time.time()
+                })
+            except Exception as e_end:
+                logger.warning(f"⚠️ 广播协作结束通知失败: {e_end}")
     
     def get_room_info(self) -> Dict[str, Any]:
         """获取房间信息（用于前端展示）"""
@@ -805,6 +947,25 @@ class ClusterManager:
             "room_ready": self.room_ready
         }
     
+    def _safe_ws_send_json(self, ws, event: dict):
+        """线程安全地向单个WebSocket发送JSON消息，处理所有场景"""
+        async def _inner_send():
+            try:
+                await ws.send_json(event)
+            except:
+                pass
+        try:
+            loop = asyncio.get_running_loop()
+            asyncio.create_task(_inner_send())
+        except RuntimeError:
+            try:
+                new_loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(new_loop)
+                new_loop.run_until_complete(_inner_send())
+                new_loop.close()
+            except:
+                pass
+
     def broadcast_to_room(self, room_id: str, event: Dict[str, Any]) -> int:
         """
         向房间内所有成员广播事件（通过 WebSocket）
@@ -817,20 +978,14 @@ class ClusterManager:
         # 1. 向所有 Worker 节点广播
         for node in self.nodes.values():
             for ws in node.ws_connections:
-                try:
-                    asyncio.create_task(ws.send_json(event))
-                    count += 1
-                except:
-                    pass
+                self._safe_ws_send_json(ws, event)
+                count += 1
         
         # 2. 向 Manager 自身（浏览器连接）广播
         if self.own_node:
             for ws in self.own_node.ws_connections:
-                try:
-                    asyncio.create_task(ws.send_json(event))
-                    count += 1
-                except:
-                    pass
+                self._safe_ws_send_json(ws, event)
+                count += 1
         
         return count
     
@@ -1214,6 +1369,80 @@ class ClusterManager:
         else:
             logger.warning("[Cluster] 房主服务器已在运行")
 
+    def dismiss_room(self):
+        """
+        房主解散房间 - 完整终极版：
+        1. 向所有已连接的Worker节点广播 room_dismissed 事件
+        2. 停止UDP广播，让局域网房间列表中该房间立即消失
+        3. 停止房间信息同步线程
+        4. 重置所有房主端房间状态变量
+        """
+        logger.info("🏠 [房主解散房间] 开始解散房间，通知所有成员...")
+        
+        # 第一步：向所有在线Worker广播房间解散事件
+        try:
+            dismiss_event_msg = json.dumps({
+                "type": "room_dismissed",
+                "message": "房主已解散房间，协作会话正式结束",
+                "timestamp": time.time()
+            }).encode('utf-8')
+            
+            success_count = 0
+            for nid, node in self.nodes.items():
+                # 跳过房主自己（本地节点没有外部TCP连接）
+                if self.own_node and nid == self.own_node.node_id:
+                    continue
+                if node.connection:
+                    try:
+                        node.connection.sendall(dismiss_event_msg)
+                        success_count += 1
+                        logger.info(f"📤 [解散通知] 已通知成员 {nid[:8]}")
+                    except Exception as e_send:
+                        logger.warning(f"⚠️ 向节点 {nid[:8]} 推送解散通知失败: {e_send}")
+            
+            # 同时向本地所有浏览器WebSocket也广播这个解散事件
+            self.broadcast_to_room(self.room_id, {
+                "type": "room_dismissed",
+                "message": "房主已解散房间，协作会话正式结束",
+                "timestamp": time.time()
+            })
+            
+            logger.info(f"✅ [解散广播完成] 成功通知 {success_count} 个远程成员")
+        except Exception as e_broadcast:
+            logger.warning(f"⚠️ 广播解散事件失败: {e_broadcast}")
+        
+        # 第二步：停止 UDP 广播，让局域网其他节点在发现列表中看不到这个房间
+        if self.discovery:
+            self.discovery.stop_hosting()
+            self.discovery.stop_scanning()
+            logger.info("📢 [UDP广播] 已停止，房间将从局域网列表中快速消失")
+        
+        # 第三步：停止房间信息同步线程
+        self.stop_room_sync()
+        logger.info("🔄 [房间同步] 已停止后台同步线程")
+        
+        # 第四步：停止 TCP 服务器
+        self.stop_server()
+        logger.info("🌐 [TCP服务器] 房主服务器已关闭")
+        
+        # 第五步：清空所有房间状态，重置为初始值
+        self.room_id = str(uuid.uuid4())
+        self.room_name = "Default-Room"
+        self.owner_name = None
+        self.owner_model = None
+        self.room_password_hash = None
+        self.room_ready = False
+        self.room_members.clear()
+        # 只保留房主自己的节点记录，清空其他外部节点
+        if self.own_node:
+            # 保留 own_node，清空其他所有外部节点
+            for nid in list(self.nodes.keys()):
+                if nid != self.own_node.node_id:
+                    del self.nodes[nid]
+        
+        logger.info("🏁 [房间解散完成] 房主端所有状态已重置，可以创建新房间")
+        return True
+
     def stop_server(self):
         """停止房主端服务器"""
         if self._server:
@@ -1384,16 +1613,84 @@ class ClusterServer:
                 except:
                     pass
 
+    def _parse_json_messages(self, buffer: bytes) -> List[tuple]:
+        """从缓冲区中解析出所有完整的JSON消息，返回 (完整消息bytes, 剩余缓冲区) 的列表"""
+        messages = []
+        start_idx = 0
+        
+        while start_idx < len(buffer):
+            try:
+                # 尝试找到第一个完整的JSON对象
+                # 使用逐层大括号匹配，确保正确找到JSON结束位置
+                brace_count = 0
+                json_start = -1
+                in_string = False
+                escape_next = False
+                
+                for i in range(start_idx, len(buffer)):
+                    b = buffer[i:i+1]
+                    
+                    if escape_next:
+                        escape_next = False
+                        continue
+                    
+                    if b == b'\\' and in_string:
+                        escape_next = True
+                        continue
+                    
+                    if b == b'"':
+                        in_string = not in_string
+                        continue
+                    
+                    if not in_string:
+                        if b == b'{':
+                            if json_start == -1:
+                                json_start = i
+                            brace_count += 1
+                        elif b == b'}':
+                            brace_count -= 1
+                            if brace_count == 0 and json_start != -1:
+                                # 找到一个完整的JSON消息
+                                full_msg_bytes = buffer[json_start:i+1]
+                                messages.append(full_msg_bytes)
+                                start_idx = i + 1
+                                break
+                                
+            except Exception:
+                break
+            else:
+                # 如果没有找到任何完整消息，退出
+                break
+        
+        # 剩余的未处理数据留在buffer中
+        remaining = buffer[start_idx:]
+        return messages, remaining
+
     def _handle_client(self, conn: socket.socket, addr):
-        """处理客户端连接（加入后持续接收消息）"""
+        """处理客户端连接（加入后持续接收消息）- 修复TCP粘包问题版"""
         node = None
+        buffer = b''
         try:
             import hashlib
-            # 第一步：处理 join 消息
-            data = conn.recv(4096)
-            if not data:
-                return
-            msg = json.loads(data.decode('utf-8'))
+            conn.settimeout(1.0)
+            
+            # 第一步：处理 join 消息（带粘包处理）
+            while True:
+                try:
+                    data = conn.recv(8192)
+                    if not data:
+                        return
+                    buffer += data
+                    
+                    # 尝试从缓冲区解析完整的JSON消息
+                    messages, buffer = self._parse_json_messages(buffer)
+                    if messages:
+                        join_msg = messages[0]
+                        msg = json.loads(join_msg.decode('utf-8'))
+                        break
+                except socket.timeout:
+                    continue
+            
             if msg.get("type") != "join":
                 logger.warning(f"[ClusterServer] 收到非join消息: {msg}")
                 response = {"type": "ack", "status": "error", "reason": "仅接受 join 消息"}
@@ -1464,58 +1761,65 @@ class ClusterServer:
                         "room_info": room_info
                     }).encode('utf-8')
                     conn.sendall(msg_to_send)
-                    logger.info(f"📡 [房主推送] 已向新加入的Worker {node_info['node_id'][:8]} 推送完整房间信息")
+                    logger.info(f"📡 [房主推送] 第1次向新加入的Worker {node_info['node_id'][:8]} 推送完整房间信息")
                 except Exception as e_push:
                     logger.warning(f"⚠️ 推送房间初始信息给Worker失败: {e_push}")
 
-            # 进入消息循环，处理心跳和任务状态更新 - 简化统一格式
+            # 进入消息循环，处理心跳和任务状态更新 - 完整TCP粘包处理版
             while True:
                 try:
                     data = conn.recv(8192)
                     if not data:
                         break
-                    msg = json.loads(data.decode('utf-8'))
+                    buffer += data
                     
-                    msg_type = msg.get("type")
-                    
-                    # 支持两种消息格式的简化逻辑
-                    payload = msg.get("payload")
-                    
-                    # 方案A: ClusterMessage格式 (带payload)
-                    if payload is not None:
-                        # 从payload中提取内容
-                        if msg_type == "heartbeat":
-                            node_id = payload.get("node_id")
-                            load_info = payload.get("load", {})
-                            self.manager.handle_heartbeat(node_id, load_info)
-                        elif msg_type == "task_update":
-                            node_id = payload.get("node_id")
-                            task_id = payload.get("task_id")
-                            status = payload.get("status")
-                            result = payload.get("result")
-                            error = payload.get("error")
-                            self.manager.handle_task_update(node_id, task_id, status, result, error)
-                        else:
-                            logger.debug(f"[ClusterServer] 收到集群消息类型: {msg_type}")
-                    
-                    # 方案B: 简单直接JSON格式 (不带payload)
-                    else:
-                        if msg_type == "heartbeat":
-                            node_id = msg.get("node_id")
-                            load_info = msg.get("load", {})
-                            self.manager.handle_heartbeat(node_id, load_info)
-                        elif msg_type == "task_update":
-                            node_id = msg.get("node_id")
-                            task_id = msg.get("task_id")
-                            status = msg.get("status")
-                            result = msg.get("result")
-                            error = msg.get("error")
-                            self.manager.handle_task_update(node_id, task_id, status, result, error)
-                        else:
-                            logger.debug(f"[ClusterServer] 未知消息类型: {msg_type}")
+                    # 从缓冲区解析所有完整JSON消息
+                    messages, buffer = self._parse_json_messages(buffer)
+                    for full_msg_bytes in messages:
+                        try:
+                            msg = json.loads(full_msg_bytes.decode('utf-8'))
+                            msg_type = msg.get("type")
                             
-                except json.JSONDecodeError:
-                    logger.error(f"[ClusterServer] JSON解析失败")
+                            # 支持两种消息格式的简化逻辑
+                            payload = msg.get("payload")
+                            
+                            # 方案A: ClusterMessage格式 (带payload)
+                            if payload is not None:
+                                # 从payload中提取内容
+                                if msg_type == "heartbeat":
+                                    node_id = payload.get("node_id")
+                                    load_info = payload.get("load", {})
+                                    self.manager.handle_heartbeat(node_id, load_info)
+                                elif msg_type == "task_update":
+                                    node_id = payload.get("node_id")
+                                    task_id = payload.get("task_id")
+                                    status = payload.get("status")
+                                    result = payload.get("result")
+                                    error = payload.get("error")
+                                    self.manager.handle_task_update(node_id, task_id, status, result, error)
+                                else:
+                                    logger.debug(f"[ClusterServer] 收到集群消息类型: {msg_type}")
+                            
+                            # 方案B: 简单直接JSON格式 (不带payload)
+                            else:
+                                if msg_type == "heartbeat":
+                                    node_id = msg.get("node_id")
+                                    load_info = msg.get("load", {})
+                                    self.manager.handle_heartbeat(node_id, load_info)
+                                elif msg_type == "task_update":
+                                    node_id = msg.get("node_id")
+                                    task_id = msg.get("task_id")
+                                    status = msg.get("status")
+                                    result = msg.get("result")
+                                    error = msg.get("error")
+                                    self.manager.handle_task_update(node_id, task_id, status, result, error)
+                                else:
+                                    logger.debug(f"[ClusterServer] 未知消息类型: {msg_type}")
+                        except json.JSONDecodeError:
+                            logger.warning(f"[ClusterServer] 单条消息JSON解析失败，跳过")
+                            
+                except socket.timeout:
+                    continue
                 except Exception as e:
                     logger.error(f"[ClusterServer] 处理消息异常: {e}")
         except Exception as e:
@@ -1607,25 +1911,184 @@ class ClusterClient:
             time.sleep(5)
         logger.info(f"🛑 [ClusterClient] 心跳线程已停止")
 
+    def _parse_json_messages(self, buffer: bytes) -> List[tuple]:
+        """从缓冲区中解析出所有完整的JSON消息，返回 (完整消息bytes, 剩余缓冲区) 的列表"""
+        messages = []
+        start_idx = 0
+        
+        while start_idx < len(buffer):
+            try:
+                # 尝试找到第一个完整的JSON对象
+                # 使用逐层大括号匹配，确保正确找到JSON结束位置
+                brace_count = 0
+                json_start = -1
+                in_string = False
+                escape_next = False
+                
+                for i in range(start_idx, len(buffer)):
+                    b = buffer[i:i+1]
+                    
+                    if escape_next:
+                        escape_next = False
+                        continue
+                    
+                    if b == b'\\' and in_string:
+                        escape_next = True
+                        continue
+                    
+                    if b == b'"':
+                        in_string = not in_string
+                        continue
+                    
+                    if not in_string:
+                        if b == b'{':
+                            if json_start == -1:
+                                json_start = i
+                            brace_count += 1
+                        elif b == b'}':
+                            brace_count -= 1
+                            if brace_count == 0 and json_start != -1:
+                                # 找到一个完整的JSON消息
+                                full_msg_bytes = buffer[json_start:i+1]
+                                messages.append(full_msg_bytes)
+                                start_idx = i + 1
+                                break
+                                
+            except Exception:
+                break
+            else:
+                # 如果没有找到任何完整消息，退出
+                break
+        
+        # 剩余的未处理数据留在buffer中
+        remaining = buffer[start_idx:]
+        return messages, remaining
+
     def _listener_loop(self):
-        """监听循环：持续接收房主发过来的任务分配消息"""
+        """监听循环：持续接收房主发过来的任务分配消息 - 完整版：处理所有房间消息"""
         logger.info(f"👂 [ClusterClient] 任务监听线程已启动")
         buffer = b''
         while self.running and self.socket:
             try:
                 self.socket.settimeout(1.0)
-                data = self.socket.recv(4096)
+                data = self.socket.recv(8192)
                 if not data:
                     logger.info(f"📭 [ClusterClient] 房主端关闭连接")
                     break
                 buffer += data
-                while True:
+                
+                # 从缓冲区解析所有完整JSON消息
+                messages, buffer = self._parse_json_messages(buffer)
+                for full_msg_bytes in messages:
                     try:
-                        json_end = buffer.index(b'}') + 1
-                        full_msg_bytes = buffer[:json_end]
-                        buffer = buffer[json_end:]
                         msg = json.loads(full_msg_bytes.decode('utf-8'))
-                        logger.debug(f"📥 [ClusterClient] 收到房主消息: {msg.get('type')}")
+                        msg_type = msg.get('type')
+                        logger.debug(f"📥 [ClusterClient] 收到房主消息: {msg_type}")
+                        
+                        # 关键修复：处理房主发来的房间完整信息更新消息
+                        if msg_type == "room_info_update":
+                            room_info = msg.get("room_info", {})
+                            logger.info(f"📤 [Worker房间信息API] 收到房主同步的房间信息: room_name={room_info.get('room_name')}, 成员数={len(room_info.get('members_detail', []))}")
+                            # 将收到的完整房间信息同步更新到本地持久化状态
+                            try:
+                                import os
+                                import json as json_module
+                                from config import CLUSTER_WORKER_STATE_PATH
+                                
+                                def _ensure_data_dir_exists():
+                                    data_dir = os.path.dirname(CLUSTER_WORKER_STATE_PATH)
+                                    if not os.path.exists(data_dir):
+                                        os.makedirs(data_dir, exist_ok=True)
+                                
+                                # 加载现有持久化状态，合并更新
+                                existing_state = {}
+                                if os.path.exists(CLUSTER_WORKER_STATE_PATH):
+                                    with open(CLUSTER_WORKER_STATE_PATH, 'r', encoding='utf-8') as f:
+                                        existing_state = json_module.load(f)
+                                
+                                # 更新收到的所有房间信息，强制标记为 in_room=True
+                                # 关键：保留已有的host/port/node_id/name等本地关键信息，绝对不能覆盖
+                                existing_state.update({
+                                    "in_room": True,  # 核心：只要收到房主推送的房间信息，就一定标记为已在协作模式
+                                    "room_name": room_info.get("room_name", existing_state.get("room_name", "")),
+                                    "room_id": room_info.get("room_id", existing_state.get("room_id", "")),
+                                    "owner_name": room_info.get("owner_name", existing_state.get("owner_name", "")),
+                                    "owner_model": room_info.get("owner_model", existing_state.get("owner_model", "")),
+                                    "members_detail": room_info.get("members_detail", existing_state.get("members_detail", []))  # 核心：更新成员详细信息
+                                })
+                                
+                                # 写回持久化
+                                _ensure_data_dir_exists()
+                                with open(CLUSTER_WORKER_STATE_PATH, 'w', encoding='utf-8') as f:
+                                    json_module.dump(existing_state, f, ensure_ascii=False, indent=2)
+                                
+                                logger.info(f"✅ [Worker持久化] 房间成员列表已成功同步并保存: 共{len(existing_state.get('members_detail', []))}位成员")
+                            except Exception as e_save:
+                                logger.warning(f"⚠️ 保存房间成员信息失败: {e_save}")
+                        
+                        # 处理：成员离开通知
+                        elif msg_type == "member_left":
+                            member_name = msg.get("member_name", "未知成员")
+                            logger.info(f"👋 [协作事件] 成员「{member_name}」已离开房间")
+                            # 向本地浏览器WebSocket广播，通知UI更新成员列表
+                            try:
+                                from evolution.cluster.cluster_api import broadcast_to_all_clients
+                                broadcast_to_all_clients(msg)
+                            except:
+                                pass
+                        
+                        # 处理：协作自然结束通知（所有非房主成员都已离开）
+                        elif msg_type == "collaboration_ended":
+                            logger.info(f"🏁 [协作结束] 收到房主通知：协作会话自然结束，清理本地状态")
+                            # 本地清理：清除持久化状态，断开连接
+                            try:
+                                import os
+                                import json as json_module
+                                from config import CLUSTER_WORKER_STATE_PATH
+                                if os.path.exists(CLUSTER_WORKER_STATE_PATH):
+                                    os.remove(CLUSTER_WORKER_STATE_PATH)
+                                    logger.info("🗑️ [Worker持久化] 协作结束，房间状态已清除")
+                            except Exception as e_clear:
+                                logger.warning(f"清除本地协作状态失败: {e_clear}")
+                            # 向本地浏览器WebSocket广播，通知UI退出协作模式
+                            try:
+                                from evolution.cluster.cluster_api import broadcast_to_all_clients
+                                broadcast_to_all_clients({
+                                    "type": "collaboration_ended",
+                                    "message": "所有成员已离开，协作会话已结束",
+                                    "timestamp": time.time()
+                                })
+                            except:
+                                pass
+                            self.running = False
+                            break
+                        
+                        # 处理：房主解散房间通知
+                        elif msg_type == "room_dismissed":
+                            logger.info(f"🏠 [房间解散] 收到房主通知：房间已解散，清理本地状态并退出协作模式")
+                            # 本地清理：清除持久化状态，断开连接
+                            try:
+                                import os
+                                import json as json_module
+                                from config import CLUSTER_WORKER_STATE_PATH
+                                if os.path.exists(CLUSTER_WORKER_STATE_PATH):
+                                    os.remove(CLUSTER_WORKER_STATE_PATH)
+                                    logger.info("🗑️ [Worker持久化] 房间解散，协作状态已清除")
+                            except Exception as e_clear:
+                                logger.warning(f"清除本地协作状态失败: {e_clear}")
+                            # 向本地浏览器WebSocket广播，通知UI退出协作模式
+                            try:
+                                from evolution.cluster.cluster_api import broadcast_to_all_clients
+                                broadcast_to_all_clients({
+                                    "type": "room_dismissed",
+                                    "message": "房主已解散房间，协作会话结束",
+                                    "timestamp": time.time()
+                                })
+                            except:
+                                pass
+                            self.running = False
+                            break
+                        
                     except ValueError:
                         break
             except socket.timeout:
@@ -1679,13 +2142,20 @@ class ClusterClient:
             logger.debug(f"📤 [ClusterClient] 发送加入消息: {msg}")
             sock.sendall(json.dumps(msg).encode('utf-8'))
 
-            response_data = sock.recv(8192)
-            if not response_data:
-                logger.error(f"❌ [ClusterClient] 房主没有返回任何数据")
-                sock.close()
-                return (False, "房主无响应")
-                
-            response = json.loads(response_data.decode('utf-8'))
+            # 接收房主响应，带完整TCP粘包处理
+            response_buffer = b''
+            sock.settimeout(10.0)
+            while True:
+                data = sock.recv(8192)
+                if not data:
+                    logger.error(f"❌ [ClusterClient] 房主没有返回任何数据")
+                    sock.close()
+                    return (False, "房主无响应")
+                response_buffer += data
+                messages, response_buffer = self._parse_json_messages(response_buffer)
+                if messages:
+                    response = json.loads(messages[0].decode('utf-8'))
+                    break
             logger.debug(f"📥 [ClusterClient] 收到房主响应: {response}")
             last_reason = response.get('reason', '未知错误')
             
@@ -1701,6 +2171,41 @@ class ClusterClient:
                     mode=node_info.get("mode", "auto"),
                     capability_score=evaluate_capability_simple(node_info)
                 )
+                
+                # 【关键修复1】加入房间成功后，立刻持久化所有关键信息！确保刷新Web页面后不会丢失协作模式信息
+                try:
+                    import os
+                    import json as json_module
+                    from config import CLUSTER_WORKER_STATE_PATH
+                    
+                    def _ensure_data_dir_exists():
+                        data_dir = os.path.dirname(CLUSTER_WORKER_STATE_PATH)
+                        if not os.path.exists(data_dir):
+                            os.makedirs(data_dir, exist_ok=True)
+                    
+                    # 立刻保存所有关键信息
+                    _ensure_data_dir_exists()
+                    initial_state = {
+                        "in_room": True,  # 核心标记：已在协作模式中
+                        "host": host,  # 房主IP地址（用于兜底轮询刷新页面后恢复）
+                        "port": port,  # 房主端口（用于兜底轮询）
+                        "node_id": self._node_id,
+                        "name": self._node_name,
+                        "model": node_info.get("model", "unknown"),
+                        "role": node_info.get("role", "worker"),
+                        "mode": node_info.get("mode", "auto"),
+                        "room_name": "",
+                        "room_id": "",
+                        "owner_name": "",
+                        "owner_model": "",
+                        "members_detail": []
+                    }
+                    with open(CLUSTER_WORKER_STATE_PATH, 'w', encoding='utf-8') as f:
+                        json_module.dump(initial_state, f, ensure_ascii=False, indent=2)
+                    logger.info(f"💾 [Worker持久化] 加入房间成功，已保存初始协作状态: host={host}, port={port}")
+                except Exception as e_init_save:
+                    logger.warning(f"⚠️ 保存初始协作状态失败: {e_init_save}")
+                
                 self._heartbeat_thread = threading.Thread(target=self._heartbeat_loop, daemon=True)
                 self._heartbeat_thread.start()
                 self._listener_thread = threading.Thread(target=self._listener_loop, daemon=True)
