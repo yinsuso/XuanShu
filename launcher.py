@@ -72,6 +72,23 @@ class Launcher:
     def print_info(self, msg: str):
         print(f"{Fore.BLUE}ℹ️ {msg}")
 
+    def check_sqlite3_available(self) -> bool:
+        """检查 sqlite3 模块可用性"""
+        self.print_step("检查 sqlite3", "数据库存储支持")
+        try:
+            import sqlite3
+            self.print_success("sqlite3 可用（高性能数据库存储）")
+            return True
+        except ImportError as e:
+            self.print_warning("sqlite3 模块不可用")
+            self.print_info("💡 这是正常现象，项目将自动降级到 JSON 文件存储")
+            self.print_info("💡 核心功能完全不受影响，仅存储性能略低")
+            if sys.platform.startswith('linux'):
+                self.print_info("💡 Linux 用户可尝试安装: sudo apt install python3-sqlite3")
+            elif sys.platform == 'darwin':
+                self.print_info("💡 macOS 用户: 建议使用官方 Python 或 Homebrew Python")
+            return False
+
     def check_python_version(self) -> bool:
         """检查Python版本并给出兼容性提示"""
         self.print_step("检查Python版本", "需要Python 3.8+")
@@ -673,6 +690,8 @@ class Launcher:
             if not ok:
                 input(f"\n{Fore.RED}按回车键退出...")
                 return
+
+            self.check_sqlite3_available()
 
             missing = self.check_dependencies()
             if missing:
