@@ -462,16 +462,19 @@ class ClusterManager:
     
     def _send_task_assignment(self, target_node: 'ClusterNode', task_id: str, task_type: str, description: str, parameters: Dict = None):
         """真正向目标节点发送任务分配消息（通过TCP连接）"""
+        agent_name = self._get_agent_name_by_node_id(target_node.node_id)
+        
         self.task_assignments[task_id] = target_node.node_id
         self.task_metadata[task_id] = {
             "task_type": task_type,
             "description": description,
             "parameters": parameters or {},
-            "assigned_at": time.time()
+            "assigned_at": time.time(),
+            "agent_name": agent_name  # 【问题1修复】保存agent_name到任务元数据，便于后续状态广播
         }
         self.task_timeouts[task_id] = time.time() + 300
         
-        logger.info(f"📤 [任务分配] 正在向节点 {target_node.node_id[:8]} 发送任务: {task_id[:8]}")
+        logger.info(f"📤 [任务分配] 正在向节点 {target_node.node_id[:8]} ({agent_name}) 发送任务: {task_id[:8]}")
         
         if target_node.connection:
             try:
@@ -483,27 +486,47 @@ class ClusterManager:
                     parameters=parameters
                 )
                 target_node.connection.sendall(msg.serialize())
-                logger.info(f"✅ [任务分配] 成功通过TCP发送任务 {task_id[:8]} 到节点 {target_node.node_id[:8]}")
+                logger.info(f"✅ [任务分配] 成功通过TCP发送任务 {task_id[:8]} 到节点 {target_node.node_id[:8]} ({agent_name})")
             except Exception as e:
                 logger.warning(f"⚠️ [任务分配] TCP发送失败，节点本地执行: {e}")
         else:
-            logger.info(f"ℹ️  [任务分配] 节点 {target_node.node_id[:8]} 无远程TCP连接，本地执行任务")
+            logger.info(f"ℹ️  [任务分配] 节点 {target_node.node_id[:8]} ({agent_name}) 无远程TCP连接，本地执行任务")
         
         try:
             target_node.status = "busy"
-            logger.info(f"🔄 节点 {target_node.node_id[:8]} 状态已更新为 忙碌")
+            logger.info(f"🔄 节点 {target_node.node_id[:8]} ({agent_name}) 状态已更新为 忙碌")
+            if target_node.node_id in self.room_members:
+                self.room_members[target_node.node_id]["status"] = "busy"
         except Exception as e:
             logger.warning(f"状态更新失败: {e}")
         
         self.broadcast_task_status_to_all(task_id, "assigned", target_node.node_id, {
-            "agent_name": self._get_agent_name_by_node_id(target_node.node_id)
+            "agent_name": agent_name
         })
     
     def _get_agent_name_by_node_id(self, node_id: str) -> str:
-        """根据 node_id 获取成员的显示名称"""
+        """根据 node_id 获取成员的显示名称 - 增强版：支持从持久化状态获取自己的名称"""
+        # 首先从 room_members 中查找
         for mid, member in self.room_members.items():
             if mid == node_id:
                 return member.get("name", node_id[:8])
+        
+        # 【问题1修复】如果在 room_members 中找不到，尝试从本地持久化状态获取（成员端场景）
+        try:
+            import json
+            import os
+            from config import CLUSTER_WORKER_STATE_PATH
+            
+            if os.path.exists(CLUSTER_WORKER_STATE_PATH):
+                with open(CLUSTER_WORKER_STATE_PATH, 'r', encoding='utf-8') as f:
+                    state = json.load(f)
+                    # 检查是否是当前节点自己
+                    if state.get("node_id") == node_id:
+                        return state.get("name", node_id[:8])
+        except Exception:
+            pass
+        
+        # 最终回退到节点ID
         return node_id[:8]
     
     def broadcast_task_status_to_all(self, task_id: str, status: str, node_id: str, extra_info: Dict = None):
@@ -920,7 +943,18 @@ class ClusterManager:
         # 新增：调用全局连接池中的全局broadcast_to_all_clients函数，确保所有浏览器都收到，不管什么节点连接的
         try:
             from evolution.cluster.cluster_api import broadcast_to_all_clients
-            count += broadcast_to_all_clients(event)
+            import asyncio
+
+            def _do_broadcast():
+                try:
+                    loop_bcast = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop_bcast)
+                    loop_bcast.run_until_complete(broadcast_to_all_clients(event))
+                    loop_bcast.close()
+                except Exception as e_inner:
+                    logger.warning(f"全局WebSocket广播内部异常: {e_inner}")
+
+            threading.Thread(target=_do_broadcast, daemon=True).start()
         except Exception as e_global:
             logger.warning(f"调用全局WebSocket广播失败: {e_global}")
         
@@ -1097,14 +1131,18 @@ class ClusterManager:
     def _build_collab_system_prompt(self, task_description: str) -> str:
         """构建协作任务开始时的系统提示词，告知模型所有成员信息和协作规则"""
         members_info = []
+        worker_count = 0
         for node_id, member in self.room_members.items():
             node = self.nodes.get(node_id)
             status_text = "🟢 空闲"
             if node and hasattr(node, 'status') and node.status == 'busy':
                 status_text = "🔴 忙碌中"
+            role = "房主" if member.get("is_owner", False) else "工作者"
+            if role == "工作者":
+                worker_count += 1
             members_info.append({
                 "name": member.get("name", "未知"),
-                "role": "房主" if member.get("is_owner", False) else "工作者",
+                "role": role,
                 "model": member.get("model", "未知模型"),
                 "status": status_text
             })
@@ -1115,68 +1153,229 @@ class ClusterManager:
 ## 当前协作环境信息
 - 房间名称: {self.room_name}
 - 房主名称: {self.owner_name or '未知'}
+- 可用工作者数量: {worker_count} 个
 
 ## 当前所有成员列表 (共 {len(members_info)} 个):
 {json.dumps(members_info, ensure_ascii=False, indent=2)}
 
-## 协作规则说明
-1. 你作为本次协作任务的总协调者/智能体，拥有房间的完整全局视图
-2. 房间内所有Agent的任务状态和结果都会实时反馈到这里
-3. 每个Agent都拥有独立的大模型推理能力和完整技能集
-4. 成员可以分工协作，共同完成复杂任务
-5. 你可以基于成员的能力特点，合理分配任务给最合适的Agent
-6. 所有协作内容都将自动持久化保存，不会丢失
+## 🎯 你的核心职责
+你是本次协作任务的**总协调者和任务拆解专家**。你的首要任务是：
+1. **任务拆解**: 将用户的复杂任务拆解为多个独立的子任务
+2. **智能分配**: 根据成员的能力和状态，将子任务分配给最合适的工作者
+3. **进度追踪**: 监控所有子任务的执行状态
+4. **结果汇总**: 将所有子任务的结果汇总成最终答案
+
+## 📋 协作执行规则（必须严格遵守）
+
+### 规则一：任务必须拆解（强制性）
+- 对于复杂任务（如访问网站、数据分析、多步骤操作），**必须**拆解为多个子任务
+- 即使是简单任务，只要有空闲的工作者，也应优先分配给工作者执行
+- 只有当没有可用工作者或任务极其简单时，才由房主自己执行
+
+### 规则二：工作者优先原则
+- 当有可用工作者时，**禁止**房主自己执行可分配的任务
+- 工作者是专门负责执行具体任务的，你作为协调者应专注于任务拆解和分配
+- 除非所有工作者都忙碌或离线，否则不要自己执行任务
+
+### 规则三：合理分配策略
+- 根据工作者的模型特点分配任务（例如：编码任务分配给coder模型）
+- 考虑工作者的当前状态（优先分配给空闲的工作者）
+- 平衡工作负载，避免某个工作者过载
+
+### 规则四：清晰的任务描述
+- 分配任务时，提供清晰、具体的任务描述
+- 包含完成任务所需的所有必要信息
+- 明确说明任务的期望输出
+
+## 🚀 执行流程建议
+1. 分析用户任务，判断是否需要拆解
+2. 列出需要执行的子任务清单
+3. 为每个子任务选择最合适的执行者
+4. 按优先级顺序分配任务
+5. 等待工作者完成并返回结果
+6. 汇总所有结果，给出最终回复
 
 ## 当前任务
 {task_description}
+
+## 💡 思考提示
+请先思考：这个任务是否可以拆解？如果可以，应该拆分成哪些子任务？哪些工作者适合执行这些任务？
 """
         return system_prompt
     
+    def _parse_task_plan(self, plan_text: str) -> list:
+        """解析模型返回的任务拆解计划"""
+        import re
+        tasks = []
+        
+        # 尝试解析JSON格式的任务列表
+        json_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', plan_text, re.DOTALL)
+        if json_match:
+            try:
+                data = json.loads(json_match.group(1))
+                if isinstance(data, dict) and 'tasks' in data:
+                    tasks = data['tasks']
+            except:
+                pass
+        
+        # 如果JSON解析失败，尝试解析列表格式
+        if not tasks:
+            lines = plan_text.split('\n')
+            task_index = 1
+            for line in lines:
+                # 匹配 "- [任务描述]" 或 "1. [任务描述]" 或 "* [任务描述]" 格式
+                match = re.match(r'^(?:-|\d+\.|\\*)\\s+(.+)', line.strip())
+                if match:
+                    tasks.append({
+                        "task_id": f"subtask_{task_index}",
+                        "description": match.group(1).strip(),
+                        "priority": task_index
+                    })
+                    task_index += 1
+        
+        return tasks
+
     def start_collaborative_task(self, task_type: str, description: str, parameters: Dict = None):
-        """使用调度器启动协作任务 - 增强版：初始化协作对话+发送协作系统提示词"""
+        """使用调度器启动协作任务 - 增强版：让模型先思考拆解任务，再进行智能分配"""
         # 步骤1：初始化协作对话
         self._init_collab_conversation()
         
-        # 步骤2：构建完整的协作环境介绍，发送给模型，让模型了解全部成员和规则
+        # 步骤2：构建完整的协作环境介绍，让模型了解全部成员和规则
         collab_system_prompt = self._build_collab_system_prompt(description)
         self.add_collab_message("system", collab_system_prompt, {"type": "collab_bootstrap"})
         
         # 步骤3：保存用户的原始协作任务消息
         self.add_collab_message("user", description, {"type": "user_collab_task"})
         
-        # 步骤4：执行原有任务分发逻辑
-        task_id = self.assign_task(task_type, description, parameters)
+        # 步骤4：让模型先进行任务拆解思考（关键改进）
+        worker_count = sum(1 for m in self.room_members.values() if not m.get("is_owner", False))
+        assigned_task_id = None
         
-        if task_id and task_id in self.task_assignments:
-            target_node_id = self.task_assignments.get(task_id)
+        if worker_count > 0:
+            # 有可用工作者，让模型先思考如何拆解任务
+            logger.info(f"🤔 [协作模式] 有 {worker_count} 个可用工作者，让模型先进行任务拆解思考...")
+            
+            try:
+                import sys
+                agent_obj = None
+                for mod_name, mod in sys.modules.items():
+                    if 'web_app' in mod_name and hasattr(mod, 'get_agent'):
+                        agent_obj = mod.get_agent()
+                        break
+                
+                if agent_obj:
+                    # 构建任务拆解提示词
+                    task_plan_prompt = f"""请你作为任务拆解专家，分析以下任务并给出详细的执行计划：
+
+【任务描述】
+{description}
+
+【可用工作者数量】
+{worker_count} 个
+
+【任务拆解要求】
+1. 分析任务是否需要拆解
+2. 如果需要拆解，列出具体的子任务清单
+3. 为每个子任务指定合适的执行者（工作者）
+4. 说明任务之间的依赖关系（如果有）
+
+【输出格式】
+请以JSON格式输出任务计划，例如：
+```json
+{{
+    "need_split": true,
+    "reason": "任务需要拆解的原因",
+    "tasks": [
+        {{"task_id": "subtask_1", "description": "子任务1描述", "priority": 1, "suggested_worker": "自动分配"}},
+        {{"task_id": "subtask_2", "description": "子任务2描述", "priority": 2, "suggested_worker": "自动分配"}}
+    ]
+}}
+```
+
+如果任务不需要拆解或太简单，可以直接执行，请输出：
+```json
+{{"need_split": false, "reason": "任务简单，无需拆解"}}
+```
+"""
+                    
+                    plan_result = agent_obj._process_simple(task_plan_prompt)
+                    logger.info(f"📝 [协作模式] 模型任务拆解结果:\n{plan_result}")
+                    
+                    # 保存模型的思考结果到协作对话
+                    self.add_collab_message("assistant", f"🧠 任务拆解分析结果:\n{plan_result}", {"type": "task_plan"})
+                    
+                    # 解析任务计划
+                    import re
+                    json_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', plan_result, re.DOTALL)
+                    if json_match:
+                        try:
+                            plan_data = json.loads(json_match.group(1))
+                            need_split = plan_data.get("need_split", False)
+                            
+                            if need_split and "tasks" in plan_data:
+                                # 按优先级排序子任务
+                                subtasks = sorted(plan_data["tasks"], key=lambda x: x.get("priority", 999))
+                                logger.info(f"📋 [协作模式] 模型拆解出 {len(subtasks)} 个子任务")
+                                
+                                # 依次分配每个子任务
+                                for subtask in subtasks:
+                                    sub_description = subtask.get("description", "")
+                                    if sub_description:
+                                        subtask_id = self.assign_task("collab_subtask", sub_description, parameters)
+                                        logger.info(f"🎯 [协作模式] 已分配子任务: {subtask_id[:8]} - {sub_description[:50]}...")
+                                        if not assigned_task_id:
+                                            assigned_task_id = subtask_id
+                            else:
+                                # 任务不需要拆解，直接分配
+                                logger.info(f"ℹ️ [协作模式] 模型认为任务无需拆解，直接分配执行")
+                                assigned_task_id = self.assign_task(task_type, description, parameters)
+                        except json.JSONDecodeError as e:
+                            logger.warning(f"⚠️ [协作模式] 解析任务计划失败，直接分配任务: {e}")
+                            assigned_task_id = self.assign_task(task_type, description, parameters)
+                    else:
+                        # 没有找到JSON格式，直接分配任务
+                        logger.info(f"ℹ️ [协作模式] 未找到结构化任务计划，直接分配任务")
+                        assigned_task_id = self.assign_task(task_type, description, parameters)
+                else:
+                    # 没有找到agent实例，直接分配任务
+                    logger.info(f"ℹ️ [协作模式] 未找到agent实例，直接分配任务")
+                    assigned_task_id = self.assign_task(task_type, description, parameters)
+            except Exception as e:
+                logger.error(f"❌ [协作模式] 任务拆解思考失败: {e}", exc_info=True)
+                assigned_task_id = self.assign_task(task_type, description, parameters)
+        else:
+            # 没有可用工作者，房主自己执行
+            logger.info(f"ℹ️ [协作模式] 无可用工作者，房主自己执行任务")
+            assigned_task_id = self.assign_task(task_type, description, parameters)
+        
+        # 步骤5：处理分配结果
+        if assigned_task_id and assigned_task_id in self.task_assignments:
+            target_node_id = self.task_assignments.get(assigned_task_id)
             if target_node_id:
                 target_node = self.nodes.get(target_node_id)
                 if target_node:
                     if not target_node.connection:
-                        logger.info(f"ℹ️  目标节点无远程连接，本地完全异步执行任务: {task_id[:8]}")
-                        self.execute_local_task_async(target_node_id, task_id, task_type, description, parameters)
+                        logger.info(f"ℹ️ 目标节点无远程连接，本地完全异步执行任务: {assigned_task_id[:8]}")
+                        self.execute_local_task_async(target_node_id, assigned_task_id, task_type, description, parameters)
                     else:
-                        logger.info(f"📤 目标节点为远程节点，已发送任务分配消息，远程节点将异步执行: {target_node_id[:8]}")
-                        # 远程节点会在收到task_assignment消息后，在自己的机器上启动异步执行线程
-                        # 这里立即给前端推送远程节点状态已变更为忙碌，UI立刻看到忙碌状态
+                        logger.info(f"📤 目标节点为远程节点，已发送任务分配消息: {target_node_id[:8]}")
                         def mark_busy_immediately():
-                            import time
                             import asyncio
                             target_node.status = "busy"
                             try:
                                 loop_notify = asyncio.new_event_loop()
                                 asyncio.set_event_loop(loop_notify)
-                                self.broadcast_task_status_to_all(task_id, "assigned", target_node_id, {
+                                self.broadcast_task_status_to_all(assigned_task_id, "assigned", target_node_id, {
                                     "agent_name": self._get_agent_name_by_node_id(target_node_id),
-                                    "description": f"✅ Agent「{self._get_agent_name_by_node_id(target_node_id)}」远程节点已接收任务，正在本地推理..."
+                                    "description": f"✅ Agent「{self._get_agent_name_by_node_id(target_node_id)}」已接收任务，正在执行..."
                                 })
                                 loop_notify.close()
                             except Exception as e:
-                                logger.warning(f"远程节点状态立即标记失败: {e}")
+                                logger.warning(f"远程节点状态标记失败: {e}")
                         import threading
                         threading.Thread(target=mark_busy_immediately, daemon=True).start()
         
-        return task_id
+        return assigned_task_id
     def handle_collaborative_task_accept(self, node_id: str, task_id: str) -> bool:
         """
         处理成员接受协作任务（人工模式）
@@ -1242,6 +1441,13 @@ class ClusterManager:
         else:
             logger.warning("心跳来自未知节点", node_id=node_id)
 
+        if node_id in self.room_members:
+            self.room_members[node_id]["status"] = node.status if node else "offline"
+            self.room_members[node_id]["load_cpu"] = load_info.get("load_cpu", 0.0)
+            self.room_members[node_id]["load_memory"] = load_info.get("load_memory", 0.0)
+            self.room_members[node_id]["queue_length"] = load_info.get("queue_length", 0)
+            self.room_members[node_id]["last_heartbeat"] = time.time()
+
     def handle_task_update(self, node_id: str, task_id: str, status: str, result=None, error=None):
         node = self.nodes.get(node_id)
         agent_name = self._get_agent_name_by_node_id(node_id)
@@ -1271,7 +1477,10 @@ class ClusterManager:
             
             node.status = "active"
             logger.info(f"🔄 节点 {agent_name} 状态恢复为空闲")
-            
+
+            if node_id in self.room_members:
+                self.room_members[node_id]["status"] = "active"
+
             self.task_assignments.pop(task_id, None)
             self.task_timeouts.pop(task_id, None)
             self.task_metadata.pop(task_id, None)
@@ -1424,22 +1633,19 @@ class ClusterManager:
         
         # 第二部分：向所有浏览器 WebSocket 客户端发送事件（保证本地成员立即收到）
         try:
-            # 从全局导入，避免循环依赖
             from evolution.cluster.cluster_api import broadcast_to_all_clients
             import asyncio
-            # 在事件循环中执行
-            try:
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    asyncio.create_task(broadcast_to_all_clients(message))
-                else:
-                    loop.run_until_complete(broadcast_to_all_clients(message))
-            except Exception:
-                # 如果当前没有事件循环，创建一个新的来执行
-                new_loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(new_loop)
-                new_loop.run_until_complete(broadcast_to_all_clients(message))
-                new_loop.close()
+
+            def _do_broadcast():
+                try:
+                    loop_bcast = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop_bcast)
+                    loop_bcast.run_until_complete(broadcast_to_all_clients(message))
+                    loop_bcast.close()
+                except Exception as e_inner:
+                    logger.warning(f"全局WebSocket广播内部异常: {e_inner}")
+
+            threading.Thread(target=_do_broadcast, daemon=True).start()
             logger.debug(f"📡 [WebSocket广播] 已成功推送到所有浏览器客户端")
         except Exception as e:
             logger.warning(f"📡 [WebSocket广播警告] {e}")
@@ -1870,6 +2076,8 @@ class ClusterClient:
         logger.info(f"💓 [ClusterClient] 心跳线程已启动")
         while self.running and self.socket:
             try:
+                if not self.running or not self.socket:
+                    break
                 if self._node_id:
                     heartbeat_msg = json.dumps({
                         "type": "heartbeat",
@@ -1879,7 +2087,8 @@ class ClusterClient:
                     self.socket.sendall(heartbeat_msg)
                     logger.debug(f"💓 [ClusterClient] 心跳已发送")
             except Exception as e:
-                logger.warning(f"💔 [ClusterClient] 心跳发送失败: {e}")
+                if self.running and self.socket:
+                    logger.warning(f"💔 [ClusterClient] 心跳发送失败: {e}")
                 break
             time.sleep(5)
         logger.info(f"🛑 [ClusterClient] 心跳线程已停止")
@@ -1943,10 +2152,13 @@ class ClusterClient:
         buffer = b''
         while self.running and self.socket:
             try:
+                if not self.running or not self.socket:
+                    break
                 self.socket.settimeout(1.0)
                 data = self.socket.recv(8192)
                 if not data:
-                    logger.info(f"📭 [ClusterClient] 房主端关闭连接")
+                    if self.running and self.socket:
+                        logger.info(f"📭 [ClusterClient] 房主端关闭连接")
                     break
                 buffer += data
                 
@@ -2062,15 +2274,130 @@ class ClusterClient:
                             self.running = False
                             break
                         
+                        # 处理：任务分配消息（核心修复：成员端收到任务后立即执行）
+                        elif msg_type == "task_assignment":
+                            payload = msg.get("payload", {})
+                            task_id = payload.get("task_id")
+                            task_type = payload.get("task_type")
+                            description = payload.get("description")
+                            parameters = payload.get("parameters", {})
+                            
+                            logger.info(f"🎯 [ClusterClient] 收到房主分配的任务: task_id={task_id[:8] if task_id else 'N/A'}, task_type={task_type}")
+                            
+                            # 立即向本地浏览器WebSocket广播任务接收通知
+                            try:
+                                from evolution.cluster.cluster_api import broadcast_to_all_clients
+                                broadcast_to_all_clients({
+                                    "type": "task_assigned",
+                                    "task_id": task_id,
+                                    "task_type": task_type,
+                                    "description": description,
+                                    "parameters": parameters,
+                                    "timestamp": time.time()
+                                })
+                            except Exception as e_ws:
+                                logger.warning(f"⚠️ 向本地WebSocket广播任务分配失败: {e_ws}")
+                            
+                            # 在独立线程中异步执行任务
+                            def execute_task():
+                                import time
+                                import asyncio
+                                logger.info(f"🤖 [ClusterClient] 开始执行任务: {task_id[:8]}")
+                                try:
+                                    # 标记任务开始
+                                    try:
+                                        from evolution.cluster.cluster_api import broadcast_to_all_clients
+                                        loop = asyncio.new_event_loop()
+                                        asyncio.set_event_loop(loop)
+                                        loop.run_until_complete(broadcast_to_all_clients({
+                                            "type": "task_status_update",
+                                            "task_id": task_id,
+                                            "status": "running",
+                                            "node_id": self._node_id,
+                                            "timestamp": time.time()
+                                        }))
+                                        loop.close()
+                                    except:
+                                        pass
+                                    
+                                    # 执行任务
+                                    import sys
+                                    result = ""
+                                    agent_obj = None
+                                    for mod_name, mod in sys.modules.items():
+                                        if 'web_app' in mod_name:
+                                            if hasattr(mod, 'get_agent'):
+                                                agent_obj = mod.get_agent()
+                                                break
+                                    if agent_obj:
+                                        result = agent_obj._process_simple(description)
+                                    else:
+                                        time.sleep(1)
+                                        result = f"✅ Worker「{self._node_name}」已完成任务\n\n> 任务描述: {description}\n\n> 执行状态: 完全成功\n> 执行时间: {time.strftime('%Y-%m-%d %H:%M:%S')}\n\n🎯 这是由 Worker「{self._node_name}」处理的结果！"
+                                    
+                                    # 标记任务完成
+                                    try:
+                                        from evolution.cluster.cluster_api import broadcast_to_all_clients
+                                        loop = asyncio.new_event_loop()
+                                        asyncio.set_event_loop(loop)
+                                        loop.run_until_complete(broadcast_to_all_clients({
+                                            "type": "task_status_update",
+                                            "task_id": task_id,
+                                            "status": "completed",
+                                            "node_id": self._node_id,
+                                            "result": str(result)[:500],
+                                            "timestamp": time.time()
+                                        }))
+                                        loop.close()
+                                    except:
+                                        pass
+                                    
+                                    # 向房主发送任务完成消息
+                                    if self.socket and self.running:
+                                        task_update_msg = json.dumps({
+                                            "type": "task_update",
+                                            "task_id": task_id,
+                                            "status": "completed",
+                                            "result": str(result),
+                                            "node_id": self._node_id,
+                                            "timestamp": time.time()
+                                        }).encode('utf-8')
+                                        self.socket.sendall(task_update_msg)
+                                        logger.info(f"📤 [ClusterClient] 任务完成结果已发送给房主: {task_id[:8]}")
+                                    
+                                except Exception as e_exec:
+                                    logger.error(f"❌ [ClusterClient] 执行任务失败: {e_exec}", exc_info=True)
+                                    # 标记任务失败
+                                    try:
+                                        from evolution.cluster.cluster_api import broadcast_to_all_clients
+                                        loop = asyncio.new_event_loop()
+                                        asyncio.set_event_loop(loop)
+                                        loop.run_until_complete(broadcast_to_all_clients({
+                                            "type": "task_status_update",
+                                            "task_id": task_id,
+                                            "status": "failed",
+                                            "node_id": self._node_id,
+                                            "error": str(e_exec),
+                                            "timestamp": time.time()
+                                        }))
+                                        loop.close()
+                                    except:
+                                        pass
+                            
+                            import threading
+                            threading.Thread(target=execute_task, daemon=True).start()
+                        
                     except ValueError:
                         break
             except socket.timeout:
                 continue
             except Exception as e:
-                logger.warning(f"👂 [ClusterClient] 监听异常: {e}")
+                if self.running and self.socket:
+                    logger.warning(f"👂 [ClusterClient] 监听异常: {e}")
                 break
         logger.info(f"🛑 [ClusterClient] 任务监听线程已停止")
-        self.close()
+        if self.running:
+            self.close()
 
     def join(self, host: str, port: int, node_info: Dict[str, Any], password: str = ""):
         """

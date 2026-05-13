@@ -1,7 +1,23 @@
 import os
 import sys
-import uuid
 import asyncio
+
+# ==================== Windows asyncio Proactor 事件循环修复 ====================
+# Python 3.13+ 在 Windows 上使用默认的 ProactorEventLoop 时存在已知问题：
+# Exception in callback _ProactorBaseWritePipeTransport._loop_writing()
+# AssertionError: assert f is self._write_fut
+# 解决方案：强制使用 SelectorEventLoop（必须在其他模块导入前设置）
+if sys.platform == 'win32':
+    try:
+        import asyncio
+        from asyncio import SelectorEventLoop
+        selector_loop = SelectorEventLoop()
+        asyncio.set_event_loop(selector_loop)
+        print("Windows平台：已强制切换到 SelectorEventLoop，避免 Proactor 事件循环问题")
+    except Exception as e:
+        print("设置 SelectorEventLoop 失败，可能仍会遇到 Proactor 问题: %s" % str(e))
+
+import uuid
 import json
 import time
 import queue
@@ -11,6 +27,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Dict, Any, Optional
 from enum import Enum
+
 from agent import UniversalAgent
 import threading
 from fastapi import Response
@@ -123,44 +140,161 @@ def clear_worker_state():
 # ==================== 推拉结合混合架构：Worker端轻量级轮询兜底机制 ====================
 _worker_polling_thread = None
 _worker_polling_running = False
+_worker_poll_fail_count = 0  # 连续失败计数器
+_WORKER_POLL_MAX_FAILURES = 6  # 最大连续失败次数（每次间隔10-15秒，6次约60-90秒）
+_WORKER_POLL_TIMEOUT = 10.0  # 单次请求超时时间（秒）
+
+def _handle_room_dismissed_on_worker():
+    """
+    Worker端检测到房间已解散的处理函数 - 完整清理逻辑
+    1. 清除本地持久化状态文件
+    2. 重置内存中的协作模式标记
+    3. 向WebSocket广播退出事件，通知前端跳转
+    """
+    logger.info("🏠 [Worker兜底轮询] 检测到房间已解散，触发自动退出协作模式")
+    
+    # 清除本地持久化状态
+    clear_worker_state()
+    
+    # 重置内存中的协作模式标记
+    node = getattr(app.state, "cluster_node", None)
+    if node:
+        if hasattr(node, 'connection') and node.connection:
+            try:
+                node.connection.close()
+            except Exception:
+                pass
+            node.connection = None
+        if hasattr(node, 'in_collab_mode'):
+            node.in_collab_mode = False
+        if hasattr(node, 'status'):
+            node.status = "idle"
+    
+    # 向WebSocket广播房间解散事件，通知前端跳转回房间列表
+    try:
+        from evolution.cluster.cluster_api import broadcast_to_all_clients
+        import asyncio
+        new_loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(new_loop)
+        new_loop.run_until_complete(broadcast_to_all_clients({
+            "type": "room_dismissed",
+            "message": "与房主失去连接，已自动退出协作模式",
+            "timestamp": time.time()
+        }))
+        new_loop.close()
+        logger.info("✅ [Worker兜底轮询] 已向前端广播房间解散事件")
+    except Exception as e_broadcast:
+        logger.warning(f"⚠️ [Worker兜底轮询] 广播房间解散事件失败: {e_broadcast}")
+    
+    # 重置失败计数器
+    global _worker_poll_fail_count
+    _worker_poll_fail_count = 0
+    
+    logger.info("🏁 [Worker兜底轮询] 已完全退出协作模式，所有状态已清理")
+
+def _is_room_valid(room_data: dict) -> bool:
+    """
+    检查房间信息是否有效（判断房主是否已解散房间）
+    返回 True 表示房间有效，False 表示房间已解散或无效
+    """
+    if not room_data:
+        logger.warning(f"[Worker兜底轮询] 房间数据为空")
+        return False
+    
+    # 检查房间名称是否为默认值（房主解散后会重置为Default-Room）
+    room_name = room_data.get("room_name", "")
+    if room_name == "Default-Room" or room_name == "":
+        logger.warning(f"[Worker兜底轮询] 检测到无效房间名称: {room_name}")
+        return False
+    
+    # 检查房主名称是否存在
+    owner_name = room_data.get("owner_name")
+    if not owner_name or owner_name == "Unknown" or owner_name is None:
+        logger.warning(f"[Worker兜底轮询] 检测到无效房主名称: {owner_name}")
+        return False
+    
+    # 检查是否处于协作模式
+    if not room_data.get("is_collab_mode", False):
+        logger.warning(f"[Worker兜底轮询] 房主已退出协作模式: is_collab_mode={room_data.get('is_collab_mode')}")
+        return False
+    
+    # 检查房间是否准备就绪
+    if not room_data.get("room_ready", False):
+        logger.warning(f"[Worker兜底轮询] 房间未就绪: room_ready={room_data.get('room_ready')}")
+        return False
+    
+    return True
 
 def _worker_room_info_polling_loop():
     """
-    Worker端后台兜底轮询线程 - 推拉结合架构核心
-    每10秒尝试从房主拉取最新房间信息，确保本地持久化文件100%与房主同步
-    这是TCP房主推送机制的双重保险，即使TCP丢包/延迟也不会丢失房间信息
+    Worker端后台兜底轮询线程 - 推拉结合架构核心（增强版）
+    
+    核心功能：
+    1. 每10秒尝试从房主拉取最新房间信息
+    2. 检测房间是否已解散（通过房间名称、房主信息、协作模式状态判断）
+    3. 连续失败计数机制：超过阈值自动退出协作模式
+    4. 确保本地持久化文件与房主100%同步
+    
+    触发自动退出的条件（任一满足）：
+    - 连续6次轮询失败（约60秒）
+    - 收到HTTP 200但房间信息无效（Default-Room、无房主名等）
+    - HTTP连接超时、拒绝或其他网络异常累计超过阈值
+    
+    这是TCP房主推送机制的双重保险，即使TCP丢包/延迟也不会丢失房间解散信息
     严格使用成员加入房间时用户输入的房主真实内网IP，绝不使用默认127.0.0.1
     """
     import requests
+    global _worker_poll_fail_count
+    
+    logger.info("✅ [Worker兜底轮询] 增强版轮询线程已启动，每10秒检测一次房间状态")
+    
     while _worker_polling_running:
         try:
             # 先从本地加载当前持久化状态，检查是否在协作模式
             current_state = load_worker_state()
             if not current_state or not current_state.get("in_room"):
-                # 当前不在协作模式，直接等待下一轮
-                time.sleep(5)
+                # 当前不在协作模式，直接等待下一轮，重置失败计数
+                _worker_poll_fail_count = 0
+                # 使用与正常轮询相同的间隔，保持一致性
+                time.sleep(10)
                 continue
             
             # 从状态获取房主的连接信息 - 100%使用用户加入房间时输入的真实内网IP
             host = current_state.get("host")
             port = current_state.get("port")
+            current_room_name = current_state.get("room_name", "")
             
             # 严格校验：host和port必须都存在，跳过无效状态
             if not host or not port:
                 logger.debug(f"[Worker兜底轮询] 房主host/port信息不完整，跳过本次轮询")
+                # 注意：这里只是跳过，不增加失败计数（因为还没有真正尝试连接）
+                # 失败计数只应该在真正尝试连接但失败时才增加
                 time.sleep(5)
                 continue
             
             # 构建房主的API地址 - 完全使用用户输入的真实IP，绝不篡改
-            manager_base_url = f"http://{host}:{port}"
+            # 注意：HTTP API运行在Web端口，不是TCP端口
+            http_port = port - 1  # TCP端口-1 = HTTP端口（30001 → 30000）
+            manager_base_url = f"http://{host}:{http_port}"
             
             # 尝试调用房主的 /api/rooms/current API 获取最新完整房间信息
             try:
                 poll_url = f"{manager_base_url}/api/rooms/current"
-                resp = requests.get(poll_url, timeout=5.0)
+                logger.debug(f"[Worker兜底轮询] 正在调用房主API: {poll_url}")
+                resp = requests.get(poll_url, timeout=_WORKER_POLL_TIMEOUT)
+                
                 if resp.status_code == 200:
-                    data = resp.json()
-                    if data and data.get("is_collab_mode", False):
+                    try:
+                        data = resp.json()
+                        logger.debug(f"[Worker兜底轮询] 收到房主响应: room_name={data.get('room_name')}, is_collab_mode={data.get('is_collab_mode')}, room_ready={data.get('room_ready')}")
+                        
+                        # 检查房间信息是否有效（房主是否已解散房间）
+                        if not _is_room_valid(data):
+                            logger.warning(f"⚠️ [Worker兜底轮询] 检测到房间已解散: room_name={data.get('room_name')}, owner_name={data.get('owner_name')}")
+                            _handle_room_dismissed_on_worker()
+                            time.sleep(10)
+                            continue
+                        
                         # 获取到房主最新房间信息，更新本地持久化文件
                         updated_state = current_state.copy()
                         updated_state.update({
@@ -173,14 +307,70 @@ def _worker_room_info_polling_loop():
                             "polled_at": time.time()
                         })
                         save_worker_state(updated_state)
-                        logger.debug(f"🔄 [Worker兜底轮询] 成功从房主 {host}:{port} 同步最新房间信息: room_name={data.get('room_name')}, 成员数={len(data.get('members_detail', []))}")
+                        
+                        # 重置失败计数器（轮询成功）
+                        _worker_poll_fail_count = 0
+                        logger.debug(f"🔄 [Worker兜底轮询] 成功同步房间信息: {data.get('room_name', 'unknown')}")
+                        
+                    except json.JSONDecodeError as e_json:
+                        logger.warning(f"⚠️ [Worker兜底轮询] 解析房主响应失败: {e_json}")
+                        _worker_poll_fail_count += 1
+                else:
+                    # HTTP状态码不为200，可能房主已关闭或状态异常
+                    logger.warning(f"⚠️ [Worker兜底轮询] 房主返回异常状态码: {resp.status_code}")
+                    _worker_poll_fail_count += 1
+                    
             except requests.exceptions.RequestException as e_req:
-                # 网络异常（房主暂时不可达），静默不打错误日志，不打扰用户
-                logger.debug(f"⏳ [Worker兜底轮询] 房主 {host}:{port} 暂时不可达，稍后重试: {str(e_req)[:50]}")
-                pass
+                # 网络异常（房主不可达、超时、拒绝连接等）
+                _worker_poll_fail_count += 1
+                logger.warning(f"⏳ [Worker兜底轮询] 房主 {host}:{port} 暂时不可达 ({_worker_poll_fail_count}/{_WORKER_POLL_MAX_FAILURES}): {type(e_req).__name__}: {str(e_req)[:50]}")
+            
+            # 检查连续失败次数是否超过阈值
+            if _worker_poll_fail_count >= _WORKER_POLL_MAX_FAILURES:
+                # 智能判定：先检查TCP连接是否仍然活跃
+                node = getattr(app.state, "cluster_node", None)
+                tcp_connected = False
+                if node and hasattr(node, 'connection') and node.connection:
+                    try:
+                        # 尝试发送一个空探测包来检查连接是否活跃
+                        node.connection.send(b'')
+                        tcp_connected = True
+                    except Exception:
+                        # TCP连接已断开
+                        tcp_connected = False
+                
+                if tcp_connected:
+                    # TCP连接仍然活跃，只是HTTP轮询失败，不应该退出
+                    logger.warning(f"⚠️ [Worker兜底轮询] HTTP轮询连续失败 {_WORKER_POLL_MAX_FAILURES} 次，但TCP连接仍活跃，继续保持协作模式")
+                    _worker_poll_fail_count = 0  # 重置计数器，继续尝试
+                else:
+                    # TCP连接也断开了，才真正判定失去连接
+                    logger.warning(f"❌ [Worker兜底轮询] 连续失败 {_WORKER_POLL_MAX_FAILURES} 次，且TCP连接已断开，判定与房主失去连接 (当前计数: {_worker_poll_fail_count})")
+                    _handle_room_dismissed_on_worker()
+                    _worker_poll_fail_count = 0
             
         except Exception as e_global:
-            logger.debug(f"[Worker兜底轮询] 循环异常: {e_global}")
+            logger.error(f"❌ [Worker兜底轮询] 循环异常: {e_global}", exc_info=True)
+            _worker_poll_fail_count += 1
+            
+            # 异常情况下也检查失败次数（同样遵循智能判定）
+            if _worker_poll_fail_count >= _WORKER_POLL_MAX_FAILURES:
+                node = getattr(app.state, "cluster_node", None)
+                tcp_connected = False
+                if node and hasattr(node, 'connection') and node.connection:
+                    try:
+                        node.connection.send(b'')
+                        tcp_connected = True
+                    except Exception:
+                        tcp_connected = False
+                
+                if tcp_connected:
+                    logger.warning(f"⚠️ [Worker兜底轮询] 循环连续异常 {_WORKER_POLL_MAX_FAILURES} 次，但TCP连接仍活跃，继续保持协作模式")
+                    _worker_poll_fail_count = 0
+                else:
+                    logger.warning(f"❌ [Worker兜底轮询] 连续异常 {_WORKER_POLL_MAX_FAILURES} 次，且TCP连接已断开，触发自动退出")
+                    _handle_room_dismissed_on_worker()
+                    _worker_poll_fail_count = 0
         
         # 等待10秒再进行下一次轮询（轻量级，不占用资源）
         time.sleep(10)
@@ -487,7 +677,7 @@ async def api_approvals_create(request: Request):
 # =============================================================================
 # 集群协作启动事件（Phase 2 新增）
 # =============================================================================
-from config import CLUSTER_ENABLED, CLUSTER_ROLE, CLUSTER_NODE_ID, CLUSTER_NODE_NICKNAME, MODEL_NAME
+from config import CLUSTER_ENABLED, CLUSTER_ROLE, CLUSTER_NODE_ID, CLUSTER_NODE_NICKNAME, MODEL_NAME, CLUSTER_API_TOKEN
 from evolution.cluster.connection import ClusterNode, ClusterManager, ClusterClient
 from evolution.cluster.cluster_api import verify_token, get_cluster_node
 
@@ -504,11 +694,17 @@ async def get_info():
     # 加载本地持久化状态
     saved_state = load_worker_state()
     
+    # 基础响应对象，包含集群API Token（用于前端调用需要认证的API）
+    base_response = {
+        "cluster_token": CLUSTER_API_TOKEN if CLUSTER_API_TOKEN and CLUSTER_API_TOKEN != "please-change-me-to-a-secure-random-token-32-chars-min" else "",
+        "current_model_name": current_model_name
+    }
+    
     if not CLUSTER_ENABLED:
         return {
             "role": "standalone", 
             "message": "Cluster disabled",
-            "current_model_name": current_model_name
+            **base_response
         }
     role = CLUSTER_ROLE
     node = getattr(app.state, "cluster_node", None)
@@ -520,10 +716,10 @@ async def get_info():
             return {
                 "role": "manager", 
                 "room": room,
-                "current_model_name": current_model_name
+                **base_response
             }
         else:
-            return {"role": "manager", "room": None, "current_model_name": current_model_name}
+            return {"role": "manager", "room": None, **base_response}
     else:  # worker
         # 核心修复：即使TCP连接断开，只要持久化状态表明已加入房间，就显示协作模式
         is_connected = False
@@ -558,7 +754,7 @@ async def get_info():
                 "owner_model": saved_state.get("owner_model", ""),
                 "members_detail": saved_state.get("members_detail", []),
                 "room_ready": True,
-                "current_model_name": current_model_name
+                **base_response
             }
         
         # 正常无持久化状态时返回原有逻辑
@@ -569,10 +765,10 @@ async def get_info():
                 "connected": is_connected,
                 "mode": node.mode,
                 "model": node.model,
-                "current_model_name": current_model_name
+                **base_response
             }
         else:
-            return {"role": "worker", "connected": False, "current_model_name": current_model_name}
+            return {"role": "worker", "connected": False, **base_response}
 
 @app.post("/api/rooms/create")
 async def create_room(request: Request):
@@ -655,49 +851,60 @@ async def create_room(request: Request):
 @app.get("/api/rooms/current")
 async def get_current_room(request: Request):
     """获取当前房间信息 - 增强版：Worker节点主动向房主同步完整房间信息"""
-    import requests
     
-    # 【核心修复】Worker节点优先使用本地持久化的房间信息
     saved_state = load_worker_state()
     is_in_collab_mode = saved_state.get("in_room", False)
     
     if is_in_collab_mode:
-        # 判断：是否是临时过渡状态（缺少完整房间信息）
         is_transition_state = (
             not saved_state.get("room_id") or 
             saved_state.get("room_id") == "pending-fetch" or
             not saved_state.get("room_name") or 
-            saved_state.get("room_name") == "协作房间"
+            saved_state.get("room_name") == "协作房间" or
+            saved_state.get("room_name") == "Default-Room" or
+            not saved_state.get("owner_model") or
+            saved_state.get("owner_model") == "unknown"
         )
         
         if is_transition_state:
-            # 轻量级主动同步：直接向房主的 /api/rooms/current 拉取完整房间信息
             host = saved_state.get("host")
             port = saved_state.get("port")
             if host and port:
                 try:
-                    poll_url = f"http://{host}:{port}/api/rooms/current"
-                    resp = requests.get(poll_url, timeout=3.0)
-                    if resp.status_code == 200:
-                        master_info = resp.json()
-                        if master_info and master_info.get("is_collab_mode"):
-                            # 更新本地持久化状态为完整信息
-                            updated_state = saved_state.copy()
-                            updated_state.update({
-                                "in_room": True,
-                                "room_name": master_info.get("room_name", updated_state.get("room_name", "")),
-                                "room_id": master_info.get("room_id", updated_state.get("room_id", "")),
-                                "owner_name": master_info.get("owner_name", updated_state.get("owner_name", "")),
-                                "owner_model": master_info.get("owner_model", updated_state.get("owner_model", "")),
-                                "members_detail": master_info.get("members_detail", updated_state.get("members_detail", [])),
-                                "synced_at": time.time()
-                            })
-                            save_worker_state(updated_state)
-                            logger.info(f"🔄 [Worker主动同步] 成功从房主拉取完整房间信息: {updated_state.get('room_name')}")
-                            # 使用同步后的完整信息
-                            saved_state = updated_state
+                    import asyncio
+                    loop = asyncio.get_event_loop()
+                    async def _async_poll():
+                        try:
+                            import aiohttp
+                            timeout = aiohttp.ClientTimeout(total=5)
+                            async with aiohttp.ClientSession(timeout=timeout) as session:
+                                http_port = port - 1  # TCP端口-1 = HTTP端口
+                                poll_url = f"http://{host}:{http_port}/api/rooms/current"
+                                async with session.get(poll_url) as resp:
+                                    if resp.status == 200:
+                                        return await resp.json()
+                        except Exception:
+                            pass
+                        return None
+                    master_info = await _async_poll()
+                    if master_info and master_info.get("is_collab_mode"):
+                        updated_state = saved_state.copy()
+                        updated_state.update({
+                            "in_room": True,
+                            "room_name": master_info.get("room_name", updated_state.get("room_name", "")),
+                            "room_id": master_info.get("room_id", updated_state.get("room_id", "")),
+                            "owner_name": master_info.get("owner_name", updated_state.get("owner_name", "")),
+                            "owner_model": master_info.get("owner_model", updated_state.get("owner_model", "")),
+                            "members_detail": master_info.get("members_detail", updated_state.get("members_detail", [])),
+                            "synced_at": time.time()
+                        })
+                        save_worker_state(updated_state)
+                        logger.info(f"🔄 [Worker主动同步] 成功从房主拉取完整房间信息")
+                        saved_state = updated_state
+                except ImportError:
+                    logger.debug("aiohttp不可用，跳过异步同步")
                 except Exception as e_poll:
-                    logger.debug(f"⏳ [Worker主动同步] 房主暂时不可达，稍后重试: {str(e_poll)[:50]}")
+                    logger.debug(f"⏳ [Worker主动同步] 房主暂时不可达: {str(e_poll)[:50]}")
         
         # 最终返回信息（同步过或没同步过都至少有可用值）
         info = {
@@ -726,7 +933,7 @@ async def get_current_room(request: Request):
 
         info = manager.get_room_info()
         info["members_detail"] = manager.get_member_info()
-        info["is_collab_mode"] = False
+        info["is_collab_mode"] = info.get("room_ready", False) and info.get("room_name", "") != "Default-Room"
         info["success"] = True  # 总是返回 success，即使房间是 Default-Room
     
     # 从 model_config.json 中读取所有模型配置，返回给前端下拉框
@@ -933,6 +1140,8 @@ async def join_room(request: Request):
     success = join_success
 
     if success:
+        global _worker_poll_fail_count
+        _worker_poll_fail_count = 0
         if node:
             node.connection = client.socket
             node.model = model
@@ -1044,7 +1253,7 @@ async def join_room(request: Request):
                             room_info = msg.get("room_info", {})
                             updated_saved_state = load_worker_state()
                             updated_saved_state.update({
-                                "in_room": True,  # 核心：只要收到房主推送的房间信息，就一定标记为已在协作模式
+                                "in_room": True,
                                 "room_name": room_info.get("room_name", ""),
                                 "room_id": room_info.get("room_id", ""),
                                 "owner_name": room_info.get("owner_name", ""),
@@ -1054,6 +1263,15 @@ async def join_room(request: Request):
                             })
                             save_worker_state(updated_saved_state)
                             logger.info(f"✅ [WebApp持久化] 房主推送房间信息更新成功，强制标记 in_room=True")
+                            
+                            # 【问题2修复】立即通过WebSocket向前端推送房间信息更新，避免等待轮询
+                            asyncio.run_coroutine_threadsafe(
+                                broadcast_to_all_clients({
+                                    "type": "room_info_update",
+                                    "room_info": room_info
+                                }),
+                                asyncio.get_event_loop()
+                            )
                         except Exception as e_update:
                             logger.warning(f"更新房间状态持久化失败: {e_update}")
                     

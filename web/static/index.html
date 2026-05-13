@@ -320,7 +320,7 @@
                 <div style="margin-bottom: 16px;">
                     <h3 id="detail-room-name" style="color:#007bff;"></h3>
                     <p style="font-size:13px;color:#666;">
-                        ID: <span id="detail-room-id"></span> | 房主模型: <span id="detail-room-model"></span>
+                        ID: <span id="detail-room-id"></span> | 房主: <span id="detail-room-owner"></span> | 房主模型: <span id="detail-room-model"></span>
                     </p>
                     <div class="mode-indicator">
                         我的模式: <span id="detail-my-mode" style="font-weight:bold;"></span>
@@ -504,7 +504,8 @@ const STATE = {
     pendingApprovals: {}, // task_id -> DOM element container
     currentConversationId: null,
     collabMemberTimer: null,
-    currentActiveTask: null
+    currentActiveTask: null,
+    clusterToken: null // 集群API Token，用于调用需要认证的API
 };
 
 // ==================== Markdown 渲染 ====================
@@ -624,6 +625,10 @@ async function api(endpoint, options = {}) {
     if (options.body && !options.method) {
         config.method = 'POST';
     }
+    // 自动添加集群API Token（如果已获取）
+    if (STATE.clusterToken && !config.headers['X-Cluster-Token']) {
+        config.headers['X-Cluster-Token'] = STATE.clusterToken;
+    }
     if (options.headers) {
         config.headers = { ...config.headers, ...options.headers };
     }
@@ -651,14 +656,20 @@ async function init() {
         const data = await api('/api/info');
         STATE.role = data.role;
         
+        // 保存集群API Token（用于调用需要认证的API）
+        if (data.cluster_token) {
+            STATE.clusterToken = data.cluster_token;
+            console.log('✅ 已获取集群API Token');
+        }
+        
         // ========== 【问题1核心修复】强化房主模式按钮显示 ==========
         const collabBtn = document.getElementById('btn-new-collab-conversation');
         const navCollabChatBtn = document.getElementById('nav-collab-chat');
         const currentRoomInfoDiv = document.getElementById('current-room-info');
         const clusterBadge = document.getElementById('cluster-badge');
         
-        // 房主/单机模式只要检测到有活跃房间，就直接全部开启协作相关UI
-        if (STATE.role === 'manager' || STATE.role === 'standalone') {
+        // 房主模式或单机模式都显示「新建协作对话」按钮
+        if (STATE.role === 'manager') {
             if (collabBtn) {
                 collabBtn.style.display = 'block';
             }
@@ -684,6 +695,7 @@ async function init() {
                 // 房主已有活跃房间，直接进入房间详情
                 document.getElementById('detail-room-name').textContent = currentRoomRes.room_name;
                 document.getElementById('detail-room-id').textContent = currentRoomRes.room_id;
+                document.getElementById('detail-room-owner').textContent = currentRoomRes.owner_name || '房主';
                 document.getElementById('detail-room-model').textContent = currentRoomRes.owner_model;
                 document.getElementById('detail-my-mode').textContent = '房主模式';
                 
@@ -734,16 +746,29 @@ async function init() {
             
             discovery = await api('/api/discovery/start_scan', { method: 'POST' }).catch(() => ({}));
             
-            // 【问题1+2 双重修复】Worker 节点：持久化状态有值，页面刷新后立即进入协作房间页面
-            if (data.connected && (data.room_name || data.members_detail)) {
-                // 直接使用持久化状态返回的房间信息
-                const displayRoomName = data.room_name || "我的协作房间";
-                const displayRoomId = data.room_id || "local-temp";
-                const displayOwnerModel = data.owner_model || (data.model || "unknown");
-                const displayMembers = data.members_detail || [];
+            // 【核心修复】Worker节点：主动从房主获取最新房间信息，确保显示正确的房间名、ID、房主模型
+            let roomInfo = null;
+            if (data.connected) {
+                try {
+                    roomInfo = await api('/api/rooms/current');
+                    console.log('✅ Worker主动获取房间信息:', roomInfo);
+                } catch (e) {
+                    console.log('⏳ Worker获取房间信息失败（可能房主暂时不可达）:', e);
+                }
+            }
+            
+            // 【问题3修复】Worker节点：持久化状态有值，页面刷新后立即进入协作房间页面，并使用最新的房间信息
+            if (data.connected && (data.room_name || data.members_detail || roomInfo)) {
+                // 优先使用从房主获取的最新信息，其次使用持久化状态，最后使用默认值
+                const displayRoomName = roomInfo?.room_name || data.room_name || "协作房间";
+                const displayRoomId = roomInfo?.room_id || data.room_id || "local-temp";
+                const displayOwnerName = roomInfo?.owner_name || data.owner_name || "房主";
+                const displayOwnerModel = roomInfo?.owner_model || data.owner_model || (data.model || "unknown");
+                const displayMembers = roomInfo?.members_detail || data.members_detail || [];
                 
                 document.getElementById('detail-room-name').textContent = displayRoomName;
                 document.getElementById('detail-room-id').textContent = displayRoomId;
+                document.getElementById('detail-room-owner').textContent = displayOwnerName;
                 document.getElementById('detail-room-model').textContent = displayOwnerModel;
                 document.getElementById('detail-my-mode').textContent = STATE.nodeMode === 'auto' ? '🤖 自动模式' : '👤 人工干预';
                 
@@ -1177,6 +1202,7 @@ async function enterRoom(roomId) {
             // 显示房间详情
             document.getElementById('detail-room-name').textContent = data.room_name;
             document.getElementById('detail-room-id').textContent = data.room_id;
+            document.getElementById('detail-room-owner').textContent = data.owner_name || '房主';
             document.getElementById('detail-room-model').textContent = data.owner_model;
             document.getElementById('detail-my-mode').textContent = '房主模式';
             // 自动填充我的信息表单的花名
@@ -1232,20 +1258,85 @@ async function enterRoom(roomId) {
 
 // 定时刷新成员列表
 let memberRefreshTimer = null;
+let refreshFailCount = 0; // 连续失败计数
+let lastMemberCount = 0; // 记录上一次的成员数量
 function startMemberRefresh(roomId) {
     if (memberRefreshTimer) {
         clearInterval(memberRefreshTimer);
     }
+    refreshFailCount = 0; // 重置失败计数
+    lastMemberCount = 0; // 重置成员计数
+    
     // 每5秒刷新一次成员列表
     memberRefreshTimer = setInterval(async () => {
         if (STATE.currentView === 'room-detail') {
             try {
                 const data = await api('/api/rooms/current');
                 if (data && data.members_detail) {
+                    const currentMemberCount = data.members_detail.length;
+                    
+                    // 检测成员列表变化：从空变为有成员，或者成员数量增加
+                    if ((lastMemberCount === 0 && currentMemberCount > 0) || 
+                        (lastMemberCount > 0 && currentMemberCount > lastMemberCount)) {
+                        console.log(`✅ 检测到成员列表变化：${lastMemberCount} -> ${currentMemberCount}，主动更新房间信息`);
+                        
+                        // 成员列表发生变化，主动获取并更新房间信息
+                        if (data.room_name) {
+                            document.getElementById('detail-room-name').textContent = data.room_name;
+                            document.getElementById('room-name-display').textContent = data.room_name;
+                        }
+                        if (data.room_id) {
+                            document.getElementById('detail-room-id').textContent = data.room_id;
+                        }
+                        if (data.owner_name) {
+                            document.getElementById('detail-room-owner').textContent = data.owner_name;
+                        }
+                        if (data.owner_model) {
+                            document.getElementById('detail-room-model').textContent = data.owner_model;
+                        }
+                        
+                        // 显示提示
+                        if (lastMemberCount === 0 && currentMemberCount > 0) {
+                            showToast('成员列表已加载，房间信息已更新');
+                        } else if (currentMemberCount > lastMemberCount) {
+                            showToast('有新成员加入，房间信息已更新');
+                        }
+                    }
+                    
+                    // 更新成员列表
                     renderMembers(data.members_detail);
+                    lastMemberCount = currentMemberCount; // 更新成员计数
+                    refreshFailCount = 0; // 成功获取，重置失败计数
+                    
+                    // 更新房间信息显示（确保实时同步）
+                    if (data.room_name) {
+                        document.getElementById('detail-room-name').textContent = data.room_name;
+                        document.getElementById('room-name-display').textContent = data.room_name;
+                    }
+                    if (data.room_id) {
+                        document.getElementById('detail-room-id').textContent = data.room_id;
+                    }
+                    if (data.owner_name) {
+                        document.getElementById('detail-room-owner').textContent = data.owner_name;
+                    }
+                    if (data.owner_model) {
+                        document.getElementById('detail-room-model').textContent = data.owner_model;
+                    }
+                } else if (data && !data.is_collab_mode) {
+                    // 房主已退出协作模式，成员端自动退出
+                    console.log('⚠️ 房主已退出协作模式，成员端自动退出');
+                    await handleRoomExit();
                 }
             } catch (e) {
-                // 静默失败
+                refreshFailCount++;
+                console.log(`⚠️ 获取房间信息失败，连续失败次数: ${refreshFailCount}`);
+                
+                // 如果连续失败超过6次（约30秒），自动退出协作模式
+                if (refreshFailCount >= 6) {
+                    console.log('❌ 连续获取房间信息失败，自动退出协作模式');
+                    showToast('与房主失去连接，已自动退出协作模式', true);
+                    await handleRoomExit();
+                }
             }
         } else {
             // 不在房间详情页面，停止刷新
@@ -1334,6 +1425,7 @@ async function joinRoom() {
             document.getElementById('nav-collab-chat').classList.remove('hidden');
             document.getElementById('detail-room-name').textContent = '协作房间';
             document.getElementById('detail-room-id').textContent = '等待房主同步';
+            document.getElementById('detail-room-owner').textContent = '房主';
             document.getElementById('detail-room-model').textContent = '未知';
             document.getElementById('detail-my-mode').textContent = (mode === 'auto' ? '🤖 自动模式' : '👤 人工干预');
             document.getElementById('room-name-display').textContent = '协作房间';
@@ -1789,6 +1881,12 @@ function handleClusterEvent(data) {
             if (roomInfo.room_id) {
                 document.getElementById('detail-room-id').textContent = roomInfo.room_id;
             }
+            if (roomInfo.owner_model) {
+                document.getElementById('detail-room-model').textContent = roomInfo.owner_model;
+            }
+            if (roomInfo.owner_name) {
+                document.getElementById('detail-room-owner').textContent = roomInfo.owner_name;
+            }
         }
         return;
     }
@@ -1813,6 +1911,27 @@ function handleClusterEvent(data) {
         document.getElementById('current-room-info').classList.remove('hidden');
         showView('room-detail');
         startMemberRefresh();
+        // 【问题2修复】加入成功后立即刷新房间信息，确保显示正确的房间名和房主模型
+        api('/api/rooms/current').then(roomRes => {
+            if (roomRes && roomRes.success) {
+                if (roomRes.room_name) {
+                    document.getElementById('detail-room-name').textContent = roomRes.room_name;
+                    document.getElementById('room-name-display').textContent = roomRes.room_name;
+                }
+                if (roomRes.room_id) {
+                    document.getElementById('detail-room-id').textContent = roomRes.room_id;
+                }
+                if (roomRes.owner_name) {
+                    document.getElementById('detail-room-owner').textContent = roomRes.owner_name;
+                }
+                if (roomRes.owner_model) {
+                    document.getElementById('detail-room-model').textContent = roomRes.owner_model;
+                }
+                if (roomRes.members_detail && roomRes.members_detail.length > 0) {
+                    renderMembers(roomRes.members_detail);
+                }
+            }
+        }).catch(() => {});
         return;
     }
     

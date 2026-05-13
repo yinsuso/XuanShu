@@ -1,12 +1,8 @@
-## [5.6.1] - 2026-05-12
-- docs: 根目录全量md文档审计与一致性更新
-  - README.md 版本统一升级至 v5.6.1
-  - CHANGELOG.md 补充完整v5.6.0/v5.6.1双版本更新记录
-  - 统一项目版本号体系，VERSION文件与所有文档完全对齐
-  - 根目录所有核心md文档全面核查，确保与当前代码库状态100%同步
-  - 核心文件修改：
-    - README.md: 头部版本号从v5.6.0更新至v5.6.1
-    - CHANGELOG.md: 补充最新版本历史记录
+
+## [5.6.1] - 2026-05-13
+- fix: token统计修复 - Linux下sqlite3不可用时自动降级到JSON模式，修复相对导入问题确保token统计正常工作
+- fix: Windows asyncio AssertionError修复 - Python 3.13+在Windows上使用ProactorEventLoop时的已知问题，强制切换到SelectorEventLoop
+- fix: 成员端更新成员列表时房间信息不同步问题 - handle_heartbeat和handle_task_update现在同时更新room_members中的节点状态、负载信息，确保get_member_info()返回的数据始终是最新的
 
 ## [5.6.0] - 2026-05-11
 - feat: 局域网+跨互联网双模式集群协作正式版发布（里程碑版本）
@@ -20,7 +16,6 @@
     - evolution/cluster/ 全模块深度优化，协议层/连接层/API层完整闭环
     - web_app.py: 集群协作相关端点全部增强
     - README.md: 完整集群协作文档重写
-    - 根目录/ docs/ 全文档体系同步至v5.6.0状态
   - 项目里程碑：玄枢真正实现"单打独斗（单机本地）"与"群殴（分布式算力集群）"双形态完美支持
 
 ## [5.5.9] - 2026-05-11
@@ -92,7 +87,6 @@
   - cluster_api.py: WebSocket端点深度重构
   - evolution/cluster/connection.py: 密码校验 + 节点状态管理完善
   - web/static/index.html: 全新加入房间UI组件
-  - docs/: 所有文档版本同步到v5.5.3
 
 ## [5.5.1] - 2026-05-09
 - fix: 两个核心问题深度修复

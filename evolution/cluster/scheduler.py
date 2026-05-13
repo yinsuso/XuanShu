@@ -57,9 +57,9 @@ class TaskScheduler:
         """
         candidates = []
         for node in self.node_pool.values():
-            # 注意：ClusterNode 可能有不同的属性名，根据实际实现调整
-            if (getattr(node, "status", "online") == "online" and 
-                len(getattr(node, "pending_tasks", [])) < 5 and 
+            status = getattr(node, "status", "online")
+            if (status in ("online", "active") and
+                len(getattr(node, "pending_tasks", [])) < 5 and
                 getattr(node, "load_cpu", 0.0) < 0.8):
                 candidates.append(node)
         return candidates

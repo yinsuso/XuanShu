@@ -9,9 +9,10 @@ from config import PROJECT_ROOT
 from logger import logger
 
 try:
-    from .token_tracker import token_tracker
-except ImportError:
+    from token_tracker import token_tracker
+except ImportError as e:
     token_tracker = None
+    logger.warning(f"导入token_tracker失败: {e}")
 
 CONFIG_FILE = os.path.join(PROJECT_ROOT, "data", "model_config.json")
 os.makedirs(os.path.dirname(CONFIG_FILE), exist_ok=True)

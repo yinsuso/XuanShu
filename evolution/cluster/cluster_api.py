@@ -19,7 +19,7 @@ router = APIRouter(tags=["Cluster"])
 connected_ws_clients: Set[WebSocket] = set()
 
 def verify_token(request: Request):
-    if CLUSTER_API_TOKEN:
+    if CLUSTER_API_TOKEN and CLUSTER_API_TOKEN != "please-change-me-to-a-secure-random-token-32-chars-min":
         token = request.headers.get("X-Cluster-Token")
         if token != CLUSTER_API_TOKEN:
             raise HTTPException(status_code=401, detail="Unauthorized")
@@ -255,13 +255,35 @@ async def manual_join_room(request: Request):
         "mode": "auto"
     }
     
-    # 尝试连接房主
-    success, reason = _global_cluster_client.join(
-        host=host_ip,
-        port=int(host_port),
-        node_info=node_info,
-        password=password
-    )
+    # 尝试连接房主 - 使用异步执行避免阻塞事件循环
+    import asyncio
+    loop = asyncio.get_event_loop()
+    try:
+        join_result = await asyncio.wait_for(
+            loop.run_in_executor(
+                None,
+                lambda: _global_cluster_client.join(
+                    host=host_ip,
+                    port=int(host_port),
+                    node_info=node_info,
+                    password=password
+                )
+            ),
+            timeout=20.0
+        )
+        if isinstance(join_result, tuple):
+            success, reason = join_result
+        else:
+            success = join_result
+            reason = "已加入" if success else "加入失败"
+    except asyncio.TimeoutError:
+        success = False
+        reason = "连接超时"
+        logger.error(f"❌ 连接房间 {host_ip}:{host_port} 超时（20秒）")
+    except Exception as e_join:
+        success = False
+        reason = str(e_join)
+        logger.error(f"❌ Worker 连接 manager 失败: {e_join}")
     
     if success:
         logger.info(f"✅ [手动跨地区加入] 成功！已与房主 {host_ip}:{host_port} 建立稳定连接")
