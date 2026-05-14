@@ -1,7 +1,7 @@
 """
 Python 代码执行技能。
 安全执行 Python 代码，支持超时控制和输出限制。
-Author: Hermes Agent (Refactored)
+Author: 破执
 Date: 2026-04-30
 """
 

@@ -1,7 +1,7 @@
 """
 网络请求公共工具模块。
 提供安全的 HTTP 请求、网页抓取、内容清洗等基础功能。
-Author: Hermes Agent (Refactored)
+Author: 破执
 Date: 2026-04-30
 """
 
@@ -13,7 +13,7 @@ from typing import Optional
 
 # 默认请求头，模拟浏览器
 DEFAULT_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.7680.178 Safari/537.36",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
     "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
 }

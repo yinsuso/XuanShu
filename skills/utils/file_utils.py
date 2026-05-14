@@ -1,7 +1,7 @@
 """
 文件操作公共工具模块。
 提供安全的文件读写、目录列表等基础功能，所有操作均受路径安全限制。
-Author: Hermes Agent (Refactored)
+Author: 破执
 Date: 2026-04-30
 """
 
@@ -28,15 +28,32 @@ def validate_path(path: str) -> str:
     if not safe_root.endswith(os.sep):
         safe_root += os.sep
         
+    # 预处理：移除 null bytes 和其他危险字符
+    if '\0' in path:
+        raise ValueError(f"路径包含非法字符（null byte）")
+    
+    # 预处理：移除路径遍历模式的变种
+    dangerous_patterns = ['../', '..\\', './', '.\\']
+    for pattern in dangerous_patterns:
+        # 重复替换，直到没有变化，防止类似 ....// 这种绕过方式
+        while pattern in path:
+            path = path.replace(pattern, '')
+    
+    # 构建绝对路径并规范化
     abs_path = os.path.abspath(os.path.join(ALLOWED_DIR, path))
     
-    # 双重安全检查
-    if not abs_path.startswith(safe_root):
-        raise ValueError(f"路径越界：{path}，禁止访问ALLOWED_DIR以外的位置")
+    # 额外检查：获取真实路径（解析符号链接）
+    real_path = os.path.realpath(abs_path)
     
-    # 额外阻止 null bytes 等危险字符
-    if '\0' in path:
-        raise ValueError(f"路径包含非法字符")
+    # 双重安全检查：检查原始路径和真实路径
+    check_paths = [abs_path, real_path]
+    for check_path in check_paths:
+        if not check_path.startswith(safe_root):
+            # 尝试规范化目录名后再次检查
+            normalized_safe = os.path.normpath(safe_root)
+            normalized_check = os.path.normpath(check_path)
+            if not normalized_check.startswith(normalized_safe):
+                raise ValueError(f"路径越界：{path}，禁止访问ALLOWED_DIR以外的位置")
         
     return abs_path
 

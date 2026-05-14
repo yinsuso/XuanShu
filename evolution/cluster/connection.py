@@ -5,6 +5,7 @@ import threading
 import time
 import uuid
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from enum import Enum
 from typing import Dict, Any, Optional, List, TYPE_CHECKING
 from logger import logger
@@ -262,19 +263,27 @@ class ClusterManager:
         self.collab_conversation_id = None  # 协作模式专用对话ID
         self.collab_messages: List[Dict[str, Any]] = []  # 协作模式所有消息缓存
         self._collab_initialized = False  # 协作对话会话初始化标志
-        
+
         # 监控线程
         self._monitor_thread: Optional[threading.Thread] = None
         self._monitor_running = False
-        
+
         # 房间信息同步线程 - 定期向所有Worker推送完整房间信息，确保Worker本地持久化状态正确
         self._room_sync_thread: Optional[threading.Thread] = None
         self._room_sync_running = False
-        
+
         # 配置参数（可从 config.py 读取）
         self.max_retries = 3
         self.monitor_interval = 5  # 秒
         self.room_sync_interval = 3  # 秒 - 每3秒同步一次房间信息给所有Worker
+
+        # 100节点优化：批量广播线程池 + 节点分批处理
+        self._broadcast_executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix="cluster_bcast")
+        self._batch_size = 20  # 每批处理节点数
+        self._room_sync_batch_delay = 0.05  # 批次间延迟(秒)
+
+        # 100节点优化：房间信息增量同步标志，成员变化时触发全量同步
+        self._room_info_dirty = True  # True表示需要同步，处理后置为False
 
     def add_node(self, node_info: Dict[str, Any]):
         """
@@ -360,7 +369,7 @@ class ClusterManager:
             self._room_sync_thread.join(timeout=2)
     
     def _broadcast_full_room_info(self):
-        """向所有在线Worker推送完整的房间信息，确保Worker本地持久化JSON文件始终正确"""
+        """向所有在线Worker推送完整的房间信息，确保Worker本地持久化JSON文件始终正确 - 100节点优化版：分批+线程池"""
         try:
             room_info = {
                 "room_name": self.room_name,
@@ -373,90 +382,139 @@ class ClusterManager:
                 "type": "room_info_update",
                 "room_info": room_info
             }).encode('utf-8')
-            
-            # 遍历所有节点，通过TCP发送完整更新
+
+            # 100节点优化：分批处理，避免一次性遍历所有节点造成阻塞
+            node_items = list(self.nodes.items())
+            total_nodes = len(node_items)
             success_count = 0
-            for nid, node in self.nodes.items():
-                # 跳过房主自己（如果房主也有本地连接，也可以同步）
-                if node.connection:
-                    try:
-                        node.connection.sendall(full_update_msg)
-                        success_count += 1
-                    except Exception as e_send:
-                        # 连接失效，清理连接
-                        node.connection = None
-                        logger.debug(f"⚠️ 向节点 {nid[:8]} 推送房间信息失败: {e_send}")
-            
+
+            for i in range(0, total_nodes, self._batch_size):
+                batch = node_items[i:i + self._batch_size]
+                for nid, node in batch:
+                    if node.connection:
+                        try:
+                            node.connection.sendall(full_update_msg)
+                            success_count += 1
+                        except Exception as e_send:
+                            node.connection = None
+                            logger.debug(f"⚠️ 向节点 {nid[:8]} 推送房间信息失败: {e_send}")
+                # 批次间短暂延迟，避免网络突发拥塞
+                if i + self._batch_size < total_nodes:
+                    time.sleep(self._room_sync_batch_delay)
+
             # 同时向本地所有浏览器WebSocket也广播这个房间信息更新
             self.broadcast_to_room(self.room_id, {
                 "type": "room_info_update",
                 "room_info": room_info
             })
-            
-            logger.debug(f"📡 [房间定时同步] 已向 {success_count} 个在线Worker推送完整房间信息")
+
+            logger.debug(f"📡 [房间定时同步] 已向 {success_count}/{total_nodes} 个在线Worker推送完整房间信息")
         except Exception as e_broadcast:
             logger.warning(f"⚠️ 定时广播房间信息失败: {e_broadcast}")
     
     def _room_sync_loop(self):
-        """房间信息同步循环 - 定期向所有Worker推送最新完整房间信息，保证Worker本地持久化状态100%正确"""
+        """房间信息同步循环 - 100节点优化版：条件触发+自适应间隔，避免无意义的全量同步"""
+        # 100节点优化：根据节点数动态调整同步间隔
+        def _adaptive_sync_interval() -> float:
+            node_count = len(self.nodes)
+            if node_count <= 10:
+                return self.room_sync_interval
+            elif node_count <= 50:
+                return 6.0
+            else:
+                return 10.0  # 100节点时延长到10秒
+
         while self._room_sync_running:
             try:
-                self._broadcast_full_room_info()
-                time.sleep(self.room_sync_interval)
+                # 100节点优化：只有房间信息有变化时才全量同步，否则只发轻量心跳
+                if self._room_info_dirty:
+                    self._broadcast_full_room_info()
+                    self._room_info_dirty = False
+                else:
+                    # 无变化时发送轻量心跳，保持连接活跃
+                    self._send_lightweight_keepalive()
+                time.sleep(_adaptive_sync_interval())
             except Exception as e:
                 logger.error(f"[ClusterManager] 房间信息同步循环异常: {e}")
-                time.sleep(self.room_sync_interval)
+                time.sleep(_adaptive_sync_interval())
+
+    def _send_lightweight_keepalive(self):
+        """100节点优化：发送轻量保活消息，替代全量房间信息同步"""
+        try:
+            keepalive_msg = json.dumps({"type": "keepalive", "timestamp": time.time()}).encode('utf-8')
+            for nid, node in self.nodes.items():
+                if node.connection:
+                    try:
+                        node.connection.sendall(keepalive_msg)
+                    except Exception:
+                        node.connection = None
+        except Exception:
+            pass
     
     def _monitor_loop(self):
-        """监控循环（终极增强重入版：同时检查任务超时 + 节点心跳离线检测 + 临时离线保留重入窗口）"""
+        """监控循环（100节点优化版：动态间隔 + 分批心跳检测 + 临时离线保留重入窗口）"""
         HEARTBEAT_TIMEOUT_SECONDS = 15      # 超过15秒没收到心跳就标记临时离线
         MAX_OFFLINE_KEEP_SECONDS = 600      # 10分钟=600秒，超过这个时间还没重入的节点才真正清理
-        
+
+        # 100节点优化：根据节点数动态调整监控间隔，避免高频遍历大量节点
+        def _adaptive_interval() -> float:
+            node_count = len(self.nodes)
+            if node_count <= 10:
+                return 5.0
+            elif node_count <= 50:
+                return 8.0
+            else:
+                return 12.0  # 100节点时降低到约12秒一次全量遍历
+
         while self._monitor_running:
             try:
                 self.monitor_tasks()
-                
-                # 新增：节点心跳超时检测 - 保证成员计数100%准确
+
+                # 100节点优化：分批处理心跳检测，避免一次性遍历所有节点
                 now = time.time()
                 newly_offline_nodes = []
                 permanent_remove_nodes = []
-                
-                for node_id, node in self.nodes.items():
-                    # 跳过房主自己的节点
-                    if self.own_node and node_id == self.own_node.node_id:
-                        continue
-                    
-                    # 检查心跳超时
-                    if now - node.last_heartbeat > HEARTBEAT_TIMEOUT_SECONDS:
-                        if node.status != "offline":
-                            # 第一次标记为临时离线，记录时间戳
-                            logger.warning(f"⏰ [ClusterManager] 节点 {node_id[:8]} 心跳超时 ({int(now - node.last_heartbeat)}秒)，标记为临时离线（10分钟内可重入恢复）")
-                            node.status = "offline"
-                            node._first_offline_ts = now  # 记录首次离线时间戳
-                            newly_offline_nodes.append(node_id)
-                            # 断开无效连接
-                            if node.connection:
-                                try:
-                                    node.connection.close()
-                                except:
-                                    pass
-                                node.connection = None
-                        
-                        # === 关键：检查离线时间是否超过10分钟，超过才真正从房间永久移除 ===
-                        first_offline_ts = getattr(node, '_first_offline_ts', 0)
-                        if first_offline_ts > 0 and (now - first_offline_ts) > MAX_OFFLINE_KEEP_SECONDS:
-                            logger.info(f"🗑️  [ClusterManager] 节点 {node_id[:8]} 已离线超过10分钟，永久清理")
-                            permanent_remove_nodes.append(node_id)
-                
+                node_items = list(self.nodes.items())
+
+                for i in range(0, len(node_items), self._batch_size):
+                    batch = node_items[i:i + self._batch_size]
+                    for node_id, node in batch:
+                        # 跳过房主自己的节点
+                        if self.own_node and node_id == self.own_node.node_id:
+                            continue
+
+                        # 检查心跳超时
+                        if now - node.last_heartbeat > HEARTBEAT_TIMEOUT_SECONDS:
+                            if node.status != "offline":
+                                logger.warning(f"⏰ [ClusterManager] 节点 {node_id[:8]} 心跳超时 ({int(now - node.last_heartbeat)}秒)，标记为临时离线（10分钟内可重入恢复）")
+                                node.status = "offline"
+                                node._first_offline_ts = now
+                                newly_offline_nodes.append(node_id)
+                                if node.connection:
+                                    try:
+                                        node.connection.close()
+                                    except:
+                                        pass
+                                    node.connection = None
+
+                            first_offline_ts = getattr(node, '_first_offline_ts', 0)
+                            if first_offline_ts > 0 and (now - first_offline_ts) > MAX_OFFLINE_KEEP_SECONDS:
+                                logger.info(f"🗑️  [ClusterManager] 节点 {node_id[:8]} 已离线超过10分钟，永久清理")
+                                permanent_remove_nodes.append(node_id)
+
+                    # 批次间短暂释放GIL
+                    if i + self._batch_size < len(node_items):
+                        time.sleep(0.01)
+
                 # 对真正超时的节点执行永久清理
                 for remove_nid in permanent_remove_nodes:
                     self.leave_room(remove_nid)
-                    self.remove_node(remove_nid)  # 同时从nodes字典删除，彻底清理
-                
+                    self.remove_node(remove_nid)
+
                 if newly_offline_nodes or permanent_remove_nodes:
                     logger.info(f"📊 [ClusterManager] 当前在线成员数: {len([n for nid, n in self.nodes.items() if n.status == 'active'])}")
-                
-                time.sleep(self.monitor_interval)
+
+                time.sleep(_adaptive_interval())
             except Exception as e:
                 logger.error(f"[ClusterManager] 监控循环异常: {e}")
     
@@ -804,8 +862,12 @@ class ClusterManager:
                 "is_owner": False
             }
         logger.info(f"👥 [ClusterManager] 成员 {node_info.get('name', node_id)} 已加入房间")
-        
+
+        # 100节点优化：标记房间信息已变化，由同步线程处理全量广播
+        self._room_info_dirty = True
+
         # === 核心修复：加入成功后立即向所有成员（包括刚加入的成员）广播最新完整房间信息 ===
+        # 100节点优化：节点数>20时，只向新加入节点推送，避免加入瞬间全量广播阻塞
         try:
             room_info = {
                 "room_name": self.room_name,
@@ -818,26 +880,36 @@ class ClusterManager:
                 "type": "room_info_update",
                 "room_info": room_info
             }).encode('utf-8')
-            
-            # 遍历所有节点，通过TCP发送完整更新
-            for nid, node in self.nodes.items():
-                if node.connection:
+
+            if len(self.nodes) <= 20:
+                # 小房间：立即全量广播
+                for nid, node in self.nodes.items():
+                    if node.connection:
+                        try:
+                            node.connection.sendall(full_update_msg)
+                            logger.info(f"📡 [房间同步广播] 已向节点 {nid[:8]} 推送最新成员列表")
+                        except Exception as e_send:
+                            logger.warning(f"⚠️ 向节点 {nid[:8]} 推送房间更新失败: {e_send}")
+            else:
+                # 100节点优化：大房间只向新节点和房主推送，其他节点由定时同步线程处理
+                new_node = self.nodes.get(node_id)
+                if new_node and new_node.connection:
                     try:
-                        node.connection.sendall(full_update_msg)
-                        logger.info(f"📡 [房间同步广播] 已向节点 {nid[:8]} 推送最新成员列表")
+                        new_node.connection.sendall(full_update_msg)
+                        logger.info(f"📡 [房间同步广播] 已向新节点 {node_id[:8]} 推送完整房间信息")
                     except Exception as e_send:
-                        logger.warning(f"⚠️ 向节点 {nid[:8]} 推送房间更新失败: {e_send}")
-            
+                        logger.warning(f"⚠️ 向新节点 {node_id[:8]} 推送房间更新失败: {e_send}")
+
             # 同时向本地所有浏览器WebSocket也广播这个房间信息更新
             self.broadcast_to_room(self.room_id, {
                 "type": "room_info_update",
                 "room_info": room_info
             })
-            
+
             logger.info(f"✅ [房间信息同步完成] 当前房间共 {len(self.room_members)} 个成员")
         except Exception as e_broadcast:
             logger.warning(f"⚠️ 成员加入后广播房间更新失败: {e_broadcast}")
-        
+
         return True
     
     def leave_room(self, node_id: str):
@@ -847,6 +919,8 @@ class ClusterManager:
             left_member = self.room_members[node_id]
             del self.room_members[node_id]
             logger.info(f"🚪 [ClusterManager] 成员 {left_member.get('name', node_id)} 已离开房间")
+            # 100节点优化：成员变化标记脏数据，触发后续同步
+            self._room_info_dirty = True
         
         # 向所有在线Worker广播成员离开事件
         try:
@@ -1030,7 +1104,20 @@ class ClusterManager:
                             agent_obj = mod.get_agent()
                             break
                 if agent_obj:
-                    result = agent_obj._process_simple(description)
+                    # 【修复】如果 parameters 中包含技能调用信息，优先直接执行技能
+                    if parameters and isinstance(parameters, dict) and parameters.get('skill'):
+                        skill_name = parameters.get('skill')
+                        skill_args = parameters.get('args', parameters)
+                        if 'args' not in parameters:
+                            skill_args = {k: v for k, v in parameters.items() if k != 'skill'}
+                        logger.info(f"🎯 [Manager本地] 直接执行技能: {skill_name}, args={skill_args}")
+                        result = agent_obj._execute_skill(skill_name, skill_args)
+                    # 【修复】如果 task_type 本身就是已注册的技能名称，直接执行该技能
+                    elif task_type and agent_obj.skills_registry.get(task_type):
+                        logger.info(f"🎯 [Manager本地] task_type 匹配技能，直接执行: {task_type}, parameters={parameters}")
+                        result = agent_obj._execute_skill(task_type, parameters or {})
+                    else:
+                        result = agent_obj._process_simple(description)
                 else:
                     time.sleep(1)
                     result = f"✅ Agent「{agent_name}」已完成任务\n\n> 任务描述: {description}\n\n> 执行状态: 完全成功\n> 执行时间: {time.strftime('%Y-%m-%d %H:%M:%S')}\n\n🎯 这是由 Agent「{agent_name}」处理的结果！"
@@ -1058,28 +1145,40 @@ class ClusterManager:
         
         threading.Thread(target=task_runner, daemon=True).start()
     
-    def _init_collab_conversation(self):
-        """初始化协作模式专用对话 - 创建新对话文件，避免和单机对话混淆"""
-        if self._collab_initialized:
+    def _init_collab_conversation(self, force_new=False):
+        """初始化协作模式专用对话 - 创建新对话文件，避免和单机对话混淆
+        
+        Args:
+            force_new: 是否强制创建新对话。当房主使用 /new、/reset 命令或发起新的协作任务时，
+                      应设为 True，确保所有成员使用全新的对话上下文。
+        """
+        # 如果已经初始化且不要求强制新建，则直接返回
+        if self._collab_initialized and not force_new:
             return True
-            
+
         try:
-            from conversation_manager import get_global_conversation_manager, ConversationType
+            from conversation_manager import get_global_conversation_manager
             conv_mgr = get_global_conversation_manager()
-            
-            # 创建协作模式专用的新对话，标题明确标记为协作对话
-            new_conv_id = conv_mgr.new_conversation(
-                initial_title=f"🤝 {self.room_name} - 协作对话",
-                conversation_type=ConversationType.COLLABORATION
-            )
-            # 更新协作模式当前对话ID
-            conv_mgr._collab_current_id = new_conv_id
-            
+
+            if force_new and self._collab_initialized:
+                # 强制新建：重置协作对话，创建全新对话文件
+                new_conv_id = conv_mgr.reset_collab_conversation()
+                logger.info(f"✅ [协作持久化] 房主强制重置协作对话: conversation_id={new_conv_id[:8]}...")
+            else:
+                # 首次初始化：创建协作模式专用的新对话
+                from conversation_manager import ConversationType
+                new_conv_id = conv_mgr.new_conversation(
+                    initial_title=f"🤝 {self.room_name} - 协作对话",
+                    conversation_type=ConversationType.COLLABORATION
+                )
+                # 更新协作模式当前对话ID
+                conv_mgr._collab_current_id = new_conv_id
+                logger.info(f"✅ [协作持久化] 协作对话已初始化: conversation_id={new_conv_id[:8]}...")
+
             self.collab_conversation_id = new_conv_id
             self._collab_initialized = True
             self.collab_messages = []
-            
-            logger.info(f"✅ [协作持久化] 协作对话已初始化: conversation_id={new_conv_id[:8]}...")
+
             return True
         except Exception as e:
             logger.error(f"❌ [协作持久化] 初始化协作对话失败: {e}", exc_info=True)
@@ -1087,7 +1186,7 @@ class ClusterManager:
     
     def add_collab_message(self, role: str, content: str, metadata: Dict[str, Any] = None):
         """
-        添加协作消息 - 同时保存到内存缓存和持久化文件
+        添加协作消息 - 同时保存到内存缓存和持久化文件，并广播到所有客户端
         Args:
             role: 'user', 'assistant', 'system', 'tool'
             content: 消息内容
@@ -1117,12 +1216,21 @@ class ClusterManager:
             elif role == "assistant":
                 conv_mgr.add_assistant_message(content)
             elif role == "system":
-                # 系统消息作为特殊消息类型，加到助手消息里标记
-                system_content = f"📢 系统通知\n{content}"
-                conv_mgr.add_assistant_message(system_content)
-            
+                # 【修复】系统消息使用专门的 system 角色保存，不再错误标记为 assistant
+                conv_mgr.add_system_message(content)
+
             conv_mgr.save_current()
             logger.debug(f"📝 [协作持久化] 消息已保存: role={role}, 长度={len(content)}")
+            
+            # ========== 【核心修复】广播新消息到所有客户端 ==========
+            self.broadcast({
+                "type": "collab_new_message",
+                "role": role,
+                "content": content,
+                "metadata": metadata or {},
+                "timestamp": time.time()
+            })
+            
             return True
         except Exception as e:
             logger.error(f"❌ [协作持久化] 添加协作消息失败: {e}", exc_info=True)
@@ -1237,8 +1345,11 @@ class ClusterManager:
 
     def start_collaborative_task(self, task_type: str, description: str, parameters: Dict = None):
         """使用调度器启动协作任务 - 增强版：让模型先思考拆解任务，再进行智能分配"""
-        # 步骤1：初始化协作对话
-        self._init_collab_conversation()
+        # 步骤1：初始化协作对话（强制新建，确保每次协作任务都是全新对话）
+        self._init_collab_conversation(force_new=True)
+
+        # 注意：enter_collab_mode 事件已由 web_app.py 中的 /api/rooms/start_task 接口广播
+        # 此处不再重复广播，避免客户端收到重复事件
         
         # 步骤2：构建完整的协作环境介绍，让模型了解全部成员和规则
         collab_system_prompt = self._build_collab_system_prompt(description)
@@ -1406,9 +1517,29 @@ class ClusterManager:
     
     def get_member_info(self) -> list:
         """获取房间成员详细信息（包含能力分、负载等）"""
+        # 延迟导入避免循环依赖
+        try:
+            from model_providers import config_manager
+        except Exception:
+            config_manager = None
+
         members = []
         for node_id, member in self.room_members.items():
             node = self.nodes.get(node_id)
+            # 获取成员模型并查询对应的provider类型
+            member_model = member.get("model", node.model if node else "unknown")
+            provider_type = "unknown"
+            if config_manager:
+                cfg = config_manager.get_config(member_model)
+                if cfg:
+                    provider_type = cfg.provider.value
+                else:
+                    # 如果配置名不匹配，尝试通过model_name匹配
+                    for c in config_manager.configs:
+                        if c.model_name == member_model or c.name == member_model:
+                            provider_type = c.provider.value
+                            break
+
             if node:
                 members.append({
                     **member,
@@ -1418,7 +1549,8 @@ class ClusterManager:
                     "load_cpu": node.load_cpu,
                     "load_memory": node.load_memory,
                     # 保留成员自己设置的模型，不被节点默认模型覆盖
-                    "model": member.get("model", node.model)
+                    "model": member_model,
+                    "provider": provider_type
                 })
             else:
                 members.append({
@@ -1427,7 +1559,8 @@ class ClusterManager:
                     "status": "offline",
                     "capability_score": 0,
                     "load_cpu": 0,
-                    "load_memory": 0
+                    "load_memory": 0,
+                    "provider": provider_type
                 })
         return members
 
@@ -1451,7 +1584,7 @@ class ClusterManager:
     def handle_task_update(self, node_id: str, task_id: str, status: str, result=None, error=None):
         node = self.nodes.get(node_id)
         agent_name = self._get_agent_name_by_node_id(node_id)
-        
+
         # 【关键】协作对话持久化：自动保存Agent结果
         if self._collab_initialized:
             if status == "completed" and result:
@@ -1466,7 +1599,7 @@ class ClusterManager:
                     "task_id": task_id,
                     "type": "agent_failure"
                 })
-        
+
         if node:
             if status == "completed":
                 node.complete_task(task_id, result)
@@ -1474,7 +1607,7 @@ class ClusterManager:
             elif status == "failed":
                 node.fail_task(task_id, error)
                 logger.warning(f"❌ 节点 {agent_name} 任务失败: {task_id[:8]}")
-            
+
             node.status = "active"
             logger.info(f"🔄 节点 {agent_name} 状态恢复为空闲")
 
@@ -1484,29 +1617,103 @@ class ClusterManager:
             self.task_assignments.pop(task_id, None)
             self.task_timeouts.pop(task_id, None)
             self.task_metadata.pop(task_id, None)
-            
+
             node.notify_status_change(task_id)
-            
-            # ========== 统一广播机制：一次推送，所有浏览器都能收到 ==========
-            # 合并两个广播事件为一个，避免重复显示消息
-            self.broadcast({
-                "type": "task_update",
-                "task_id": task_id,
-                "status": status,
-                "result": result if status == "completed" else None,
-                "error": error if status == "failed" else None,
-                "node_id": node_id,
-                "agent_name": agent_name,
-                "collab_new_message": True,  # 标记需要在协作对话中显示
-                "timestamp": time.time()
-            })
-            
-            self.broadcast_task_status_to_all(task_id, status, node_id, {
-                "agent_name": agent_name,
-                "result_preview": str(result)[:100] if result else ""
-            })
         else:
             logger.warning("任务状态更新来自未知节点", node_id=node_id, task_id=task_id)
+
+        # 【核心修复】统一广播机制：已通过上面的 add_collab_message 广播消息，不需要重复广播
+        # 注意：broadcast_task_status_to_all 用于任务日志显示，不是 collab_new_message，不会重复
+
+        # 任务状态更新：用于任务日志显示，不重复显示agent结果
+        self.broadcast_task_status_to_all(task_id, status, node_id, {
+            "agent_name": agent_name,
+            "result_preview": str(result)[:100] if result else ""
+        })
+
+    def broadcast_skill_sync(self, skill_name: str, skill_code: str, generated_by: str = None):
+        """
+        向所有在线节点广播新生成的技能
+
+        Args:
+            skill_name: 技能名称
+            skill_code: 技能完整 Python 代码
+            generated_by: 生成者节点ID（可选）
+        """
+        from .protocol import create_skill_sync
+
+        msg = create_skill_sync(skill_name, skill_code, generated_by)
+        serialized = msg.serialize()
+
+        success_count = 0
+        for nid, node in self.nodes.items():
+            # 跳过生成者自己（如果指定了）
+            if generated_by and nid == generated_by:
+                continue
+            if node.connection:
+                try:
+                    node.connection.sendall(serialized)
+                    success_count += 1
+                    logger.info(f"📡 [技能同步] 已向节点 {nid[:8]} 广播技能 '{skill_name}'")
+                except Exception as e:
+                    logger.warning(f"⚠️ [技能同步] 向节点 {nid[:8]} 广播失败: {e}")
+
+        # 同时向本地浏览器WebSocket广播，通知前端有新技能同步
+        self.broadcast_to_room(self.room_id, {
+            "type": "skill_synced",
+            "skill_name": skill_name,
+            "generated_by": generated_by,
+            "timestamp": time.time()
+        })
+
+        logger.info(f"✅ [技能同步] 技能 '{skill_name}' 已广播给 {success_count} 个节点")
+        return success_count
+
+    def handle_skill_sync(self, skill_name: str, skill_code: str, generated_by: str = None):
+        """
+        处理接收到的技能同步消息（Worker节点或房主节点调用）
+
+        Args:
+            skill_name: 技能名称
+            skill_code: 技能完整 Python 代码
+            generated_by: 生成者节点ID（可选）
+        """
+        try:
+            import os
+            from config import PROJECT_ROOT
+
+            # 保存到本地 auto_generated 目录
+            auto_skills_dir = os.path.join(PROJECT_ROOT, "skills", "auto_generated")
+            os.makedirs(auto_skills_dir, exist_ok=True)
+
+            # 构建文件名
+            safe_name = "".join(c if c.isalnum() or c in '_-' else '_' for c in skill_name)
+            safe_name = safe_name.lower().replace('-', '_')
+            filename = f"synced_{safe_name}_{int(time.time())}.py"
+            filepath = os.path.join(auto_skills_dir, filename)
+
+            # 写入文件
+            with open(filepath, 'w', encoding='utf-8') as f:
+                f.write(skill_code)
+
+            # 重新加载技能
+            from skills import load_skills
+            load_skills()
+
+            logger.info(f"✅ [技能同步] 已接收并注册技能 '{skill_name}' 来自 {generated_by or 'unknown'}")
+
+            # 通知前端有新技能同步
+            self.broadcast_to_room(self.room_id, {
+                "type": "skill_synced",
+                "skill_name": skill_name,
+                "generated_by": generated_by,
+                "timestamp": time.time()
+            })
+
+            return True
+        except Exception as e:
+            logger.error(f"❌ [技能同步] 处理技能 '{skill_name}' 同步失败: {e}")
+            return False
 
     def start_server(self, host: str = "0.0.0.0", port: int = 30001):
         """启动房主端 TCP 服务器，监听节点加入请求 - 增强修复版"""
@@ -1576,6 +1783,23 @@ class ClusterManager:
         except Exception as e_broadcast:
             logger.warning(f"⚠️ 广播解散事件失败: {e_broadcast}")
         
+        # 第一步补充：主动关闭所有成员的TCP连接，确保他们立即收到断开通知
+        # 关键：必须在广播事件后立即关闭连接，这样成员的TCP监听线程会收到空数据并立即退出
+        try:
+            for nid, node in self.nodes.items():
+                if self.own_node and nid == self.own_node.node_id:
+                    continue  # 跳过房主自己
+                if node.connection:
+                    try:
+                        node.connection.close()
+                        logger.info(f"🔌 [解散强制断开] 已关闭成员 {nid[:8]} 的TCP连接")
+                    except Exception as e_close:
+                        logger.warning(f"⚠️ 关闭成员 {nid[:8]} 连接失败: {e_close}")
+                    finally:
+                        node.connection = None  # 确保引用也被清除
+        except Exception as e_force_close:
+            logger.warning(f"⚠️ 强制断开连接过程异常: {e_force_close}")
+        
         # 第二步：停止 UDP 广播，让局域网其他节点在发现列表中看不到这个房间
         if self.discovery:
             self.discovery.stop_hosting()
@@ -1615,22 +1839,51 @@ class ClusterManager:
             self._server = None
 
 
-    def broadcast(self, message: Dict[str, Any], exclude: List[str] = None):
-        """向所有节点广播消息（通过已建立的 TCP 连接 + WebSocket 双保险）"""
-        exclude_set = set(exclude or [])
-        logger.info(f"📡 [广播] 正在推送事件类型: {message.get('type')}, 节点数: {len(self.nodes)}")
-        
-        # 第一部分：向所有远程 Worker 节点通过 TCP 发送事件
-        for node in self.nodes.values():
+    def _send_to_node_batch(self, node_batch: List[tuple], message_bytes: bytes, exclude_set: set) -> int:
+        """100节点优化：批量发送消息到一组节点，返回成功数"""
+        success = 0
+        for nid, node in node_batch:
             if node.node_id in exclude_set:
                 continue
             if node.connection:
                 try:
-                    node.connection.sendall(json.dumps(message).encode('utf-8'))
-                    logger.debug(f"📡 [TCP广播] 已成功推送到节点 {node.node_id[:8]}")
-                except Exception as e:
-                    logger.error(f"📡 [TCP广播失败] 节点 {node.node_id} 失败: {e}")
-        
+                    node.connection.sendall(message_bytes)
+                    success += 1
+                except Exception:
+                    node.connection = None
+        return success
+
+    def broadcast(self, message: Dict[str, Any], exclude: List[str] = None):
+        """向所有节点广播消息（通过已建立的 TCP 连接 + WebSocket 双保险）- 100节点优化版：分批+线程池"""
+        exclude_set = set(exclude or [])
+        total_nodes = len(self.nodes)
+        logger.info(f"📡 [广播] 正在推送事件类型: {message.get('type')}, 节点数: {total_nodes}")
+
+        message_bytes = json.dumps(message).encode('utf-8')
+        node_items = list(self.nodes.items())
+
+        # 100节点优化：节点数<=20直接串行发送；超过20使用分批+线程池
+        if total_nodes <= 20:
+            for nid, node in node_items:
+                if node.node_id in exclude_set:
+                    continue
+                if node.connection:
+                    try:
+                        node.connection.sendall(message_bytes)
+                        logger.debug(f"📡 [TCP广播] 已成功推送到节点 {node.node_id[:8]}")
+                    except Exception as e:
+                        logger.error(f"📡 [TCP广播失败] 节点 {node.node_id} 失败: {e}")
+        else:
+            # 分批提交到线程池并行发送
+            futures = []
+            for i in range(0, total_nodes, self._batch_size):
+                batch = node_items[i:i + self._batch_size]
+                future = self._broadcast_executor.submit(self._send_to_node_batch, batch, message_bytes, exclude_set)
+                futures.append(future)
+            # 收集结果
+            total_success = sum(f.result() for f in futures)
+            logger.debug(f"📡 [TCP广播] 分批并行推送完成，成功 {total_success}/{total_nodes}")
+
         # 第二部分：向所有浏览器 WebSocket 客户端发送事件（保证本地成员立即收到）
         try:
             from evolution.cluster.cluster_api import broadcast_to_all_clients
@@ -1649,6 +1902,15 @@ class ClusterManager:
             logger.debug(f"📡 [WebSocket广播] 已成功推送到所有浏览器客户端")
         except Exception as e:
             logger.warning(f"📡 [WebSocket广播警告] {e}")
+
+    def shutdown(self):
+        """100节点优化：优雅关闭，释放线程池资源"""
+        self._broadcast_executor.shutdown(wait=False)
+        self.stop_monitoring()
+        self.stop_room_sync()
+        self.stop_server()
+
+
 class ClusterServer:
     """房主端 TCP 服务器：接收客户端加入请求 - 跨平台增强版"""
     def __init__(self, manager: ClusterManager, host: str = "0.0.0.0", port: int = 30001):
@@ -1713,7 +1975,8 @@ class ClusterServer:
                     self._server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
                 self._server_socket.settimeout(2.0)
                 self._server_socket.bind((try_host, try_port))
-                self._server_socket.listen(10)
+                # 100节点优化：提升backlog到128，支持更多并发连接队列
+                self._server_socket.listen(128)
                 self._actual_bind_host = try_host
                 self._actual_bind_port = try_port
                 self._bind_success = True
@@ -1863,8 +2126,17 @@ class ClusterServer:
             client_password = msg.get('password', '')
             if self.manager.room_password_hash:
                 # 房间有密码，需要验证
-                client_password_hash = hashlib.sha256(client_password.encode()).hexdigest() if client_password else ""
-                if client_password_hash != self.manager.room_password_hash:
+                if '$' in self.manager.room_password_hash:
+                    # 新格式 PBKDF2 验证（带盐）
+                    import hashlib
+                    import secrets
+                    salt, hash_hex = self.manager.room_password_hash.split('$', 1)
+                    password_ok = hashlib.pbkdf2_hmac('sha256', client_password.encode('utf-8'), salt.encode('utf-8'), 100000).hex() == hash_hex
+                else:
+                    # 旧格式 SHA256 验证（向后兼容）
+                    password_ok = hashlib.sha256(client_password.encode()).hexdigest() == self.manager.room_password_hash if client_password else False
+
+                if not password_ok:
                     logger.warning(f"[ClusterServer] 密码验证失败，拒绝节点 {addr[0]} 连接")
                     response = {"type": "ack", "status": "error", "reason": "密码错误"}
                     conn.sendall(json.dumps(response).encode('utf-8'))
@@ -1961,7 +2233,7 @@ class ClusterServer:
                             
                             # 支持两种消息格式的简化逻辑
                             payload = msg.get("payload")
-                            
+
                             # 方案A: ClusterMessage格式 (带payload)
                             if payload is not None:
                                 # 从payload中提取内容
@@ -1976,9 +2248,17 @@ class ClusterServer:
                                     result = payload.get("result")
                                     error = payload.get("error")
                                     self.manager.handle_task_update(node_id, task_id, status, result, error)
+                                elif msg_type == "skill_sync":
+                                    skill_name = payload.get("skill_name")
+                                    skill_code = payload.get("skill_code")
+                                    generated_by = payload.get("generated_by")
+                                    if skill_name and skill_code:
+                                        self.manager.handle_skill_sync(skill_name, skill_code, generated_by)
+                                    else:
+                                        logger.warning(f"[ClusterServer] 收到无效的技能同步消息: skill_name={skill_name}")
                                 else:
                                     logger.debug(f"[ClusterServer] 收到集群消息类型: {msg_type}")
-                            
+
                             # 方案B: 简单直接JSON格式 (不带payload)
                             else:
                                 if msg_type == "heartbeat":
@@ -1992,6 +2272,14 @@ class ClusterServer:
                                     result = msg.get("result")
                                     error = msg.get("error")
                                     self.manager.handle_task_update(node_id, task_id, status, result, error)
+                                elif msg_type == "skill_sync":
+                                    skill_name = msg.get("skill_name")
+                                    skill_code = msg.get("skill_code")
+                                    generated_by = msg.get("generated_by")
+                                    if skill_name and skill_code:
+                                        self.manager.handle_skill_sync(skill_name, skill_code, generated_by)
+                                    else:
+                                        logger.warning(f"[ClusterServer] 收到无效的技能同步消息: skill_name={skill_name}")
                                 else:
                                     logger.debug(f"[ClusterServer] 未知消息类型: {msg_type}")
                         except json.JSONDecodeError:
@@ -2330,7 +2618,35 @@ class ClusterClient:
                                                 agent_obj = mod.get_agent()
                                                 break
                                     if agent_obj:
-                                        result = agent_obj._process_simple(description)
+                                        # 【关键修复】成员执行新任务前，强制重置对话上下文，避免残留历史影响
+                                        try:
+                                            from conversation_manager import get_global_conversation_manager, ConversationType
+                                            conv_mgr = get_global_conversation_manager()
+                                            # 强制创建全新的协作对话，清除之前的上下文
+                                            new_conv_id = conv_mgr.reset_collab_conversation()
+                                            # 同步更新agent的对话管理器
+                                            if hasattr(agent_obj, 'conversation_manager') and agent_obj.conversation_manager:
+                                                agent_obj.conversation_manager = conv_mgr
+                                            logger.info(f"✅ [ClusterClient] 成员已强制重置对话上下文: {new_conv_id[:8]}...")
+                                        except Exception as e_reset:
+                                            logger.warning(f"⚠️ [ClusterClient] 重置对话上下文失败: {e_reset}")
+
+                                        # 【修复】如果 parameters 中包含技能调用信息，优先直接执行技能
+                                        if parameters and isinstance(parameters, dict) and parameters.get('skill'):
+                                            skill_name = parameters.get('skill')
+                                            skill_args = parameters.get('args', parameters)
+                                            # 如果 args 不存在，尝试将整个 parameters 作为参数传递（排除 skill 字段本身）
+                                            if 'args' not in parameters:
+                                                skill_args = {k: v for k, v in parameters.items() if k != 'skill'}
+                                            logger.info(f"🎯 [ClusterClient] 直接执行技能: {skill_name}, args={skill_args}")
+                                            result = agent_obj._execute_skill(skill_name, skill_args)
+                                        # 【修复】如果 task_type 本身就是已注册的技能名称，直接执行该技能
+                                        elif task_type and agent_obj.skills_registry.get(task_type):
+                                            logger.info(f"🎯 [ClusterClient] task_type 匹配技能，直接执行: {task_type}, parameters={parameters}")
+                                            result = agent_obj._execute_skill(task_type, parameters or {})
+                                        else:
+                                            # 没有技能参数时，使用 description 让模型自行判断
+                                            result = agent_obj._process_simple(description)
                                     else:
                                         time.sleep(1)
                                         result = f"✅ Worker「{self._node_name}」已完成任务\n\n> 任务描述: {description}\n\n> 执行状态: 完全成功\n> 执行时间: {time.strftime('%Y-%m-%d %H:%M:%S')}\n\n🎯 这是由 Worker「{self._node_name}」处理的结果！"
@@ -2386,7 +2702,55 @@ class ClusterClient:
                             
                             import threading
                             threading.Thread(target=execute_task, daemon=True).start()
-                        
+
+                        # 处理：技能同步消息（Worker接收房主广播的新技能）
+                        elif msg_type == "skill_sync":
+                            payload = msg.get("payload", {})
+                            skill_name = payload.get("skill_name") or msg.get("skill_name")
+                            skill_code = payload.get("skill_code") or msg.get("skill_code")
+                            generated_by = payload.get("generated_by") or msg.get("generated_by")
+
+                            if skill_name and skill_code:
+                                logger.info(f"📥 [ClusterClient] 收到技能同步: '{skill_name}' 来自 {generated_by or 'unknown'}")
+                                try:
+                                    import os
+                                    from config import PROJECT_ROOT
+
+                                    auto_skills_dir = os.path.join(PROJECT_ROOT, "skills", "auto_generated")
+                                    os.makedirs(auto_skills_dir, exist_ok=True)
+
+                                    safe_name = "".join(c if c.isalnum() or c in '_-' else '_' for c in skill_name)
+                                    safe_name = safe_name.lower().replace('-', '_')
+                                    filename = f"synced_{safe_name}_{int(time.time())}.py"
+                                    filepath = os.path.join(auto_skills_dir, filename)
+
+                                    with open(filepath, 'w', encoding='utf-8') as f:
+                                        f.write(skill_code)
+
+                                    from skills import load_skills
+                                    load_skills()
+
+                                    logger.info(f"✅ [ClusterClient] 技能 '{skill_name}' 已保存并加载")
+
+                                    # 通知前端有新技能同步
+                                    try:
+                                        from evolution.cluster.cluster_api import broadcast_to_all_clients
+                                        loop = asyncio.new_event_loop()
+                                        asyncio.set_event_loop(loop)
+                                        loop.run_until_complete(broadcast_to_all_clients({
+                                            "type": "skill_synced",
+                                            "skill_name": skill_name,
+                                            "generated_by": generated_by,
+                                            "timestamp": time.time()
+                                        }))
+                                        loop.close()
+                                    except:
+                                        pass
+                                except Exception as e_sync:
+                                    logger.error(f"❌ [ClusterClient] 处理技能同步失败: {e_sync}")
+                            else:
+                                logger.warning(f"⚠️ [ClusterClient] 收到无效的技能同步消息")
+
                     except ValueError:
                         break
             except socket.timeout:
@@ -2472,7 +2836,63 @@ class ClusterClient:
                     capability_score=evaluate_capability_simple(node_info)
                 )
                 
-                # 【关键修复1】加入房间成功后，立刻持久化所有关键信息！确保刷新Web页面后不会丢失协作模式信息
+                # 【关键修复】加入房间成功后，等待接收房主推送的房间完整信息后再保存状态
+                room_info_from_manager = {
+                    "room_name": "",
+                    "room_id": "",
+                    "owner_name": "",
+                    "owner_model": "",
+                    "members_detail": []
+                }
+                try:
+                    # 从剩余的缓冲区中继续读取房主推送的房间信息
+                    # 注意：响应缓冲区中可能还有未处理的消息
+                    logger.debug(f"📥 [ClusterClient] 尝试从缓冲区获取房主推送的房间信息...")
+                    received_room_info = False
+                    
+                    # 等待接收房主推送的房间信息（最多等待2秒）
+                    sock.settimeout(2.0)
+                    try:
+                        while True:
+                            data = sock.recv(8192)
+                            if not data:
+                                break
+                            response_buffer += data
+                            
+                            # 解析所有消息
+                            messages, response_buffer = self._parse_json_messages(response_buffer)
+                            for msg_bytes in messages:
+                                try:
+                                    msg_obj = json.loads(msg_bytes.decode('utf-8'))
+                                    msg_type = msg_obj.get("type")
+                                    
+                                    # 关键：接收房主推送的room_info_update消息
+                                    if msg_type == "room_info_update":
+                                        room_info = msg_obj.get("room_info", {})
+                                        room_info_from_manager = {
+                                            "room_name": room_info.get("room_name", ""),
+                                            "room_id": room_info.get("room_id", ""),
+                                            "owner_name": room_info.get("owner_name", ""),
+                                            "owner_model": room_info.get("owner_model", ""),
+                                            "members_detail": room_info.get("members_detail", [])
+                                        }
+                                        received_room_info = True
+                                        logger.info(f"📥 [ClusterClient] 成功从房主获取房间信息: room_name={room_info_from_manager['room_name']}, 成员数={len(room_info_from_manager['members_detail'])}")
+                                        break
+                                except json.JSONDecodeError:
+                                    continue
+                            
+                            if received_room_info:
+                                break
+                    except socket.timeout:
+                        logger.debug(f"📥 [ClusterClient] 等待房间信息超时，继续使用默认值")
+                    
+                    # 恢复心跳超时设置
+                    sock.settimeout(5.0)
+                except Exception as e_room_info:
+                    logger.warning(f"⚠️ 接收房主房间信息失败，使用默认值: {e_room_info}")
+                
+                # 【关键修复1】加入房间成功后，持久化所有关键信息（包括从房主获取的房间信息）
                 try:
                     import os
                     import json as json_module
@@ -2483,7 +2903,7 @@ class ClusterClient:
                         if not os.path.exists(data_dir):
                             os.makedirs(data_dir, exist_ok=True)
                     
-                    # 立刻保存所有关键信息
+                    # 立刻保存所有关键信息（包括从房主获取的房间信息）
                     _ensure_data_dir_exists()
                     initial_state = {
                         "in_room": True,  # 核心标记：已在协作模式中
@@ -2494,15 +2914,15 @@ class ClusterClient:
                         "model": node_info.get("model", "unknown"),
                         "role": node_info.get("role", "worker"),
                         "mode": node_info.get("mode", "auto"),
-                        "room_name": "",
-                        "room_id": "",
-                        "owner_name": "",
-                        "owner_model": "",
-                        "members_detail": []
+                        "room_name": room_info_from_manager.get("room_name", ""),
+                        "room_id": room_info_from_manager.get("room_id", ""),
+                        "owner_name": room_info_from_manager.get("owner_name", ""),
+                        "owner_model": room_info_from_manager.get("owner_model", ""),
+                        "members_detail": room_info_from_manager.get("members_detail", [])
                     }
                     with open(CLUSTER_WORKER_STATE_PATH, 'w', encoding='utf-8') as f:
                         json_module.dump(initial_state, f, ensure_ascii=False, indent=2)
-                    logger.info(f"💾 [Worker持久化] 加入房间成功，已保存初始协作状态: host={host}, port={port}")
+                    logger.info(f"💾 [Worker持久化] 加入房间成功，已保存完整协作状态: room_name={room_info_from_manager.get('room_name', 'unknown')}, host={host}, port={port}")
                 except Exception as e_init_save:
                     logger.warning(f"⚠️ 保存初始协作状态失败: {e_init_save}")
                 
@@ -2603,8 +3023,13 @@ class ClusterClient:
         threading.Thread(target=self._auto_reconnect_loop, daemon=True).start()
         logger.info(f"🔄 [ClusterClient] 自动重连机制已启动")
     
-    def close(self):
-        """关闭持久连接，停止所有后台线程"""
+    def close(self, clear_state: bool = True):
+        """关闭持久连接，停止所有后台线程
+        
+        Args:
+            clear_state: 是否清除本地持久化状态文件，默认为True（正常退出协作模式时清除）
+                         设置为False时仅关闭连接不断开重连（用于重连前的临时断开）
+        """
         self.running = False
         if self.socket:
             try:
@@ -2612,4 +3037,16 @@ class ClusterClient:
             except Exception:
                 pass
             self.socket = None
-        logger.info(f"🔌 [ClusterClient] 连接已完全关闭")
+        
+        # 如果需要清除状态，同时清除本地持久化文件
+        if clear_state:
+            try:
+                import os
+                from config import CLUSTER_WORKER_STATE_PATH
+                if os.path.exists(CLUSTER_WORKER_STATE_PATH):
+                    os.remove(CLUSTER_WORKER_STATE_PATH)
+                    logger.info("🗑️ [Worker持久化] close()清理协作状态文件，协作会话已结束")
+            except Exception as e_clear:
+                logger.warning(f"⚠️ close()清理状态文件失败: {e_clear}")
+        
+        logger.info(f"🔌 [ClusterClient] 连接已完全关闭（clear_state={clear_state}）")

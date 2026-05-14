@@ -1,7 +1,7 @@
 """
 文件读取技能。
 读取指定文件内容，支持大文件分块读取。
-Author: Hermes Agent (Refactored)
+Author: 破执
 Date: 2026-04-30
 """
 

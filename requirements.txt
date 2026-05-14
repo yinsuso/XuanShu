@@ -17,6 +17,7 @@ tenacity>=8.2.3
 colorama>=0.4.6
 beautifulsoup4>=4.12.0
 lxml>=5.0.0
+python-multipart>=0.0.9
 
 # ========= 可选增强依赖 =========
 # 注意：以下包依赖 PyTorch，在 Python 3.14 Windows 环境下可能出现 WinError 1114 DLL 初始化失败
@@ -24,6 +25,9 @@ lxml>=5.0.0
 # 如需完整安装推荐降级到 Python 3.10 或 3.12：
 chromadb>=0.5.0
 sentence-transformers>=2.5.0
+
+# WebSocket 支持 (FastAPI 集群协作实时通信)
+websockets>=12.0
 
 # 安全增强 (security hardening)
 docker>=7.1.0

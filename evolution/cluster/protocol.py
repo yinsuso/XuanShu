@@ -21,6 +21,7 @@ class MessageType(Enum):
     HEARTBEAT = "heartbeat"                       # 心跳
     LEAVE = "leave"                               # 退出通知
     ROOM_INFO = "room_info"                       # 房间信息查询
+    SKILL_SYNC = "skill_sync"                     # 技能同步（跨节点技能广播）
 
 
 @dataclass
@@ -271,6 +272,29 @@ def create_task_update(task_id: str, status: str, result: Any = None, error: str
             "result": result,
             "error": error,
             "reported_at": time.time()
+        }
+    )
+
+
+def create_skill_sync(skill_name: str, skill_code: str, generated_by: str = None) -> ClusterMessage:
+    """
+    创建技能同步消息（用于跨节点广播新生成的技能）
+
+    Args:
+        skill_name: 技能名称
+        skill_code: 技能完整 Python 代码
+        generated_by: 生成者节点ID（可选）
+
+    Returns:
+        ClusterMessage: 技能同步消息
+    """
+    return ClusterMessage(
+        type=MessageType.SKILL_SYNC,
+        payload={
+            "skill_name": skill_name,
+            "skill_code": skill_code,
+            "generated_by": generated_by,
+            "synced_at": time.time()
         }
     )
 

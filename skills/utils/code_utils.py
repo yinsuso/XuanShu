@@ -3,7 +3,7 @@
 """
 代码执行公共工具模块。
 提供安全的 Python 代码执行、沙箱限制、超时控制等功能。
-Author: Hermes Agent (Refactored)
+Author: 破执
 Date: 2026-04-30
 """
 

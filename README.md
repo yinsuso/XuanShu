@@ -1,8 +1,8 @@
-# 🤖 玄枢 (XuanShu) v5.6.1
+# 🤖 玄枢 (XuanShu) v5.7.3
 
 **一个具备自进化能力的本地AI智能体集群系统**
 
-玄枢 (XuanShu) 不仅仅是一个对话界面，它是一个能够自我反思、自我升级并支持局域网协作的认知系统。它遵循“本地优先”原则，确保所有数据不出域，打造真正的私人数字大脑。
+玄枢 (XuanShu) 不仅仅是一个对话界面，它是一个能够自我反思、自我升级并支持局域网协作的认知系统。它遵循"本地优先"原则，确保所有数据不出域，打造真正的私人数字大脑。
 
 ## 主要是针对用户：
 - **1. 专为中低端显卡打造，局域网模式可以将多台1080、2080等家用显卡串联协作。**
@@ -14,8 +14,10 @@
 
 - **🧠 自进化认知**：内置 `EvolutionEngine`，能够从错误中学习并自动生成新的 Python 技能插件。
 - **🌐 局域网协作**：支持一键创建/加入协作房间，UDP三重发现机制确保中继路由器场景也能100%找到房间。
-- **🚀 跨互联网远程串联**：【新增核心功能】手动指定IP/域名，突破局域网限制！本地显卡电脑和远程GPU服务器可以跨地区串联成分布式算力集群，心跳保活、负载实时上报、分工协作！
+- **🚀 跨互联网远程串联**：手动指定IP/域名，突破局域网限制！本地显卡电脑和远程GPU服务器可以跨地区串联成分布式算力集群，心跳保活、负载实时上报、分工协作！
+- **🔄 协作模式技能同步**：【v5.7.0 新增】协作模式下，任意 Agent 生成的新技能可自动同步到集群所有节点，实现"一次生成，全网共享"！
 - **💾 双轨记忆系统**：结合 SQLite (高性能潜意识) 与 Markdown (可编辑意识)，实现长期记忆的精准检索与人工引导。
+- **🧠 三级降级向量记忆**：向量语义搜索 → SQLite 关键词匹配 → 纯 JSON 文件存储，自动检测依赖可用性，从高端服务器到嵌入式设备全平台适配。
 - **👁️ Web 资源直显**：完美支持模型生成的图片、音频、视频在 Web 端直接预览。
 
 ## 🚀 快速开始
@@ -214,8 +216,15 @@ set USE_VECTOR_MEMORY=true
 | LOG_FORMAT | str | `text` | LOG_FORMAT | 日志格式(text/json) |
 | LOG_FILE | str | None | LOG_FILE | 日志文件路径 |
 | **记忆系统** |
-| USE_VECTOR_MEMORY | bool | `false` | USE_VECTOR_MEMORY | 是否启用向量记忆 |
+| USE_VECTOR_MEMORY | bool | `false` | USE_VECTOR_MEMORY | 是否启用向量记忆（自动检测依赖并降级） |
 | VECTOR_MODEL | str | `all-MiniLM-L6-v2` | VECTOR_MODEL | 向量模型名称 |
+
+> **向量记忆三级降级说明**：当 `USE_VECTOR_MEMORY=true` 时，系统会自动检测依赖并按以下优先级选择模式：
+> 1. **向量模式**（最佳）：需要 `chromadb` + `sentence-transformers`，支持语义搜索
+> 2. **SQLite 模式**（降级）：仅需 Python 内置 `sqlite3`，使用关键词匹配
+> 3. **JSON 模式**（保底）：零外部依赖，纯 Python 标准库实现
+>
+> 即使在没有 sqlite3 的极端环境下，向量记忆功能依然可以正常工作。
 | **进化功能** |
 | ENABLE_EVOLUTION | bool | `false` | ENABLE_EVOLUTION | 是否启用自进化功能 |
 | **集群协作** |
@@ -274,6 +283,43 @@ set USE_VECTOR_MEMORY=true
 
 ---
 
+### 🔄 协作模式技能同步（v5.7.0 新增）
+
+在协作模式下，任意 Agent 生成的新技能可以**自动同步**到集群中的所有其他节点，实现"一次生成，全网共享"。
+
+#### 自动同步机制
+
+当集群中的任意 Agent（房主或 Worker）生成新技能时：
+1. 技能代码在本地验证通过后保存到 `skills/auto_generated/`
+2. 系统自动触发 `broadcast_skill_sync()` 向所有在线节点广播
+3. 各节点接收后保存为 `skills/auto_generated/synced_xxx.py` 并自动注册
+4. 所有节点立即可以使用这个新技能
+
+#### 手动同步API
+
+| 接口 | 方法 | 说明 |
+|------|------|------|
+| `POST /api/skills/sync` | 手动触发 | 将已有技能同步到集群 |
+| `GET /api/skills/sync/status` | 查询状态 | 查看当前集群节点在线状态 |
+| `POST /api/cluster/skills/sync` | 集群内部 | 集群API路由层的同步接口 |
+
+#### 使用示例
+
+```bash
+# 手动同步一个技能到所有节点
+curl -X POST http://localhost:30000/api/skills/sync \
+  -H "Content-Type: application/json" \
+  -d '{
+    "skill_name": "quick_calc",
+    "code": "from skills.base import skill..."
+  }'
+
+# 查询同步状态
+curl http://localhost:30000/api/skills/sync/status
+```
+
+---
+
 ### 🧠 调度策略
 
 默认使用 **能力优先**（Capability），根据模型基准分、硬件算力、实时负载、历史表现和网络质量进行综合评估。可在 `config.py` 中调整 `SCHEDULER_STRATEGY` 为 `load`（负载均衡）、`round_robin`（轮询）或 `affinity`（亲和性匹配）。
@@ -294,13 +340,28 @@ set USE_VECTOR_MEMORY=true
 | **50005** | UDP | 局域网房间发现广播 | UDP协议，用于扫描发现同一网段内其他主机的协作房间信息 |
 
 #### 🪟 Windows 用户
-Windows Defender防火墙会自动放行本地回环连接，但如果你需要其他局域网设备访问你的玄枢，需要手动添加入站规则：
+
+**⚠️ 局域网协作必需设置**
+
+为了让其他局域网设备能够发现并连接到你的玄枢协作房间，你需要完成以下两项设置：
+
+**1. 启用网络发现和文件共享**
+
+打开「控制面板 - 网络和共享中心 - 高级共享设置」，确保以下选项已启用：
+- **启用网络发现**：允许其他设备在网络上发现你的电脑
+- **启用文件和打印机共享**：允许网络上的设备访问你的共享资源
+
+**2. Windows Defender 防火墙放行端口**
+
+运行以下PowerShell命令（以管理员身份）：
 ```powershell
 # 以管理员身份运行PowerShell
 New-NetFirewallRule -DisplayName "玄枢 30000" -Direction Inbound -Protocol TCP -LocalPort 30000 -Action Allow
 New-NetFirewallRule -DisplayName "玄枢 30001" -Direction Inbound -Protocol TCP -LocalPort 30001 -Action Allow
 New-NetFirewallRule -DisplayName "玄枢 50005" -Direction Inbound -Protocol UDP -LocalPort 50005 -Action Allow
 ```
+
+> **重要说明**：以上设置是进行正常协作任务的必要条件。如果不启用网络发现和放行端口，其他设备将无法发现你的协作房间，也无法建立TCP连接进行任务分配，导致无法有效进行协作任务。
 
 #### 🍎 macOS 用户
 在「系统设置 - 网络 - 防火墙」中手动添加Python程序允许传入连接，或直接使用以下命令临时放行：
@@ -338,7 +399,7 @@ sudo firewall-cmd --reload
   - 一键启停协作任务
 
 ## AI声明：
-本项目由Trae 、 qwen3.5 、step-3.5-flash 、kimi-k2.6 与 gemma 4 模型提供技术辅助，部分代码由这两个代码编写并审核。
+本项目由Trae 、 qwen3.5 、step-3.5-flash 、kimi-k2.6 与 gemma 4 模型提供技术辅助，部分代码由这几个模型/工具编写并审核。
 
 
 ## 📜 开源协议

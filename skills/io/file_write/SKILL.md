@@ -4,7 +4,7 @@ description: 写入内容到指定文件，自动创建父目录。
 category: io
 requires_confirmation: False
 version: "1.0"
-author: Hermes Agent
+author: 破执
 tags: []
 parameters:
   -   name: "path"

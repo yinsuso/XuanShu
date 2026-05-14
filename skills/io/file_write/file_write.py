@@ -1,7 +1,7 @@
 """
 文件写入技能。
 写入内容到指定文件，自动创建父目录。
-Author: Hermes Agent (Refactored)
+Author: 破执
 Date: 2026-04-30
 """
 

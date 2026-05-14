@@ -1,6 +1,6 @@
 """
 技能系统基类
-参考Hermes Agent的设计风格
+参考破执的设计风格
 """
 import inspect
 import json
@@ -62,7 +62,7 @@ class SkillMetadata:
 class Skill(ABC):
     """
     技能基类
-    参考Hermes Agent的Skill设计
+    参考破执的Skill设计
     """
 
     # 子类可以覆盖这些
@@ -149,7 +149,7 @@ class FunctionSkill(Skill):
 class SkillRegistry:
     """
     技能注册表
-    参考Hermes Agent的skill manager设计
+    参考破执的skill manager设计
     """
 
     _instance = None
@@ -266,8 +266,8 @@ class SkillRegistry:
         logger.info("技能注册表已清空")
 
 
-# 全局注册表实例
-registry = SkillRegistry()
+# 全局注册表实例（供装饰器使用）
+base_registry = SkillRegistry()
 
 
 def skill(
@@ -278,14 +278,14 @@ def skill(
 ):
     """
     技能装饰器
-    参考Hermes Agent的装饰器风格
+    参考破执的装饰器风格
     """
     def decorator(func: Callable):
         @wraps(func)
         def wrapper(*args, **kwargs):
             return func(*args, **kwargs)
 
-        registry.register_function(
+        base_registry.register_function(
             func=wrapper,
             name=name,
             description=description,

@@ -1,4 +1,5 @@
 import os
+import secrets
 from typing import Optional
 from datetime import datetime
 # =============================================================================
@@ -329,8 +330,19 @@ CLUSTER_MANAGER_PORT = PORT_CLUSTER_MANAGER
 CLUSTER_NODE_ID = os.getenv("CLUSTER_NODE_ID", None)
 CLUSTER_NODE_NICKNAME = os.getenv("CLUSTER_NODE_NICKNAME", "玄枢成员")
 CLUSTER_WORKER_THREADS = int(os.getenv("CLUSTER_WORKER_THREADS", 1))
-# 安全增强：集群API Token强制默认值，禁止None状态下开放无认证访问
-CLUSTER_API_TOKEN = os.getenv("CLUSTER_API_TOKEN", "please-change-me-to-a-secure-random-token-32-chars-min")
+# 安全增强：检测并自动生成安全的随机Token
+_DEFAULT_TOKEN = "please-change-me-to-a-secure-random-token-32-chars-min"
+_CLUSTER_TOKEN_FROM_ENV = os.getenv("CLUSTER_API_TOKEN")
+if _CLUSTER_TOKEN_FROM_ENV:
+    CLUSTER_API_TOKEN = _CLUSTER_TOKEN_FROM_ENV
+elif os.getenv("CLUSTER_API_TOKEN") is None:
+    CLUSTER_API_TOKEN = secrets.token_urlsafe(32)
+    import sys
+    print(f"[CONFIG安全警告] 检测到使用默认Cluster Token，已自动生成安全随机Token。", file=sys.stderr)
+    print(f"[CONFIG安全警告] 请通过环境变量 CLUSTER_API_TOKEN 设置您自己的Token。", file=sys.stderr)
+    print(f"[CONFIG安全警告] 当前Token仅用于本次会话，请尽快配置永久Token。", file=sys.stderr)
+else:
+    CLUSTER_API_TOKEN = _DEFAULT_TOKEN
 # Worker 节点对外 API 端口（使用PORT_CLUSTER_API）
 CLUSTER_API_PORT = PORT_CLUSTER_API
 

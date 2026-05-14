@@ -4,7 +4,7 @@ description: 列出指定目录下的文件和子目录。
 category: io
 requires_confirmation: False
 version: "1.0"
-author: Hermes Agent
+author: 破执
 tags: []
 parameters:
   -   name: "path"

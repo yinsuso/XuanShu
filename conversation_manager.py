@@ -204,17 +204,32 @@ class ConversationManager:
         return conversation_id
 
     def switch_mode(self, conversation_type: ConversationType):
-        """切换到指定模式的对话，两套对话完全隔离"""
+        """切换到指定模式的对话，两套对话完全隔离。
+        如果该模式下有最近的对话，则加载它；否则创建新对话。"""
         if conversation_type == ConversationType.STANDALONE:
-            if self._standalone_current_id and self.load_conversation(self._standalone_current_id):
-                logger.info(f"切换到单机模式对话: {self._standalone_current_id[:8]}...")
-            else:
-                self.new_conversation(initial_title="单机对话", conversation_type=ConversationType.STANDALONE)
+            # 优先尝试加载单机模式最近的对话
+            last_standalone = self.list_conversations(limit=1, conversation_type=ConversationType.STANDALONE)
+            if last_standalone:
+                last_id = last_standalone[0]["conversation_id"]
+                if self.load_conversation(last_id):
+                    self._standalone_current_id = last_id
+                    logger.info(f"切换到单机模式并加载最近对话: {last_id[:8]}...")
+                    return
+            # 没有历史则创建新对话
+            self.new_conversation(initial_title="单机对话", conversation_type=ConversationType.STANDALONE)
+            logger.info(f"切换到单机模式并创建新对话: {self._standalone_current_id[:8]}...")
         else:
-            if self._collab_current_id and self.load_conversation(self._collab_current_id):
-                logger.info(f"切换到协作模式对话: {self._collab_current_id[:8]}...")
-            else:
-                self.new_conversation(initial_title="协作对话", conversation_type=ConversationType.COLLABORATION)
+            # 优先尝试加载协作模式最近的对话
+            last_collab = self.list_conversations(limit=1, conversation_type=ConversationType.COLLABORATION)
+            if last_collab:
+                last_id = last_collab[0]["conversation_id"]
+                if self.load_conversation(last_id):
+                    self._collab_current_id = last_id
+                    logger.info(f"切换到协作模式并加载最近对话: {last_id[:8]}...")
+                    return
+            # 没有历史则创建新对话
+            self.new_conversation(initial_title="协作对话", conversation_type=ConversationType.COLLABORATION)
+            logger.info(f"切换到协作模式并创建新对话: {self._collab_current_id[:8]}...")
 
     def load_conversation(self, conversation_id: str) -> bool:
         filepath = os.path.join(CONVERSATIONS_DIR, f"{conversation_id}.json")
@@ -269,6 +284,10 @@ class ConversationManager:
     def add_tool_message(self, content: str, tool_name: str, tool_args: Dict[str, Any] = None):
         if self.current_conversation:
             self.current_conversation.add_message(MessageRole.TOOL, content, tool_name, tool_args)
+
+    def add_system_message(self, content: str):
+        if self.current_conversation:
+            self.current_conversation.add_message(MessageRole.SYSTEM, content)
 
     def _generate_title_by_model(self):
         """调用模型生成对话标题"""
@@ -377,16 +396,31 @@ class ConversationManager:
             # 1. 保存旧对话（可选：标记为归档）
             # self.current_conversation.metadata['archived'] = True
             # self.save_current()
-            
+
             # 2. 创建新对话
             new_id = self.new_conversation(initial_title="新对话")
-            
+
             # 3. 切换当前会话
             self.current_conversation = self.conversations[new_id]
-            
+
             logger.info(f"✅ 已创建新对话并清空：{new_id[:8]}...")
             return new_id
         return None
+
+    def reset_collab_conversation(self) -> str:
+        """
+        强制重置协作对话：无论之前是否初始化过，都创建全新的协作对话。
+        用于房主发起新协作任务时，确保所有成员使用全新的对话上下文。
+        返回新对话 ID。
+        """
+        new_id = self.new_conversation(
+            initial_title="🤝 协作对话",
+            conversation_type=ConversationType.COLLABORATION
+        )
+        self._collab_current_id = new_id
+        self.current_conversation = self.conversations[new_id]
+        logger.info(f"✅ [协作重置] 已强制创建全新协作对话：{new_id[:8]}...")
+        return new_id
 
     def try_load_last_conversation(self) -> bool:
         """尝试加载最近的对话，如果存在的话"""

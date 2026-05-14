@@ -4,7 +4,7 @@ description: 安全执行 Python 代码，支持超时控制和输出限制。
 category: code
 requires_confirmation: True
 version: "1.0"
-author: Hermes Agent
+author: 破执
 tags: []
 parameters:
   -   name: "code"

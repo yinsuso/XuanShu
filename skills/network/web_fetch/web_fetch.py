@@ -1,7 +1,7 @@
 """
 网页抓取技能。
 抓取网页内容并清洗为纯文本，支持自动识别相对路径。
-Author: Hermes Agent (Refactored)
+Author: 破执
 Date: 2026-04-30
 """
 

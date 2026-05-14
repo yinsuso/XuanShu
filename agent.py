@@ -9,35 +9,28 @@ UniversalAgent v5.0 - 认知进化版
 集成 ReAct 思考闭环与强制复盘机制，实现从执行到进化的全链路闭环。
 """
 
-import sys
 import os
-from pathlib import Path
-
-# Ensure project root is in sys.path for script-mode execution
-_current_root = Path(__file__).resolve().parent
-if str(_current_root) not in sys.path:
-    sys.path.insert(0, str(_current_root))
-
 import re
+import sys
 import json
-from typing import Dict, Any, List, Optional, Tuple
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
 
 from config import MODEL_NAME, MAX_CODE_EXECUTIONS, SYSTEM_CONTEXT_FILES, PROJECT_ROOT
-from memory_core import memory_core
-from memory_enhanced import EnhancedMemorySystem
+from conversation_manager import ConversationManager, MessageRole, conversation_manager as global_conversation_manager
 from evolution_engine import EvolutionEngine
 from evolution.react_loop import ReActLoop
-from skills import registry, load_skills, list_skills
 from logger import logger
+from memory_core import memory_core
+from memory_enhanced import EnhancedMemorySystem
+from model_providers import config_manager, call_model
+from skills import registry, load_skills, list_skills
 
-# 安全审批支持
 try:
     from security.firewall.approval import ApprovalManager
     SECURITY_AVAILABLE = True
 except ImportError:
     SECURITY_AVAILABLE = False
-from model_providers import config_manager, call_model
-from conversation_manager import ConversationManager, MessageRole, conversation_manager as global_conversation_manager
 
 class UniversalAgent:
     def __init__(
@@ -101,15 +94,62 @@ class UniversalAgent:
         except Exception as e:
             logger.error(f"加载技能失败：{e}")
 
+    def _load_agent_guide(self) -> str:
+        """加载 Agent 能力使用指南，区分单机和协作模式"""
+        guide_path = os.path.join(PROJECT_ROOT, "AGENT_GUIDE.md")
+        if not os.path.exists(guide_path):
+            return ""
+        try:
+            with open(guide_path, 'r', encoding='utf-8') as f:
+                return f.read().strip()
+        except Exception as e:
+            logger.warning(f"读取 Agent 指南失败: {e}")
+            return ""
+
+    def _load_skill_md_trigger(self, skill_name: str) -> str:
+        """读取技能的 SKILL.md 文件，提取 Trigger Scenario。"""
+        try:
+            from skills import _skill_filepaths
+            py_path = _skill_filepaths.get(skill_name)
+            if not py_path:
+                return ""
+            md_path = os.path.join(os.path.dirname(py_path), "SKILL.md")
+            if not os.path.exists(md_path):
+                return ""
+            with open(md_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+            # 提取 Trigger Scenario
+            match = re.search(r'##\s*Trigger Scenario\s*\n\s*(.+?)(?=\n##|\Z)', content, re.DOTALL | re.IGNORECASE)
+            if match:
+                trigger = match.group(1).strip()
+                # 限制长度
+                if len(trigger) > 200:
+                    trigger = trigger[:200] + "..."
+                return trigger
+        except Exception:
+            pass
+        return ""
+
     def _build_system_prompt(self, query: str = "", is_collab_mode: bool = False, collab_context: Dict[str, Any] = None) -> str:
         skill_schemas = registry.get_openai_schemas()
-        skills_info = [f"📌 {s['function']['name']}: {s['function']['description']}" for s in skill_schemas]
+        skills_info = []
+        for s in skill_schemas:
+            name = s['function']['name']
+            desc = s['function']['description']
+            trigger = self._load_skill_md_trigger(name)
+            info = f"📌 {name}: {desc}"
+            if trigger:
+                info += f"\n   🔔 触发场景: {trigger}"
+            skills_info.append(info)
 
         # 整合统一记忆系统的上下文（带查询检索）
         core_ctx = self.memory_system.get_full_context(query=query)
 
         # 读取系统上下文文件（如 MEMORY.md, SOUL.md）并解析结构化内容
         memory_sections = self._parse_memory_files()
+
+        # 加载 Agent 能力使用指南
+        agent_guide = self._load_agent_guide()
 
         # ========== 构建结构化系统提示词（参考 Hermes 模式）==========
         
@@ -197,22 +237,34 @@ class UniversalAgent:
             system_prompt += memory_sections['capabilities'] + "\n"
             system_prompt += "</capabilities>\n\n"
         
-        # 9. 可用技能
+        # 9. Agent 能力使用指南（注入到系统提示词中）
+        if agent_guide:
+            system_prompt += "<agent_guide>\n"
+            system_prompt += agent_guide + "\n"
+            system_prompt += "</agent_guide>\n\n"
+        
+        # 10. 可用技能
         system_prompt += "<available_skills>\n"
         system_prompt += "\n".join(skills_info[:20])
         if len(skills_info) > 20:
             system_prompt += "\n..."
         system_prompt += "\n</available_skills>\n\n"
         
-        # 10. 工具调用格式
+        # 11. 工具调用格式
         system_prompt += "<tool_format>\n"
-        system_prompt += "当需要使用工具时，请使用 JSON 格式输出：\n"
+        system_prompt += "【重要】当用户请求匹配某个技能的触发场景时，你必须调用该技能，禁止直接用自身知识回答！\n"
+        system_prompt += "调用格式（必须使用 ```json 代码块包裹）：\n"
         system_prompt += "```json\n"
         system_prompt += "{ \"skill\": \"技能名称\", \"args\": { \"参数名\": \"参数值\" } }\n"
         system_prompt += "```\n"
+        system_prompt += "【强制规则】\n"
+        system_prompt += "- 如果用户明确要求使用某个技能，你必须调用该技能\n"
+        system_prompt += "- 如果用户请求的内容匹配某个技能的触发场景，你必须调用该技能获取实时数据\n"
+        system_prompt += "- 严禁在应该调用技能时，使用自身知识编造回答\n"
+        system_prompt += "- 调用技能后，你会收到技能返回的原始数据，然后基于这些数据回答用户\n"
         system_prompt += "</tool_format>\n\n"
         
-        # 11. 输出格式偏好
+        # 12. 输出格式偏好
         if memory_sections.get('output_preferences'):
             system_prompt += "<output_preferences>\n"
             system_prompt += memory_sections['output_preferences'] + "\n"
@@ -396,30 +448,37 @@ class UniversalAgent:
             return f"❌ 技能执行失败：{str(e)}"
 
     def run(self):
-        print("\n🚀 Hermes Agent v5.0 (Evolution Enabled) 已启动！")
+        print("\n🚀 破执 v5.0 (Evolution Enabled) 已启动！")
         print("📝 输入 'exit' 退出 | 'skills' 查看技能 | 'memory' 查看记忆\n")
-        
+
         while True:
             try:
                 user_input = input("👤 您：").strip()
                 if not user_input: continue
                 if user_input.lower() in ['exit', 'quit', 'q']: break
-                
+
                 if user_input.lower() == 'skills':
                     for s in list_skills(): print(f"  - {s['name']}: {s['description']}")
                     continue
-                
+
                 if user_input.lower() == 'memory':
                     mem = memory_core.get_all_core_memory()
                     for k, v in mem.items(): print(f"  {k}: {v}")
                     continue
-                
+
                 response = self.process_adaptive(user_input)
                 print(f"🤖 玄枢：{response}\n")
-                
-            except KeyboardInterrupt: break
+
+            except KeyboardInterrupt:
+                logger.info("用户中断对话")
+                break
+            except EOFError:
+                logger.info("输入结束")
+                break
             except Exception as e:
-                print(f"❌ 错误：{str(e)}\n")
+                logger.error(f"处理用户输入时发生错误: {str(e)}", exc_info=True)
+                print(f"❌ 处理输入时发生错误：{str(e)}\n")
+                print("请尝试重新输入或输入 'exit' 退出。\n")
 
 def main():
     agent = UniversalAgent()

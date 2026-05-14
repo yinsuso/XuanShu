@@ -352,3 +352,75 @@ async def get_local_discovered_rooms(request: Request):
     except Exception as e:
         logger.error(f"获取局域网房间列表失败: {e}")
         return {"success": False, "rooms": [], "error": str(e)}
+
+@router.post("/skills/sync")
+async def sync_skill_to_cluster(request: Request):
+    """手动触发技能同步到集群中的所有节点"""
+    verify_token(request)
+    try:
+        data = await request.json()
+        skill_name = data.get("skill_name", "")
+        skill_code = data.get("skill_code", "")
+
+        if not skill_name or not skill_code:
+            raise HTTPException(status_code=400, detail="缺少技能名称或代码")
+
+        manager = request.app.state.cluster_manager
+        if not manager:
+            raise HTTPException(status_code=503, detail="集群管理器未初始化")
+
+        if not hasattr(manager, 'broadcast_skill_sync'):
+            raise HTTPException(status_code=503, detail="集群管理器不支持技能同步")
+
+        # 获取当前节点ID
+        node_id = None
+        if hasattr(manager, 'own_node') and manager.own_node:
+            node_id = manager.own_node.node_id
+
+        success_count = manager.broadcast_skill_sync(skill_name, skill_code, generated_by=node_id)
+
+        return {
+            "success": True,
+            "message": f"技能 '{skill_name}' 已同步到 {success_count} 个节点",
+            "synced_nodes": success_count,
+            "skill_name": skill_name
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"集群技能同步失败: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/skills/sync/status")
+async def get_skill_sync_status(request: Request):
+    """获取当前集群技能同步状态"""
+    verify_token(request)
+    try:
+        manager = request.app.state.cluster_manager
+        if not manager:
+            return {
+                "success": True,
+                "in_cluster": False,
+                "message": "当前不在协作模式中"
+            }
+
+        total_nodes = len(manager.nodes) if hasattr(manager, 'nodes') else 0
+        online_nodes = sum(
+            1 for n in manager.nodes.values()
+            if getattr(n, 'status', 'offline') != 'offline'
+        ) if hasattr(manager, 'nodes') else 0
+
+        return {
+            "success": True,
+            "in_cluster": True,
+            "room_id": getattr(manager, 'room_id', None),
+            "room_name": getattr(manager, 'room_name', None),
+            "total_nodes": total_nodes,
+            "online_nodes": online_nodes,
+            "message": f"当前房间有 {online_nodes}/{total_nodes} 个在线节点"
+        }
+
+    except Exception as e:
+        logger.error(f"获取技能同步状态失败: {e}")
+        raise HTTPException(status_code=500, detail=str(e))

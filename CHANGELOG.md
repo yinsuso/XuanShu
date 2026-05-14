@@ -1,4 +1,93 @@
 
+## [5.7.3] - 2026-05-14
+- feat: Token统计前端精细化展示 —— 支持多维度可视化展示与灵活筛选
+  - 新增5大统计视图标签页：📊总览 / 📅按天统计 / 🤖按模型统计 / 🔍交叉明细 / 📝最近记录
+  - 新增时间范围筛选：支持最近7天/14天/30天/90天动态切换
+  - 新增模型筛选下拉框：自动加载所有使用过的模型，支持按模型过滤统计
+  - 新增日期筛选下拉框：自动加载有数据的日期，支持按日期查看明细
+  - 新增每日Token使用趋势柱状图：可视化展示每日使用量变化
+  - 新增模型使用占比条形图：直观对比各模型使用量
+  - 新增每日-模型交叉明细表：按天分组的模型使用详情
+  - 新增操作联动：点击"查看明细"自动切换日期筛选，点击"查看趋势"自动切换模型筛选
+  - 新增API端点：
+    - `GET /api/token-stats/dates?days=N` —— 获取有数据的日期列表
+    - `GET /api/token-stats/models` —— 获取所有使用过的模型列表
+  - 新增后端统计方法（SQLite/JSON双模式完整支持）：
+    - `get_available_dates(days)` —— 获取有数据的日期列表
+    - `get_model_list()` —— 获取所有使用过的模型列表
+  - 核心文件修改：
+    - `token_tracker.py`: 新增2个查询方法（SQLite+JSON双模式）
+    - `web_app.py`: 新增2个API端点
+    - `web/static/js/views/stats.js`: 完全重写，实现5视图+3筛选+图表展示
+    - `web/static/css/main.css`: 新增统计页面完整样式（工具栏/标签页/卡片/图表/表格）
+
+## [5.7.2] - 2026-05-14
+- feat: Token统计精细化升级 —— 支持按天、按模型、按天+模型交叉统计
+  - 新增 `get_usage_by_date_and_model()` —— 按天和模型交叉统计，精确到"某天某模型用了多少token"
+  - 新增 `get_daily_model_breakdown()` —— 获取某一天的模型使用明细（含summary汇总+models列表）
+  - 新增 `get_model_usage_by_period()` —— 获取某个模型在指定天数内的每日使用量趋势
+  - 新增 `get_detailed_stats()` —— 综合精细化统计，一键获取全部维度数据
+  - API增强：`GET /api/token-stats` 支持4个查询参数：
+    - `detailed=true` —— 返回精细化统计（含today_breakdown/daily_model等）
+    - `days=N` —— 指定查询天数范围（默认7天）
+    - `model=xxx` —— 按指定模型筛选，返回该模型的每日使用趋势
+    - `date=YYYY-MM-DD` —— 按指定日期查询，返回当天各模型使用明细
+  - 双存储模式完整支持：SQLite模式新增provider索引；JSON降级模式所有新方法均已实现
+  - 向下兼容：原有 `get_stats()` 接口保持不变，旧版调用方式不受影响
+  - 核心文件修改：
+    - `token_tracker.py`: 新增4个精细化统计方法 + `_filter_by_date_range()` 辅助方法
+    - `web_app.py`: `/api/token-stats` 端点增强，支持4个查询参数
+
+## [5.7.1] - 2026-05-14
+- perf: 协作模式100节点扩展性优化 —— 集群架构性能全面升级
+  - TCP服务器backlog提升：`socket.listen(10)` → `socket.listen(128)`，半连接队列扩容12.8倍，支持更多Worker并发连接
+  - 广播机制分批并行化：节点数>20时启用ThreadPoolExecutor(max_workers=8)分批发送，100节点广播从串行100次系统调用→5批并行，延迟大幅降低
+  - 监控循环动态间隔：根据节点数自适应调整（10节点→5秒，50节点→8秒，100节点→12秒），避免高频遍历造成CPU突刺
+  - 房间信息同步条件触发：新增`_room_info_dirty`脏数据标志，无成员变化时发送轻量keepalive替代全量JSON同步，同步间隔动态调整（100节点→10秒）
+  - 成员加入优化：大房间(>20节点)加入时只向新节点推送完整信息，其他节点由定时同步线程处理，避免广播风暴
+  - 心跳检测分批处理：每批20个节点，批次间释放GIL，100节点监控不再阻塞主线程
+  - 优雅关闭：新增`shutdown()`方法，释放线程池资源，避免资源泄漏
+  - 核心文件修改：
+    - `evolution/cluster/connection.py`: 6大优化点全部实现（backlog/广播/监控/同步/加入/关闭）
+  - 架构评估结论：当前架构从适合<50节点扩展至稳定支持100节点局域网协作
+
+## [5.7.0] - 2026-05-14
+- feat: 协作模式技能同步 —— 集群技能共享机制正式上线
+  - 核心功能：协作模式下，任意 Agent 生成的新技能可自动同步到集群所有节点，实现"一次生成，全网共享"
+  - 协议层扩展：evolution/cluster/protocol.py 新增 `SKILL_SYNC` 消息类型 + `create_skill_sync()` 构造函数
+  - 广播机制：ClusterManager 新增 `broadcast_skill_sync()` 方法，通过 TCP 向所有在线 Worker 广播技能代码
+  - 接收处理：ClusterManager 新增 `handle_skill_sync()` 方法，接收后保存到 `skills/auto_generated/synced_xxx.py` 并自动注册
+  - 消息分发：ClusterServer 和 ClusterClient 的消息循环中完整增加 `skill_sync` 消息类型处理（方案A带payload + 方案B不带payload）
+  - 自动触发：SkillGenerator.generate_and_save() 在全新生成技能成功后自动调用 `_sync_skill_to_cluster()`
+  - 手动同步API：
+    - `POST /api/skills/sync` — 手动触发技能同步到集群
+    - `GET /api/skills/sync/status` — 查询当前集群节点在线状态
+    - `POST /api/cluster/skills/sync` — 集群API路由层同步接口
+    - `GET /api/cluster/skills/sync/status` — 集群API路由层状态查询
+  - 优雅降级：非协作模式下技能生成正常工作，同步逻辑自动跳过；Worker离线时自动跳过，不影响其他节点
+  - 核心文件修改：
+    - evolution/cluster/protocol.py: 新增 SKILL_SYNC 消息类型
+    - evolution/cluster/connection.py: 新增 broadcast_skill_sync() + handle_skill_sync() + 消息循环处理
+    - evolution/skill_generator.py: 新增 _sync_skill_to_cluster() 自动触发
+    - web_app.py: 新增 /api/skills/sync 和 /api/skills/sync/status 端点
+    - evolution/cluster/cluster_api.py: 新增 /skills/sync 和 /skills/sync/status 路由
+
+## [5.6.2] - 2026-05-13
+- sec: 全项目安全审计与加固
+  - 密码安全升级：SHA256无盐 → PBKDF2-HMAC-SHA256（100000次迭代），保持向后兼容
+  - Token安全增强：Cluster Token自动生成安全随机值，未配置时输出警告
+  - 脱敏多层检查：敏感信息脱敏增加二次检查，递归扫描字典/列表
+  - 路径遍历防护增强：预处理危险字符，双重路径检查（原始+真实路径）
+  - API安全警告：未配置Token时输出安全警告日志
+- refactor: 代码质量优化
+  - agent.py 导入顺序规范化（标准库→第三方→本地模块）
+  - evolution_engine.py 移除未使用参数
+  - skills/base.py 重命名registry避免冲突
+  - agent.py run方法增强异常处理
+- feat: 技能管理完善
+  - 新增 unload_skill(name) 函数
+  - 新增 clear_skills() 函数
+
 ## [5.6.1] - 2026-05-13
 - fix: token统计修复 - Linux下sqlite3不可用时自动降级到JSON模式，修复相对导入问题确保token统计正常工作
 - fix: Windows asyncio AssertionError修复 - Python 3.13+在Windows上使用ProactorEventLoop时的已知问题，强制切换到SelectorEventLoop
@@ -122,10 +211,9 @@
 ## [v5.3.0] - 2026-05-06
 
 ### Added
-- **启动脚本别名**：新增 `xuan_cli.py` 作为 `launcher.py` 的快捷入口
 - **版本文件**：新增 `VERSION` 文件统一版本号管理
 - **跨平台Docker自动检测**：Windows环境自动检测Docker可用性，不可用则降级到subprocess模式
-- **启动文档更新**：`QUICKSTART.md` 更新为推荐使用 launcher/xuan_cli，修正Web界面端口为30000
+- **启动文档更新**：`QUICKSTART.md` 更新为推荐使用 launcher，修正Web界面端口为30000
 - **房间密码保护**：创建房间时可设置密码，加入需验证（bcrypt加密，32字符限制）
 - **能力评估器**：动态计算节点综合能力分（模型40%+硬件20%+负载15%+历史15%+网络10%）
 - **智能任务调度器**：支持4种策略（能力优先、负载均衡、亲和性匹配、轮询）

@@ -4,7 +4,7 @@ description: 读取指定文件内容，支持大文件分块读取。
 category: io
 requires_confirmation: False
 version: "1.0"
-author: Hermes Agent
+author: 破执
 tags: []
 parameters:
   -   name: "path"

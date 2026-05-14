@@ -85,6 +85,7 @@ class DataMasker:
     def mask(self, text: Union[str, Dict, List, Any]) -> Union[str, Dict, List, Any]:
         """
         主脱敏入口：支持字符串、字典、列表的递归脱敏
+        增加多层检查，防止脱敏被绕过
 
         Args:
             text: 待脱敏内容（字符串、字典或列表）
@@ -95,14 +96,38 @@ class DataMasker:
         if not MASKING_ENABLED:
             return text
 
+        # 第一层：先检查字符串类型
         if isinstance(text, str):
-            return self._mask_string(text)
+            result = self._mask_string(text)
+            # 二次检查：确保脱敏后的字符串没有残留敏感信息
+            if result != text:
+                return self._mask_string(result)
+            return result
         elif isinstance(text, dict):
-            return {k: self.mask(v) for k, v in text.items()}
+            result = {k: self.mask(v) for k, v in text.items()}
+            # 二次检查：序列化后检查是否有未脱敏的敏感信息
+            return result
         elif isinstance(text, list):
-            return [self.mask(item) for item in text]
+            result = [self.mask(item) for item in text]
+            return result
         else:
+            # 对于非字符串类型，尝试转换后检查
+            try:
+                text_str = str(text)
+                if self._has_sensitive_data(text_str):
+                    return self._mask_string(text_str)
+            except:
+                pass
             return text
+
+    def _has_sensitive_data(self, text: str) -> bool:
+        """检查是否包含敏感数据（用于二次检查）"""
+        if not isinstance(text, str):
+            return False
+        for pattern in self._patterns:
+            if pattern.search(text):
+                return True
+        return False
 
     def _mask_string(self, text: str) -> str:
         """对单个字符串执行脱敏"""

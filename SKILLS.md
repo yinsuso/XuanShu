@@ -129,7 +129,71 @@ def calculate(expression: str) -> str:
 - 禁止在代码中硬编码密钥
 - 使用 `config_manager` 加密存储（如适用）
 
-## 10. 常见问题 (FAQ)
+## 10. 模型如何创建技能（面向 AI Agent）
+
+> 本节说明玄枢项目中的 AI Agent（大模型）如何创建和使用技能。
+
+### 10.1 何时应该创建技能
+
+作为 Agent，当你遇到以下情况时，应该主动创建新技能：
+
+1. **用户明确要求**："创建一个XXX技能"
+2. **重复性任务**：发现某个任务需要频繁执行相似操作
+3. **可自动化流程**：用户描述了一个可以通过 Python 代码自动化的流程
+
+### 10.2 创建技能的方法
+
+在对话中，你可以直接输出完整的 Python 技能代码。系统会自动检测、验证并注册该技能。
+
+**输出格式**：
+
+```python
+from skills.base import skill, SkillCategory
+
+@skill(
+    name="skill_name",  # 英文小写 snake_case
+    description="技能描述",
+    category=SkillCategory.UTILITY
+)
+def your_function(param1: str, param2: int = 0) -> str:
+    """函数文档字符串"""
+    try:
+        # 实现代码
+        result = f"处理结果: {param1}"
+        return result
+    except Exception as e:
+        return f"错误: {e}"
+```
+
+**关键规范**：
+- `name` 必须使用英文小写 snake_case（如 `quick_calc`, `web_search`）
+- 仅允许字符：a-z, 0-9, _
+- 长度 ≤ 30 字符
+- 禁止使用中文、大写、连字符、空格、标点
+- 必须使用绝对导入 `from skills.base import skill, SkillCategory`
+
+### 10.3 技能同步机制（协作模式）
+
+**单机模式**：
+- 创建的技能仅保存在当前节点
+- 存储路径：`skills/auto_generated/`
+- 如需分享，需要手动复制代码
+
+**协作模式**：
+- **房主节点**创建技能后，系统会自动通过 `SKILL_SYNC` 消息广播到所有 Worker 节点
+- Worker 节点会自动接收并加载新技能
+- 同步失败时系统会记录日志，不会阻塞主流程
+- 你可以在创建技能后询问成员是否已成功接收
+
+### 10.4 创建后立即调用
+
+技能创建并验证通过后，会立即出现在可用技能列表中。你可以直接调用：
+
+```json
+{ "skill": "你刚创建的技能名", "args": { "参数名": "参数值" } }
+```
+
+## 11. 常见问题 (FAQ)
 - **Q: 技能未被加载？**  
   A: 检查语法错误、装饰器参数、导入路径；查看启动日志。
 
@@ -142,8 +206,14 @@ def calculate(expression: str) -> str:
 - **Q: 命名冲突怎么办？**  
   A: 系统拒绝重复名称，请更名。
 
-## 11. 与 Hermes Agent 对照
-本规范参考 Hermes Agent 的 skill 设计：
+- **Q: 模型创建的技能如何同步给其他成员？**  
+  A: 协作模式下，房主节点创建的技能会自动广播到所有 Worker。单机模式下需要手动复制代码文件。
+
+- **Q: 技能创建失败怎么办？**  
+  A: 检查：1) 名称是否符合 snake_case 规范 2) 是否使用了绝对导入 3) 语法是否正确。查看 `logs/agent.log` 获取详细错误信息。
+
+## 11. 与 破执 对照
+本规范参考 破执 的 skill 设计：
 - 使用 `@skill` 装饰器作为注册机制
 - 通过元数据实现自描述
 - 强调错误处理与日志
@@ -152,5 +222,5 @@ def calculate(expression: str) -> str:
 不同的是，玄枢采用简单文件结构、无 SKILL.md 文件，但可以通过 docstring 提供丰富文档。
 
 ---
-**最后更新：** 2026-05-13
+**最后更新：** 2026-05-14
 **维护者：** 玄枢开发团队

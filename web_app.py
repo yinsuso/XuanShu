@@ -78,53 +78,36 @@ def save_worker_state(state: dict):
         return False
 
 def load_worker_state() -> dict:
-    """从本地 JSON 文件加载 Worker 状态 - 智能分层机制：区分临时过渡状态和完全无效状态"""
+    """从本地 JSON 文件加载 Worker 状态 - 简化版：核心校验保留，去除过度复杂的分层"""
     try:
         if not os.path.exists(CLUSTER_WORKER_STATE_PATH):
             return {}
-        # 先读取文件内容，检查是否为空
         with open(CLUSTER_WORKER_STATE_PATH, 'r', encoding='utf-8') as f:
             content = f.read().strip()
         if not content:
-            logger.info(f"📂 [Worker持久化] 状态文件为空，返回空状态")
             return {}
-        # 解析JSON
         state = json.loads(content)
         
-        # ============== 智能分层校验逻辑 ==============
-        # 第一层：完全无效状态 → 必须清空
-        # 条件：既没有 host/port，又没有 in_room 标记 → 说明是完全无效的残留
-        is_completely_invalid = (
-            not state.get("host") and
-            not state.get("port") and
-            not state.get("in_room")
-        )
-        if is_completely_invalid:
-            logger.info(f"📂 [Worker持久化] 检测到完全无效的残留状态，自动清理")
-            clear_worker_state()
-            return {}
-        
-        # 第二层：临时过渡状态 → 允许保留，成员刚加入房间还在等房主推送完整信息
-        # 条件：有 host、port、in_room=True，即使 room_id 是 pending-fetch 也允许
-        is_transition_state = (
+        # 【修复P1-030】简化校验逻辑：核心判断是否有有效的房间连接信息
+        # 必须同时满足：in_room=True, host存在, port存在, name存在
+        is_valid = (
             state.get("in_room") is True and
             state.get("host") and
             state.get("port") and
-            state.get("name")  # 成员有自己的花名
+            state.get("name")
         )
-        if is_transition_state:
-            logger.info(f"📂 [Worker持久化] 检测到临时过渡状态，保留等待房主同步完整信息")
-            return state
+        if not is_valid:
+            logger.info(f"📂 [Worker持久化] 状态无效（缺少host/port/name/in_room），自动清理")
+            clear_worker_state()
+            return {}
         
-        # 第三层：完全有效完整状态 → 正常使用
         logger.info(f"📂 [Worker持久化] 已加载状态，room_name={state.get('room_name', '未命名')}")
         return state
-    except json.JSONDecodeError as e:
-        logger.warning(f"⚠️ [Worker持久化] JSON解析失败，自动清理无效文件: {e}")
+    except json.JSONDecodeError:
         clear_worker_state()
         return {}
     except Exception as e:
-        logger.warning(f"⚠️ [Worker持久化] 加载失败，自动清理状态文件: {e}")
+        logger.warning(f"⚠️ [Worker持久化] 加载失败: {e}")
         clear_worker_state()
         return {}
 
@@ -141,8 +124,9 @@ def clear_worker_state():
 _worker_polling_thread = None
 _worker_polling_running = False
 _worker_poll_fail_count = 0  # 连续失败计数器
-_WORKER_POLL_MAX_FAILURES = 6  # 最大连续失败次数（每次间隔10-15秒，6次约60-90秒）
-_WORKER_POLL_TIMEOUT = 10.0  # 单次请求超时时间（秒）
+_WORKER_POLL_MAX_FAILURES = 6  # 最大连续失败次数（6次*10秒=60秒），给网络波动和房主任务处理更多容错
+_WORKER_POLL_TIMEOUT = 10.0  # 单次请求超时时间（秒），房主可能正在处理AI任务，需要更宽松
+_WORKER_POLL_INTERVAL = 10   # 轮询间隔（秒），减少房主负担，避免过于频繁请求
 
 def _handle_room_dismissed_on_worker():
     """
@@ -246,7 +230,7 @@ def _worker_room_info_polling_loop():
     import requests
     global _worker_poll_fail_count
     
-    logger.info("✅ [Worker兜底轮询] 增强版轮询线程已启动，每10秒检测一次房间状态")
+    logger.info(f"✅ [Worker兜底轮询] 增强版轮询线程已启动，每{_WORKER_POLL_INTERVAL}秒检测一次房间状态")
     
     while _worker_polling_running:
         try:
@@ -255,21 +239,17 @@ def _worker_room_info_polling_loop():
             if not current_state or not current_state.get("in_room"):
                 # 当前不在协作模式，直接等待下一轮，重置失败计数
                 _worker_poll_fail_count = 0
-                # 使用与正常轮询相同的间隔，保持一致性
-                time.sleep(10)
+                time.sleep(_WORKER_POLL_INTERVAL)
                 continue
             
             # 从状态获取房主的连接信息 - 100%使用用户加入房间时输入的真实内网IP
             host = current_state.get("host")
             port = current_state.get("port")
-            current_room_name = current_state.get("room_name", "")
             
             # 严格校验：host和port必须都存在，跳过无效状态
             if not host or not port:
                 logger.debug(f"[Worker兜底轮询] 房主host/port信息不完整，跳过本次轮询")
-                # 注意：这里只是跳过，不增加失败计数（因为还没有真正尝试连接）
-                # 失败计数只应该在真正尝试连接但失败时才增加
-                time.sleep(5)
+                time.sleep(_WORKER_POLL_INTERVAL)
                 continue
             
             # 构建房主的API地址 - 完全使用用户输入的真实IP，绝不篡改
@@ -292,7 +272,7 @@ def _worker_room_info_polling_loop():
                         if not _is_room_valid(data):
                             logger.warning(f"⚠️ [Worker兜底轮询] 检测到房间已解散: room_name={data.get('room_name')}, owner_name={data.get('owner_name')}")
                             _handle_room_dismissed_on_worker()
-                            time.sleep(10)
+                            time.sleep(_WORKER_POLL_INTERVAL)
                             continue
                         
                         # 获取到房主最新房间信息，更新本地持久化文件
@@ -372,8 +352,8 @@ def _worker_room_info_polling_loop():
                     _handle_room_dismissed_on_worker()
                     _worker_poll_fail_count = 0
         
-        # 等待10秒再进行下一次轮询（轻量级，不占用资源）
-        time.sleep(10)
+        # 【修复P1-033】使用配置的轮询间隔
+        time.sleep(_WORKER_POLL_INTERVAL)
 
 def start_worker_polling():
     """启动Worker端轻量级兜底轮询线程"""
@@ -625,9 +605,37 @@ class ApprovalStore:
 # 全局存储实例
 approval_store = ApprovalStore()
 
+def hash_password(password: str) -> str:
+    """使用 PBKDF2-HMAC-SHA256 安全哈希密码（带随机盐）"""
+    import hashlib
+    import secrets
+    if not password:
+        return None
+    salt = secrets.token_hex(16)
+    password_hash = hashlib.pbkdf2_hmac('sha256', password.encode('utf-8'), salt.encode('utf-8'), 100000)
+    return f"{salt}${password_hash.hex()}"
+
+def verify_password(password: str, stored_hash: str) -> bool:
+    """验证密码是否与存储的哈希匹配"""
+    import hashlib
+    if not password or not stored_hash:
+        return False
+    if '$' not in stored_hash:
+        return False
+    salt, hash_hex = stored_hash.split('$', 1)
+    password_hash = hashlib.pbkdf2_hmac('sha256', password.encode('utf-8'), salt.encode('utf-8'), 100000)
+    return password_hash.hex() == hash_hex
+
+_approval_token_warning_logged = False
+
 def verify_approval_token(request: Request):
-    # 若未配置 API Token，则允许所有请求
+    global _approval_token_warning_logged
     if not APPROVAL_API_TOKEN:
+        if not _approval_token_warning_logged:
+            import sys
+            print("[CONFIG安全警告] APPROVAL_API_TOKEN 未配置，审批API将允许所有请求！", file=sys.stderr)
+            print("[CONFIG安全警告] 请通过环境变量 APPROVAL_API_TOKEN 设置安全的Token。", file=sys.stderr)
+            _approval_token_warning_logged = True
         return True
     token = request.headers.get("X-Approval-Token")
     return token == APPROVAL_API_TOKEN
@@ -806,11 +814,9 @@ async def create_room(request: Request):
         
         node = getattr(app.state, "cluster_node", None)
         owner_node_id = node.node_id if node else None
-        
-        # 存储密码哈希（使用 sha256）
-        import hashlib
-        password_hash = hashlib.sha256(password.encode()).hexdigest() if password else None
-        
+
+        password_hash = hash_password(password)
+
         room_id = manager.create_room(room_name, owner_name, model, owner_node_id=owner_node_id, password_hash=password_hash)
         
         # 单机模式下也启动房主的TCP服务器，让其他agent可以通过局域网连接进来
@@ -906,12 +912,17 @@ async def get_current_room(request: Request):
                 except Exception as e_poll:
                     logger.debug(f"⏳ [Worker主动同步] 房主暂时不可达: {str(e_poll)[:50]}")
         
-        # 最终返回信息（同步过或没同步过都至少有可用值）
+        # 【修复P1-031】最终返回信息：确保所有字段都有合理的回退值
+        room_name = saved_state.get("room_name", "")
+        if not room_name or room_name == "协作房间":
+            room_name = saved_state.get("name", "协作房间") + "的房间"
+        
         info = {
-            "room_id": saved_state.get("room_id", ""),
-            "room_name": saved_state.get("room_name", "协作房间"),
-            "owner_name": saved_state.get("owner_name", "房主"),
-            "owner_model": saved_state.get("owner_model", "unknown"),
+            "success": True,
+            "room_id": saved_state.get("room_id", saved_state.get("node_id", "")),
+            "room_name": room_name,
+            "owner_name": saved_state.get("owner_name", saved_state.get("name", "房主")),
+            "owner_model": saved_state.get("owner_model", saved_state.get("model", "unknown")),
             "members": saved_state.get("members_detail", []),
             "members_detail": saved_state.get("members_detail", []),
             "has_password": False,
@@ -937,34 +948,42 @@ async def get_current_room(request: Request):
         info["success"] = True  # 总是返回 success，即使房间是 Default-Room
     
     # 从 model_config.json 中读取所有模型配置，返回给前端下拉框
+    # 【修复】Worker轮询时不需要获取模型列表，避免Ollama查询延迟导致超时
     from model_providers import config_manager
-    all_models = []
-    configs = config_manager.list_configs()
-    for cfg in configs:
-        suffix = " (当前)" if cfg.get('is_current') else ""
-        type_label = " (本地)" if cfg.get('provider') == 'ollama' else " (云端)"
-        all_models.append({
-            "name": cfg["name"],
-            "model": cfg["model"],
-            "desc": f"{cfg['model']}{suffix}{type_label}"
-        })
-    # 补充 Ollama 模型到列表 - 静默模式
-    try:
-        ollama_models_res = await list_ollama_models()
-        if ollama_models_res.get("success"):
-            existing_names = {m["model"] for m in all_models}
-            for m in ollama_models_res.get("models", []):
-                if m["name"] not in existing_names:
-                    all_models.append({
-                        "name": m["name"],
-                        "model": m["model"],
-                        "desc": f"{m['name']} (Ollama)"
-                    })
-    except Exception:
-        pass  # 静默忽略所有Ollama相关错误
     
-    info["available_models"] = all_models
-    info["current_model"] = config_manager.current_config.model_name if config_manager.current_config else None
+    if is_in_collab_mode:
+        # Worker端轮询：只返回基本信息，不查询Ollama模型列表，避免超时
+        info["available_models"] = []
+        info["current_model"] = None
+    else:
+        # 房主端或前端页面刷新：返回完整信息，包括模型列表
+        all_models = []
+        configs = config_manager.list_configs()
+        for cfg in configs:
+            suffix = " (当前)" if cfg.get('is_current') else ""
+            type_label = " (本地)" if cfg.get('provider') == 'ollama' else " (云端)"
+            all_models.append({
+                "name": cfg["name"],
+                "model": cfg["model"],
+                "desc": f"{cfg['model']}{suffix}{type_label}"
+            })
+        # 补充 Ollama 模型到列表 - 静默模式
+        try:
+            ollama_models_res = await list_ollama_models()
+            if ollama_models_res.get("success"):
+                existing_names = {m["model"] for m in all_models}
+                for m in ollama_models_res.get("models", []):
+                    if m["name"] not in existing_names:
+                        all_models.append({
+                            "name": m["name"],
+                            "model": m["model"],
+                            "desc": f"{m['name']} (Ollama)"
+                        })
+        except Exception:
+            pass  # 静默忽略所有Ollama相关错误
+        
+        info["available_models"] = all_models
+        info["current_model"] = config_manager.current_config.model_name if config_manager.current_config else None
     
     logger.info(f"房间信息: owner_name={info.get('owner_name')}, room_name={info.get('room_name')}, members_detail={info['members_detail']}")
     return info
@@ -1333,12 +1352,17 @@ async def join_room(request: Request):
                 time.sleep(5)
         threading.Thread(target=heartbeat_loop, daemon=True).start()
         
-        # 向本地浏览器客户端广播：成员成功进入房间，进入协作模式准备状态
+        # 【修复P1-028】向本地浏览器客户端广播：成员成功进入房间，并携带完整房间信息
+        # 避免前端等待房主推送，直接提供可用信息
         await broadcast_to_all_clients({
             "type": "joined_room_success",
             "name": name,
             "mode": mode,
             "model": model,
+            "room_name": saved_state.get("room_name", "协作房间"),
+            "room_id": saved_state.get("room_id", ""),
+            "owner_name": saved_state.get("owner_name", "房主"),
+            "owner_model": saved_state.get("owner_model", ""),
             "timestamp": time.time()
         })
             
@@ -1352,14 +1376,15 @@ async def join_room(request: Request):
 
 @app.post("/api/rooms/leave")
 async def leave_room(request: Request):
-    """Worker 离开房间，退出协作模式 - 100% 彻底清理版本"""
+    """Worker 离开房间，退出协作模式 - 100% 彻底清理版本（单机/集群统一处理）"""
     from evolution.cluster.cluster_api import broadcast_to_all_clients
 
-    # 懒加载集群组件
-    if CLUSTER_ENABLED:
-        success = await ensure_cluster_initialized()
-        if not success:
-            raise HTTPException(status_code=500, detail="集群未就绪，无法执行操作")
+    # 【修复P1-026】无论 CLUSTER_ENABLED 是什么，都需要确保集群组件已初始化
+    # 因为单机模式下 cluster_node 等状态仍然需要被正确清理
+    success = await ensure_cluster_initialized()
+    if not success:
+        # 即使初始化失败，也要继续清理本地持久化状态，不能阻塞用户退出
+        logger.warning("⚠️ [LeaveRoom] 集群初始化失败，但仍继续清理本地状态")
     
     node = getattr(app.state, "cluster_node", None)
     
@@ -1397,27 +1422,103 @@ async def leave_room(request: Request):
 
 @app.post("/api/rooms/dismiss")
 async def dismiss_room(request: Request):
-    """房主解散房间 - 完整功能API端点：通知所有成员并重置房主自身状态"""
-    from evolution.cluster.cluster_api import verify_token
-    
-    # 懒加载集群组件
+    """房主解散房间 - 完整功能API端点：通知所有成员并重置房主自身状态（增强确认机制）"""
+    if CLUSTER_ENABLED and CLUSTER_ROLE != "manager":
+        raise HTTPException(status_code=403, detail="仅 Manager 可解散房间")
+
     await ensure_cluster_initialized()
     manager = getattr(app.state, "cluster_manager", None)
     if not manager:
         logger.error("解散房间失败：集群管理器未初始化")
         raise HTTPException(status_code=500, detail="集群管理器未初始化")
-    
-    # 调用ClusterManager的dismiss_room方法
-    success = manager.dismiss_room()
-    
-    # 房主自己也要清空本地的任何可能残留的状态（虽然房主本身是Manager角色，没有worker状态文件）
-    clear_worker_state()
-    
-    logger.info("🏠 房主解散房间操作已完成")
-    return {
-        "success": success, 
-        "message": "房间已成功解散，所有成员已收到通知，房主状态已重置"
-    }
+
+    try:
+        # 【修复P1-029】增强解散通知：多次重试 + 广播 + 标记房间为解散中状态
+        owner_node_id = manager.own_node.node_id if hasattr(manager, 'own_node') and manager.own_node else None
+        
+        # 先标记房间为解散中（让Worker轮询能检测到）
+        manager.room_ready = False
+        
+        # 第1轮：TCP直接发送解散通知
+        dismiss_msg = json.dumps({
+            "type": "room_dismissed",
+            "message": "房主已解散房间，协作会话结束",
+            "timestamp": time.time(),
+            "dismissed_by": "manager",
+            "force": True
+        }).encode('utf-8')
+        
+        sent_count = 0
+        failed_nodes = []
+        for nid, node in manager.nodes.items():
+            if nid != owner_node_id and node.connection:
+                try:
+                    node.connection.sendall(dismiss_msg)
+                    sent_count += 1
+                except Exception as e_send:
+                    logger.debug(f"向节点 {nid[:8]} 发送解散通知失败: {e_send}")
+                    failed_nodes.append(nid)
+        logger.info(f"[解散第1轮] 已向 {sent_count} 个在线Worker发送房间解散通知")
+        
+        # 第2轮：对失败节点重试一次
+        if failed_nodes:
+            await asyncio.sleep(0.5)
+            retry_count = 0
+            for nid in failed_nodes:
+                node = manager.nodes.get(nid)
+                if node and node.connection:
+                    try:
+                        node.connection.sendall(dismiss_msg)
+                        retry_count += 1
+                    except Exception:
+                        pass
+            logger.info(f"[解散第2轮] 重试发送给 {retry_count} 个节点")
+        
+        # WebSocket广播解散事件（给本地浏览器）
+        from evolution.cluster.cluster_api import broadcast_to_all_clients
+        await broadcast_to_all_clients({
+            "type": "room_dismissed",
+            "message": "房主已解散房间，协作会话结束",
+            "timestamp": time.time(),
+            "force": True
+        })
+        
+        # 给Worker一点时间处理解散通知后再清理
+        await asyncio.sleep(1.0)
+
+        discovery = getattr(manager, 'discovery', None) or globals().get('_discovery_instance')
+        if discovery:
+            discovery.stop_hosting()
+
+        try:
+            manager.stop_server()
+        except Exception as e:
+            logger.warning(f"停止TCP服务器时遇到问题: {e}")
+
+        manager.room_id = str(uuid.uuid4())
+        manager.room_name = "Default-Room"
+        manager.owner_name = None
+        manager.owner_model = None
+        manager.room_password_hash = None
+        manager.room_members.clear()
+        manager.room_ready = False
+        owner_node_id = manager.own_node.node_id if hasattr(manager, 'own_node') and manager.own_node else None
+        nodes_to_remove = []
+        for nid in manager.nodes.keys():
+            if nid != owner_node_id:
+                nodes_to_remove.append(nid)
+        for nid in nodes_to_remove:
+            del manager.nodes[nid]
+
+        clear_worker_state()
+
+        logger.info("✅ 房间已完整解散，UDP广播和TCP服务已停止")
+        return {"success": True, "message": "房间已成功解散，所有成员已收到通知，房主状态已重置"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"解散房间失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"解散房间失败: {str(e)}")
 
 @app.post("/api/rooms/update_member")
 async def update_member(request: Request):
@@ -1470,7 +1571,8 @@ async def start_task(request: Request):
         raise HTTPException(status_code=400, detail="缺少任务类型或描述")
     manager = app.state.cluster_manager
     
-    # 双保险推送：第一步通过 manager.broadcast() 同时向远程TCP节点和本地浏览器WebSocket推送事件
+    # 【修复P1-034】确保 enter_collab_mode 事件通过所有渠道广播到所有成员
+    # 渠道1: manager.broadcast() 覆盖 TCP节点 + 本地WebSocket
     manager.broadcast({
         "type": "enter_collab_mode",
         "task_type": task_type,
@@ -1478,7 +1580,16 @@ async def start_task(request: Request):
         "timestamp": time.time()
     })
     
-    # 第二步：调用调度分配任务（会自动初始化协作对话并持久化所有消息）
+    # 渠道2: 额外通过全局WebSocket广播，确保所有浏览器客户端都能收到
+    from evolution.cluster.cluster_api import broadcast_to_all_clients
+    await broadcast_to_all_clients({
+        "type": "enter_collab_mode",
+        "task_type": task_type,
+        "description": description,
+        "timestamp": time.time()
+    })
+    
+    # 第三步：调用调度分配任务（会自动初始化协作对话并持久化所有消息）
     task_id = manager.start_collaborative_task(task_type, description, parameters)
     
     logger.info(f"🤝 [协作模式] 房主发起协作任务: task_id={task_id}, 描述={description}")
@@ -1728,82 +1839,6 @@ async def get_collab_messages_api():
         "collab_conversation_id": manager.collab_conversation_id,
         "message_count": len(manager.collab_messages)
     }
-
-@app.post("/api/rooms/dismiss")
-async def dismiss_room(request: Request):
-    """解散房间（Manager 或 standalone 模式）"""
-    # 支持 standalone 模式和解散房间
-    if CLUSTER_ENABLED and CLUSTER_ROLE != "manager":
-        raise HTTPException(status_code=403, detail="仅 Manager 可解散房间")
-
-    manager = getattr(app.state, "cluster_manager", None)
-    if not manager:
-        raise HTTPException(status_code=500, detail="集群管理器未初始化")
-
-    try:
-        # 第0步：在断开连接前，先向所有在线Worker发送房间解散通知，让Worker优雅地退出协作模式
-        try:
-            import json
-            dismiss_msg = json.dumps({
-                "type": "room_dismissed",
-                "message": "房主已解散房间，协作会话结束",
-                "timestamp": time.time()
-            }).encode('utf-8')
-            owner_node_id = manager.own_node.node_id if hasattr(manager, 'own_node') and manager.own_node else None
-            sent_count = 0
-            for nid, node in manager.nodes.items():
-                if nid != owner_node_id and node.connection:
-                    try:
-                        node.connection.sendall(dismiss_msg)
-                        sent_count += 1
-                        logger.info(f"📢 [解散通知] 已通知成员节点 {nid[:8]} 房间即将解散")
-                    except Exception as e_send:
-                        logger.debug(f"向节点 {nid[:8]} 发送解散通知失败: {e_send}")
-            logger.info(f"📢 已向 {sent_count} 个在线Worker发送房间解散通知")
-            
-            # 同时向本地浏览器WebSocket也广播房间解散事件
-            from evolution.cluster.cluster_api import broadcast_to_all_clients
-            await broadcast_to_all_clients({
-                "type": "room_dismissed",
-                "message": "房主已解散房间，协作会话结束",
-                "timestamp": time.time()
-            })
-        except Exception as e_notify:
-            logger.warning(f"广播房间解散通知时遇到问题: {e_notify}")
-        
-        # 第一步：停止房主UDP广播，这样其他agent的扫描器就不会再收到旧房间信息了
-        discovery = getattr(manager, 'discovery', None) or globals().get('_discovery_instance')
-        if discovery:
-            discovery.stop_hosting()
-            logger.info("📢 房主UDP广播已停止，其他Agent将很快看不到这个房间")
-        
-        # 第二步：停止房主TCP服务器，断开所有已连接的成员
-        try:
-            manager.stop_server()
-        except Exception as e:
-            logger.warning(f"停止TCP服务器时遇到问题: {e}")
-        
-        # 第三步：重置房间信息
-        manager.room_id = str(uuid.uuid4())
-        manager.room_name = "Default-Room"
-        manager.owner_name = None
-        manager.owner_model = None
-        manager.room_password_hash = None
-        manager.room_members.clear()
-        # 同时清理 nodes 字典中的成员节点（房主节点保留）
-        owner_node_id = manager.own_node.node_id if hasattr(manager, 'own_node') and manager.own_node else None
-        nodes_to_remove = []
-        for nid in manager.nodes.keys():
-            if nid != owner_node_id:
-                nodes_to_remove.append(nid)
-        for nid in nodes_to_remove:
-            del manager.nodes[nid]
-        
-        logger.info("✅ 房间已完整解散，UDP广播和TCP服务已停止")
-        return {"success": True, "message": "房间已解散"}
-    except Exception as e:
-        logger.error(f"解散房间失败: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"解散房间失败: {str(e)}")
 
 @app.post("/api/cluster/tasks/{task_id}/error")
 async def report_task_error(task_id: str, request: Request):
@@ -2281,7 +2316,7 @@ async def save_model(
 
 @app.post("/api/switch_model")
 async def switch_model(request: Request):
-    """切换当前模型 - 同步更新cluster相关的所有模型信息"""
+    """切换当前模型 - 同步更新cluster、agent全链路模型信息"""
     try:
         data = await request.json()
         name = data.get("name")
@@ -2323,6 +2358,23 @@ async def switch_model(request: Request):
                     }
                 )
                 logger.info(f"🔄 UDP广播房主模型已同步更新为: {new_model_name}")
+        
+        # 【修复P1-027】同步更新全局agent实例的模型配置，确保单机对话使用新模型
+        try:
+            agent = get_agent()
+            if agent and hasattr(agent, 'model_name'):
+                agent.model_name = new_model_name
+                logger.info(f"🔄 Agent模型已同步更新为: {new_model_name}")
+            if agent and hasattr(agent, 'config') and agent.config:
+                agent.config.model_name = new_model_name
+                logger.info(f"🔄 Agent.config模型已同步更新为: {new_model_name}")
+            # 如果agent有模型客户端，尝试更新
+            if agent and hasattr(agent, 'model_client') and agent.model_client:
+                if hasattr(agent.model_client, 'model_name'):
+                    agent.model_client.model_name = new_model_name
+                    logger.info(f"🔄 Agent.model_client模型已同步更新为: {new_model_name}")
+        except Exception as e_agent:
+            logger.warning(f"⚠️ 同步Agent模型配置时遇到问题（非致命）: {e_agent}")
         
         logger.info(f"✅ 模型切换完成，全部相关信息已同步: {name} -> {new_model_name}")
         return {"success": True}
@@ -2448,7 +2500,21 @@ async def switch_conversation_mode_api(request: Request):
         mode = data.get("mode")  # "standalone" 或 "collaboration"
         from conversation_manager import ConversationType
         conv_type = ConversationType(mode)
-        conv_manager.switch_mode(conv_type)
+
+        # 【关键修复】协作模式下强制创建全新对话，避免残留历史上下文
+        if mode == "collaboration":
+            # 检查当前是否有集群管理器，如果有则强制重置协作对话
+            manager = getattr(app.state, "cluster_manager", None)
+            if manager and hasattr(manager, '_init_collab_conversation'):
+                manager._init_collab_conversation(force_new=True)
+                logger.info("✅ [API] 房主通过 /new 或 /reset 强制重置协作对话")
+            else:
+                # 兜底：直接通过对话管理器重置
+                conv_manager.reset_collab_conversation()
+                logger.info("✅ [API] 通过对话管理器强制重置协作对话")
+        else:
+            conv_manager.switch_mode(conv_type)
+
         return {"success": True, "message": f"已切换到{mode}模式对话"}
     except Exception as e:
         logger.error(f"切换对话模式失败: {e}", exc_info=True)
@@ -2566,9 +2632,10 @@ async def api_skills():
         skills = []
         if hasattr(agent, 'skills_registry') and agent.skills_registry:
             if hasattr(agent.skills_registry, 'list_skills'):
-                for name, func in agent.skills_registry.list_skills().items():
-                    desc = func.__doc__ or ""
-                    skills.append({"name": name, "description": desc.strip()})
+                for skill_info in agent.skills_registry.list_skills():
+                    name = skill_info.get("name", "")
+                    desc = skill_info.get("description", "")
+                    skills.append({"name": name, "description": desc})
             else:
                 schemas = agent.skills_registry.get_openai_schemas()
                 for s in schemas:
@@ -2579,6 +2646,316 @@ async def api_skills():
         return skills
     skills = await loop.run_in_executor(None, _fetch_skills)
     return {"success": True, "skills": skills}
+
+@app.post("/api/skills/generate")
+async def api_generate_skill(request: Request):
+    """用户主动请求生成新技能"""
+    try:
+        data = await request.json()
+        skill_description = data.get("description", "")
+        skill_name_hint = data.get("name_hint", "")
+
+        if not skill_description:
+            return {"success": False, "error": "请提供技能描述"}
+
+        from evolution.skill_generator import SkillGenerator
+
+        generator = SkillGenerator()
+
+        # 构建生成提示
+        prompt = f"""根据以下描述生成一个 Python 技能：
+
+【技能描述】
+{skill_description}
+
+【技能名称提示】
+{skill_name_hint or '根据描述自动生成'}
+
+请生成一个完整的 Python 技能文件，包含：
+1. 使用 @skill 装饰器注册技能（from skills.base import skill, SkillCategory）
+2. 完整的函数实现
+3. 参数定义和文档字符串
+4. 适当的错误处理
+5. 技能名称使用英文小写 snake_case，长度不超过30字符
+
+模板示例:
+```python
+from skills.base import skill, SkillCategory
+
+@skill(
+    name="skill_name",
+    description="技能描述",
+    category=SkillCategory.UTILITY
+)
+def skill_function(param1: str, param2: int = 0) -> str:
+    \"\"\"技能函数文档\"\"\"
+    try:
+        # 实现代码
+        result = f"处理: {{param1}}, {{param2}}"
+        return result
+    except Exception as e:
+        return f"错误: {{e}}"
+```
+
+只输出 Python 代码，不要其他解释。
+"""
+
+        # 调用模型生成代码
+        from model_providers import call_model, config_manager
+        config = config_manager.current_config
+        if not config:
+            configs = config_manager.list_configs()
+            config = configs[0] if configs else None
+
+        if not config:
+            return {"success": False, "error": "没有可用的模型配置"}
+
+        skill_code = call_model(
+            config=config,
+            prompt=prompt,
+            system_prompt="你是一个 Python 专家，擅长生成高质量的技能代码。"
+        )
+
+        if not skill_code:
+            return {"success": False, "error": "模型返回空代码"}
+
+        # 使用 SkillGenerator 验证和保存
+        class SimpleReflection:
+            def __init__(self, task_summary, skill_idea):
+                self.task_summary = task_summary
+                self.skill_idea = skill_idea
+
+        simple_reflection = SimpleReflection(
+            task_summary=skill_description[:100],
+            skill_idea=skill_name_hint or skill_description
+        )
+
+        success_flag, filepath, message = generator.generate_and_save(
+            simple_reflection, skill_code
+        )
+
+        if success_flag and filepath:
+            return {
+                "success": True,
+                "message": "技能生成成功",
+                "filepath": filepath,
+                "code": skill_code
+            }
+        else:
+            return {
+                "success": False,
+                "error": message,
+                "code": skill_code
+            }
+
+    except Exception as e:
+        logger.error(f"生成技能失败: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
+
+@app.post("/api/skills/upgrade")
+async def api_upgrade_skill(request: Request):
+    """升级已有技能"""
+    try:
+        data = await request.json()
+        skill_name = data.get("skill_name", "")
+        new_code = data.get("code", "")
+
+        if not skill_name or not new_code:
+            return {"success": False, "error": "请提供技能名称和新代码"}
+
+        from skills import _skill_filepaths
+        from evolution.skill_generator import SkillGenerator
+
+        if skill_name not in _skill_filepaths:
+            return {"success": False, "error": f"技能 '{skill_name}' 不存在"}
+
+        generator = SkillGenerator()
+
+        class SimpleReflection:
+            def __init__(self, task_summary, skill_idea):
+                self.task_summary = task_summary
+                self.skill_idea = skill_idea
+
+        simple_reflection = SimpleReflection(
+            task_summary=f"升级技能: {skill_name}",
+            skill_idea=skill_name
+        )
+
+        success_flag, filepath, message = generator.generate_and_save(
+            simple_reflection, new_code
+        )
+
+        if success_flag and filepath:
+            return {
+                "success": True,
+                "message": "技能升级成功",
+                "filepath": filepath
+            }
+        else:
+            return {
+                "success": False,
+                "error": message
+            }
+
+    except Exception as e:
+        logger.error(f"升级技能失败: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
+
+@app.post("/api/skills/sync")
+async def api_sync_skill(request: Request):
+    """手动触发技能同步到集群（用于协作模式下主动同步已有技能）"""
+    try:
+        data = await request.json()
+        skill_name = data.get("skill_name", "")
+        skill_code = data.get("code", "")
+
+        if not skill_name or not skill_code:
+            return {"success": False, "error": "请提供技能名称和代码"}
+
+        cluster_manager = getattr(app.state, 'cluster_manager', None)
+        if not cluster_manager:
+            return {"success": False, "error": "当前不在协作模式中，无法同步技能"}
+
+        if not hasattr(cluster_manager, 'broadcast_skill_sync'):
+            return {"success": False, "error": "集群管理器不支持技能同步"}
+
+        # 获取当前节点ID
+        node_id = None
+        if hasattr(cluster_manager, 'own_node') and cluster_manager.own_node:
+            node_id = cluster_manager.own_node.node_id
+
+        success_count = cluster_manager.broadcast_skill_sync(skill_name, skill_code, generated_by=node_id)
+
+        return {
+            "success": True,
+            "message": f"技能 '{skill_name}' 已同步到 {success_count} 个节点",
+            "synced_nodes": success_count
+        }
+
+    except Exception as e:
+        logger.error(f"同步技能失败: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
+
+@app.get("/api/skills/sync/status")
+async def api_get_sync_status(request: Request):
+    """获取当前技能同步状态（协作模式下）"""
+    try:
+        cluster_manager = getattr(app.state, 'cluster_manager', None)
+        if not cluster_manager:
+            return {
+                "success": True,
+                "in_cluster": False,
+                "message": "当前不在协作模式中"
+            }
+
+        # 获取集群中的节点数
+        total_nodes = len(cluster_manager.nodes) if hasattr(cluster_manager, 'nodes') else 0
+        online_nodes = sum(1 for n in cluster_manager.nodes.values() if getattr(n, 'status', 'offline') != 'offline') if hasattr(cluster_manager, 'nodes') else 0
+
+        return {
+            "success": True,
+            "in_cluster": True,
+            "room_id": getattr(cluster_manager, 'room_id', None),
+            "room_name": getattr(cluster_manager, 'room_name', None),
+            "total_nodes": total_nodes,
+            "online_nodes": online_nodes,
+            "message": f"当前房间有 {online_nodes}/{total_nodes} 个在线节点"
+        }
+
+    except Exception as e:
+        logger.error(f"获取同步状态失败: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
+
+@app.get("/api/skills/detail/{skill_name}")
+async def api_skill_detail(skill_name: str):
+    """获取技能详细信息"""
+    try:
+        from skills import _skills_registry, _skill_filepaths
+        if skill_name not in _skills_registry:
+            return {"success": False, "error": f"技能 '{skill_name}' 不存在"}
+
+        info = _skills_registry[skill_name]
+        metadata = info['metadata']
+        file_path = _skill_filepaths.get(skill_name, '')
+
+        detail = {
+            "name": metadata.name,
+            "description": metadata.description,
+            "category": metadata.category,
+            "trigger": getattr(metadata, 'trigger', ''),
+            "requires_confirmation": metadata.requires_confirmation,
+            "parameters": getattr(metadata, 'parameters', []),
+            "file_path": file_path
+        }
+
+        return {"success": True, "skill": detail}
+    except Exception as e:
+        logger.error(f"获取技能详情失败: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
+
+@app.post("/api/skills/delete")
+async def api_delete_skill(request: Request):
+    """删除指定技能（从所有注册表和文件系统中彻底移除）"""
+    try:
+        data = await request.json()
+        skill_name = data.get("skill_name", "")
+
+        if not skill_name:
+            return {"success": False, "error": "请提供技能名称"}
+
+        from skills import _skills_registry, unload_skill
+
+        if skill_name not in _skills_registry:
+            return {"success": False, "error": f"技能 '{skill_name}' 不存在"}
+
+        # 获取文件路径（在 unload_skill 之前获取，否则会被清理）
+        from skills import _skill_filepaths
+        file_path = _skill_filepaths.get(skill_name, '')
+
+        # 从所有注册表彻底卸载（_skills_registry + _skill_filepaths + base_registry）
+        unload_skill(skill_name)
+
+        # 删除技能文件和目录（如果存在）
+        if file_path and os.path.exists(file_path):
+            try:
+                os.remove(file_path)
+                parent_dir = os.path.dirname(file_path)
+
+                # 删除同目录下的 SKILL.md
+                skill_md = os.path.join(parent_dir, 'SKILL.md')
+                if os.path.exists(skill_md):
+                    os.remove(skill_md)
+
+                # 清理 __pycache__ 中对应的 .pyc 文件
+                pycache_dir = os.path.join(parent_dir, '__pycache__')
+                if os.path.isdir(pycache_dir):
+                    py_basename = os.path.splitext(os.path.basename(file_path))[0]
+                    for cached in os.listdir(pycache_dir):
+                        if cached.startswith(py_basename + '.'):
+                            try:
+                                os.remove(os.path.join(pycache_dir, cached))
+                            except Exception:
+                                pass
+                    # 如果 __pycache__ 为空则删除
+                    try:
+                        if not os.listdir(pycache_dir):
+                            os.rmdir(pycache_dir)
+                    except Exception:
+                        pass
+
+                # 如果父目录为空则删除
+                if os.path.isdir(parent_dir) and not os.listdir(parent_dir):
+                    try:
+                        os.rmdir(parent_dir)
+                    except Exception:
+                        pass
+            except Exception as e:
+                logger.warning(f"删除技能文件失败: {e}")
+
+        return {"success": True, "message": f"技能 '{skill_name}' 已删除"}
+    except Exception as e:
+        logger.error(f"删除技能失败: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
 
 # ==================== 异步对话任务管理系统 ====================
 
@@ -2850,14 +3227,55 @@ async def api_memory():
     return {"success": True, "memories": memories}
 
 @app.get("/api/token-stats")
-async def api_token_stats():
-    """获取 token 使用统计 - 修复版直接访问全局实例"""
+async def api_token_stats(
+    detailed: bool = False,
+    days: int = 7,
+    model: Optional[str] = None,
+    date: Optional[str] = None
+):
+    """获取 token 使用统计 - 支持精细化查询
+
+    参数:
+        detailed: 是否返回精细化统计（含每日模型交叉数据）
+        days: 查询天数范围（默认7天）
+        model: 按指定模型筛选（可选）
+        date: 按指定日期查询明细，格式 YYYY-MM-DD（可选）
+    """
     try:
         from token_tracker import token_tracker
-        stats_data = token_tracker.get_stats()
+
+        if detailed or model or date:
+            stats_data = token_tracker.get_filtered_stats(days, model, date)
+        else:
+            stats_data = token_tracker.get_stats()
+
         return {"success": True, "data": stats_data}
     except Exception as e:
         logger.error(f"获取token统计失败: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/token-stats/dates")
+async def api_token_stats_dates(days: int = 30):
+    """获取有token统计数据的日期列表"""
+    try:
+        from token_tracker import token_tracker
+        dates = token_tracker.get_available_dates(days)
+        return {"success": True, "dates": dates}
+    except Exception as e:
+        logger.error(f"获取token统计日期失败: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/token-stats/models")
+async def api_token_stats_models():
+    """获取所有使用过的模型列表"""
+    try:
+        from token_tracker import token_tracker
+        models = token_tracker.get_model_list()
+        return {"success": True, "models": models}
+    except Exception as e:
+        logger.error(f"获取模型列表失败: {e}", exc_info=True)
         return {"success": False, "error": str(e)}
 
 @app.get("/api/export")

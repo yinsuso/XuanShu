@@ -5,7 +5,6 @@ if sys.platform == 'win32':
     import io
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
-import io
 from pathlib import Path
 
 # Ensure project root is in sys.path for script-mode execution
@@ -24,8 +23,6 @@ if str(_current_root) not in sys.path:
 - 模型选择（支持Ollama和外部API）
 - 友好的用户界面
 """
-import os
-import sys
 import subprocess
 import time
 import requests
@@ -100,8 +97,8 @@ class Launcher:
             
             # 针对 Python 3.13+ 给出 PyTorch 兼容性提示
             if version >= (3, 13):
-                self.print_warning("检测到 Python 3.13+")
-                self.print_info("⚠️ PyTorch 生态对 Python 3.13+ 支持尚不完善")
+                self.print_warning(f"检测到 Python {py_ver_str}")
+                self.print_info(f"⚠️ PyTorch 生态对 Python {py_ver_str} 支持尚不完善")
                 self.print_info("核心功能可正常使用，但 sentence-transformers/chromadb 等可能遇到 DLL 问题")
                 self.print_info("推荐：如需向量检索完整功能，建议使用 Python 3.10 ~ 3.12")
             
@@ -161,12 +158,12 @@ class Launcher:
                 self.print_success(f"{pkg}")
             except ImportError as e:
                 if "DLL" in str(e) or "c10.dll" in str(e):
-                    self.print_warning(f"{pkg} - 跳过（Python 3.14 PyTorch 兼容性问题，不影响核心功能）")
+                    self.print_warning(f"{pkg} - 跳过（Python {sys.version_info.major}.{sys.version_info.minor} PyTorch 兼容性问题，不影响核心功能）")
                 else:
                     self.print_warning(f"{pkg} - 未安装（可选，核心功能仍可正常使用）")
             except OSError as e:
                 if "WinError 1114" in str(e) or "DLL" in str(e):
-                    self.print_warning(f"{pkg} - 跳过（Windows DLL 初始化失败，Python 3.14 与 PyTorch 兼容问题）")
+                    self.print_warning(f"{pkg} - 跳过（Windows DLL 初始化失败，Python {sys.version_info.major}.{sys.version_info.minor} 与 PyTorch 兼容问题）")
                 else:
                     self.print_warning(f"{pkg} - 跳过（环境不兼容，核心功能仍可用）")
 

@@ -15,7 +15,7 @@ Docker 沙箱执行环境
 - 性能优化：镜像缓存、容器池（预留）
 - 向后兼容：支持降级到 subprocess 模式
 
-Author: Hermes Agent (Based on Four Phenomena Collaboration)
+Author: 破执 (Based on Four Phenomena Collaboration)
 Date: 2026-05-03
 """
 
@@ -114,7 +114,7 @@ class DockerSandbox:
     def _init_docker(self):
         """初始化 Docker 客户端连接"""
         if not DOCKER_AVAILABLE:
-            logger.warning("Docker Python 包未安装，沙箱不可用")
+            logger.info("Docker Python 包未安装，沙箱将使用 subprocess 降级模式")
             self._available = False
             return
 
@@ -125,7 +125,11 @@ class DockerSandbox:
             self._available = True
             logger.info("Docker 守护进程连接成功")
         except Exception as e:
-            logger.error("Docker 守护进程连接失败", details={"error": str(e)})
+            # 在 Windows 等未安装 Docker 的环境，这是预期行为，使用 info 级别避免用户恐慌
+            logger.info(
+                "Docker 守护进程未运行或未安装，沙箱将使用 subprocess 降级模式",
+                details={"error": str(e)},
+            )
             self._available = False
 
     def is_available(self) -> bool:

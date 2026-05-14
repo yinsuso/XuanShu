@@ -1,7 +1,7 @@
 """
 目录列表技能。
 列出指定目录下的文件和子目录。
-Author: Hermes Agent (Refactored)
+Author: 破执
 Date: 2026-04-30
 """
 
