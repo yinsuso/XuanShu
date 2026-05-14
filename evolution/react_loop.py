@@ -1,4 +1,5 @@
 import json
+import time
 from typing import Dict, Any, List, Optional
 from dataclasses import dataclass, field
 from enum import Enum
@@ -36,9 +37,10 @@ class ActionDecision:
 class ReActLoop:
     """Reasoning + Acting 循环"""
 
-    def __init__(self, agent, max_iterations: int = 10):
+    def __init__(self, agent, max_iterations: int = 10, max_total_time: float = 120.0):
         self.agent = agent
         self.max_iterations = max_iterations
+        self.max_total_time = max_total_time  # 最大总执行时间（秒），默认2分钟
         self.thoughts: List[Thought] = []
 
     def _list_skills(self) -> str:
@@ -54,20 +56,27 @@ class ReActLoop:
         except Exception as e:
             return f"（技能列表获取失败: {e}）"
     
-    def run(self, task: str) -> str:
+    def run(self, task: str, is_collab_mode: bool = False, collab_context: Dict[str, Any] = None) -> str:
         """运行ReAct循环"""
         logger.info(f"启动ReAct循环: {task[:100]}...")
         
         # 用于检测死循环：记录 (技能名, 参数) -> 出现次数
         action_history = {}
         
+        start_time = time.time()
+        
         for iteration in range(self.max_iterations):
-            logger.info(f"迭代 {iteration + 1}/{self.max_iterations}")
+            elapsed = time.time() - start_time
+            if elapsed > self.max_total_time:
+                logger.warning(f"ReAct循环总超时，已执行 {iteration} 次迭代，耗时 {elapsed:.1f} 秒")
+                return f"【任务执行超时】任务执行时间超过 {self.max_total_time} 秒限制。\n\n已尝试 {iteration} 次迭代，但任务仍未完成。\n\n可能原因：\n1. 任务过于复杂，需要更长时间处理\n2. 模型响应速度较慢\n3. 技能执行耗时较长\n\n建议：\n- 将任务拆分为更小的子任务\n- 检查模型连接状态\n- 检查技能执行效率\n\n思考历史摘要：\n{self._format_thoughts()}"
             
-            thought = self._think(task, iteration)
+            logger.info(f"迭代 {iteration + 1}/{self.max_iterations}，已耗时 {elapsed:.1f} 秒")
+            
+            thought = self._think(task, iteration, is_collab_mode=is_collab_mode, collab_context=collab_context)
             self.thoughts.append(thought)
             
-            decision = self._decide_action(thought)
+            decision = self._decide_action(thought, is_collab_mode=is_collab_mode, collab_context=collab_context)
             
             if not decision.needs_action:
                 logger.info("任务完成，返回最终答案")
@@ -77,9 +86,8 @@ class ReActLoop:
             action_key = (decision.skill_name, json.dumps(decision.args, sort_keys=True))
             action_history[action_key] = action_history.get(action_key, 0) + 1
             if action_history[action_key] >= 3:
-                logger.warning(f"检测到潜在死循环：技能 {decision.skill_name} 已重复调用 3 次")
-                correction = self._reflect_and_correct(task, "检测到重复操作，请强制改变策略")
-                self.thoughts.append(correction)
+                logger.warning(f"检测到潜在死循环：技能 {decision.skill_name} 已重复调用 3 次，强制终止任务")
+                return f"【任务执行异常】检测到死循环：技能 '{decision.skill_name}' 已被重复调用 3 次，参数为 {decision.args}。\n\n可能原因：\n1. 技能执行结果不符合预期，导致模型反复尝试相同操作\n2. 任务目标不够明确，模型无法理解如何完成\n3. 技能参数设置有误\n\n建议：\n- 检查技能执行逻辑是否正确\n- 明确任务目标，提供更详细的上下文\n- 检查技能参数是否需要调整\n\n思考历史摘要：\n{self._format_thoughts()}"
 
             result = self._execute_action(decision)
             
@@ -93,15 +101,15 @@ class ReActLoop:
             # 实时感知：如果观察结果包含错误或失败，立即触发修正
             if "❌" in result or "错误" in result or "fail" in result.lower():
                 logger.info("检测到执行结果异常，触发实时修正...")
-                correction = self._reflect_and_correct(task, result)
+                correction = self._reflect_and_correct(task, result, is_collab_mode=is_collab_mode, collab_context=collab_context)
                 self.thoughts.append(correction)
             elif self._should_reflect(iteration):
-                reflection = self._reflect(task)
+                reflection = self._reflect(task, is_collab_mode=is_collab_mode, collab_context=collab_context)
                 self.thoughts.append(reflection)
         
         logger.warning("达到最大迭代次数")
-        return self._generate_final_summary()
-    def _think(self, task: str, iteration: int) -> Thought:
+        return self._generate_final_summary(is_collab_mode=is_collab_mode, collab_context=collab_context)
+    def _think(self, task: str, iteration: int, is_collab_mode: bool = False, collab_context: Dict[str, Any] = None) -> Thought:
         """思考步骤"""
         context = self._build_context(task)
         
@@ -114,7 +122,7 @@ class ReActLoop:
 
 请继续思考下一步该做什么。请用清晰的语言描述你的推理过程。"""
         
-        response = self.agent.call_model(prompt)
+        response = self.agent.call_model(prompt, is_collab_mode=is_collab_mode, collab_context=collab_context)
         content = response.get("response", "")
 
         return Thought(
@@ -123,7 +131,7 @@ class ReActLoop:
             metadata={"iteration": iteration}
         )
 
-    def _decide_action(self, thought: Thought) -> ActionDecision:
+    def _decide_action(self, thought: Thought, is_collab_mode: bool = False, collab_context: Dict[str, Any] = None) -> ActionDecision:
         """决定行动"""
         prompt = f"""基于以下思考，决定下一步行动：
 
@@ -147,7 +155,7 @@ class ReActLoop:
     "reasoning": "决策理由"
 }}"""
 
-        response = self.agent.call_model(prompt)
+        response = self.agent.call_model(prompt, is_collab_mode=is_collab_mode, collab_context=collab_context)
         content = response.get("response", "")
         
         return self._parse_decision(content)
@@ -160,7 +168,7 @@ class ReActLoop:
         logger.info(f"执行技能: {decision.skill_name}")
         return self.agent._execute_skill(decision.skill_name, decision.args)
     
-    def _reflect(self, task: str) -> Thought:
+    def _reflect(self, task: str, is_collab_mode: bool = False, collab_context: Dict[str, Any] = None) -> Thought:
         """反思"""
         prompt = f"""任务: {task}
 
@@ -172,7 +180,7 @@ class ReActLoop:
 思考历史:
 {self._format_thoughts()}"""
 
-        response = self.agent.call_model(prompt)
+        response = self.agent.call_model(prompt, is_collab_mode=is_collab_mode, collab_context=collab_context)
         content = response.get("response", "")
 
         return Thought(
@@ -213,7 +221,7 @@ class ReActLoop:
         """判断是否应该进行反思"""
         return iteration > 0 and iteration % 3 == 0
     
-    def _reflect_and_correct(self, task: str, error_info: str) -> Thought:
+    def _reflect_and_correct(self, task: str, error_info: str, is_collab_mode: bool = False, collab_context: Dict[str, Any] = None) -> Thought:
         """反思并生成修正计划"""
         prompt = f"""任务: {task}
 
@@ -229,7 +237,7 @@ class ReActLoop:
 
 请给出明确的修正计划。"""
 
-        response = self.agent.call_model(prompt)
+        response = self.agent.call_model(prompt, is_collab_mode=is_collab_mode, collab_context=collab_context)
         content = response.get("response", "")
 
         return Thought(
@@ -263,7 +271,7 @@ class ReActLoop:
                 reasoning="解析失败"
             )
     
-    def _generate_final_summary(self) -> str:
+    def _generate_final_summary(self, is_collab_mode: bool = False, collab_context: Dict[str, Any] = None) -> str:
         """生成最终总结"""
         prompt = f"""任务: {self.thoughts[0].content if self.thoughts else "未知任务"}
 
@@ -277,5 +285,5 @@ class ReActLoop:
 
 请用自然语言给出最终总结报告。"""
 
-        response = self.agent.call_model(prompt)
+        response = self.agent.call_model(prompt, is_collab_mode=is_collab_mode, collab_context=collab_context)
         return response.get("response", "任务已完成")

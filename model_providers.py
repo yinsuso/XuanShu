@@ -5,7 +5,7 @@ import requests
 from typing import Dict, Any, List, Optional
 from dataclasses import dataclass, asdict
 from enum import Enum
-from config import PROJECT_ROOT
+from config import PROJECT_ROOT, MODEL_CALL_TIMEOUT
 from logger import logger
 
 try:
@@ -254,7 +254,7 @@ def _call_ollama(config: ModelConfig, prompt: str, system_prompt: str, temperatu
     }
 
     try:
-        response = requests.post(chat_url, json=payload, timeout=300)
+        response = requests.post(chat_url, json=payload, timeout=MODEL_CALL_TIMEOUT)
         response.raise_for_status()
         result = response.json()
         
@@ -303,7 +303,7 @@ def _call_openai_compatible(config: ModelConfig, prompt: str, system_prompt: str
     }
 
     try:
-        response = requests.post(url, json=payload, headers=headers, timeout=300)
+        response = requests.post(url, json=payload, headers=headers, timeout=MODEL_CALL_TIMEOUT)
         response.raise_for_status()
         result = response.json()
         

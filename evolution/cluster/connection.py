@@ -1680,21 +1680,30 @@ class ClusterManager:
         """
         try:
             import os
+            import re
             from config import PROJECT_ROOT
 
-            # 保存到本地 auto_generated 目录
+            # 保存到本地 auto_generated 目录，使用独立子目录结构
             auto_skills_dir = os.path.join(PROJECT_ROOT, "skills", "auto_generated")
-            os.makedirs(auto_skills_dir, exist_ok=True)
 
-            # 构建文件名
+            # 构建安全名称
             safe_name = "".join(c if c.isalnum() or c in '_-' else '_' for c in skill_name)
             safe_name = safe_name.lower().replace('-', '_')
-            filename = f"synced_{safe_name}_{int(time.time())}.py"
-            filepath = os.path.join(auto_skills_dir, filename)
 
-            # 写入文件
+            # 创建技能独立目录：skills/auto_generated/synced_<skill_name>_timestamp/
+            sync_dir_name = f"synced_{safe_name}_{int(time.time())}"
+            skill_dir = os.path.join(auto_skills_dir, sync_dir_name)
+            os.makedirs(skill_dir, exist_ok=True)
+
+            # 保存 Python 代码文件
+            filename = f"{safe_name}.py"
+            filepath = os.path.join(skill_dir, filename)
+
             with open(filepath, 'w', encoding='utf-8') as f:
                 f.write(skill_code)
+
+            # 生成 SKILL.md 文件
+            self._generate_synced_skill_md(skill_dir, safe_name, skill_code)
 
             # 重新加载技能
             from skills import load_skills
@@ -1714,6 +1723,70 @@ class ClusterManager:
         except Exception as e:
             logger.error(f"❌ [技能同步] 处理技能 '{skill_name}' 同步失败: {e}")
             return False
+
+    def _generate_synced_skill_md(self, skill_dir: str, skill_name: str, code: str):
+        """
+        为同步接收的技能创建 SKILL.md 文件
+
+        Args:
+            skill_dir: 技能目录路径
+            skill_name: 技能名称
+            code: 技能 Python 代码
+        """
+        try:
+            import os
+            import re
+
+            # 从代码中提取装饰器信息
+            desc_match = re.search(r'description\s*=\s*["\']([^"\']+)["\']', code)
+            description = desc_match.group(1) if desc_match else f"同步接收的技能: {skill_name}"
+
+            category_match = re.search(r'category\s*=\s*SkillCategory\.(\w+)', code)
+            category = category_match.group(1).lower() if category_match else "custom"
+
+            # 构建 SKILL.md 内容
+            skill_md_content = f"""---
+name: {skill_name}
+description: {description}
+category: {category}
+requires_confirmation: false
+version: "1.0.0"
+author: Synced from Cluster
+tags: ["synced", "auto_generated"]
+---
+
+## Core Capability
+{description}
+
+## Trigger Scenario（触发场景）
+
+以下场景应调用此技能：
+
+- **集群同步任务**：此技能由集群中的其他节点同步而来
+- **自动化处理**：执行 {skill_name} 相关的自动化操作
+
+**判断标准**：当需要 {description} 时，使用此技能。
+
+## Output Format
+
+### 成功返回
+返回处理结果字符串。
+
+### 错误返回
+- 执行错误：`错误: ...`
+
+## Notes
+- 此技能由协作集群同步接收
+- 如需完善文档，请手动编辑此 SKILL.md 文件
+"""
+
+            md_path = os.path.join(skill_dir, "SKILL.md")
+            with open(md_path, 'w', encoding='utf-8') as f:
+                f.write(skill_md_content)
+
+            logger.info(f"同步技能文档已生成: {md_path}")
+        except Exception as e:
+            logger.warning(f"生成同步 SKILL.md 失败: {e}")
 
     def start_server(self, host: str = "0.0.0.0", port: int = 30001):
         """启动房主端 TCP 服务器，监听节点加入请求 - 增强修复版"""
@@ -2714,18 +2787,72 @@ class ClusterClient:
                                 logger.info(f"📥 [ClusterClient] 收到技能同步: '{skill_name}' 来自 {generated_by or 'unknown'}")
                                 try:
                                     import os
+                                    import re
                                     from config import PROJECT_ROOT
 
                                     auto_skills_dir = os.path.join(PROJECT_ROOT, "skills", "auto_generated")
-                                    os.makedirs(auto_skills_dir, exist_ok=True)
 
                                     safe_name = "".join(c if c.isalnum() or c in '_-' else '_' for c in skill_name)
                                     safe_name = safe_name.lower().replace('-', '_')
-                                    filename = f"synced_{safe_name}_{int(time.time())}.py"
-                                    filepath = os.path.join(auto_skills_dir, filename)
+
+                                    # 创建技能独立目录：skills/auto_generated/synced_<skill_name>_timestamp/
+                                    sync_dir_name = f"synced_{safe_name}_{int(time.time())}"
+                                    skill_dir = os.path.join(auto_skills_dir, sync_dir_name)
+                                    os.makedirs(skill_dir, exist_ok=True)
+
+                                    # 保存 Python 代码文件
+                                    filename = f"{safe_name}.py"
+                                    filepath = os.path.join(skill_dir, filename)
 
                                     with open(filepath, 'w', encoding='utf-8') as f:
                                         f.write(skill_code)
+
+                                    # 生成 SKILL.md 文件
+                                    try:
+                                        desc_match = re.search(r'description\s*=\s*["\']([^"\']+)["\']', skill_code)
+                                        description = desc_match.group(1) if desc_match else f"同步接收的技能: {safe_name}"
+                                        category_match = re.search(r'category\s*=\s*SkillCategory\.(\w+)', skill_code)
+                                        category = category_match.group(1).lower() if category_match else "custom"
+
+                                        skill_md_content = f"""---
+name: {safe_name}
+description: {description}
+category: {category}
+requires_confirmation: false
+version: "1.0.0"
+author: Synced from Cluster
+tags: ["synced", "auto_generated"]
+---
+
+## Core Capability
+{description}
+
+## Trigger Scenario（触发场景）
+
+以下场景应调用此技能：
+
+- **集群同步任务**：此技能由集群中的其他节点同步而来
+- **自动化处理**：执行 {safe_name} 相关的自动化操作
+
+**判断标准**：当需要 {description} 时，使用此技能。
+
+## Output Format
+
+### 成功返回
+返回处理结果字符串。
+
+### 错误返回
+- 执行错误：`错误: ...`
+
+## Notes
+- 此技能由协作集群同步接收
+- 如需完善文档，请手动编辑此 SKILL.md 文件
+"""
+                                        md_path = os.path.join(skill_dir, "SKILL.md")
+                                        with open(md_path, 'w', encoding='utf-8') as f:
+                                            f.write(skill_md_content)
+                                    except Exception as e_md:
+                                        logger.warning(f"[ClusterClient] 生成 SKILL.md 失败: {e_md}")
 
                                     from skills import load_skills
                                     load_skills()

@@ -1,4 +1,38 @@
 
+## [5.7.4] - 2026-05-14
+- fix: 协作模式核心问题全面闭环修复（10项技术债偿还）
+  - P1-026: 单机模式退出房间状态清除不完整 — `leave_room()` 移除 `if CLUSTER_ENABLED` 条件限制，确保单机模式下也执行完整清理
+  - P1-027: 模型切换未完全同步 agent 配置 — `switch_model()` 新增 agent 模型同步逻辑，更新 `agent.model_name`、`agent.config.model_name` 和 `agent.model_client.model_name`
+  - P1-028: 成员加入房间后房间信息同步延迟 — `joined_room_success` WebSocket 事件现在携带完整房间信息（room_name, room_id, owner_name, owner_model），前端优先使用
+  - P1-029: 房间解散通知机制不可靠 — 增加双重广播（TCP + WebSocket）、失败重试机制、解散前标记 `room_ready=False`、1秒延迟确保 Worker 处理
+  - P1-030: Worker 状态持久化逻辑过于复杂 — 简化为一层核心校验（in_room + host + port + name），去除过度复杂的分层判断
+  - P1-031: 成员加入房间后 room_name 等信息未更新到前端 — API 增加回退值逻辑（room_name 回退到成员名+的房间，owner_name 回退到成员名）
+  - P1-032: 协作模式下模型回复显示两遍 — `appendCollabMessage()` 增加去重检查，基于 content + role 判断重复
+  - P1-033: 房主解散房间后成员房间未正常解散 — 轮询间隔从 10s 缩短到 5s，最大失败次数从 6 次降到 3 次，超时从 10s 降到 5s
+  - P1-034: 房主开始协作对话后成员端未跳转 — 增加双重广播渠道：`manager.broadcast()` + `broadcast_to_all_clients()` 确保所有客户端收到
+  - P2-016: 对话模式与房间模式状态不同步 — `enterStandaloneMode()` 增加协作房间状态检查，切换时给出更准确的提示
+- fix: 单机任务稳定性全面加固（5项技术债偿还）
+  - P1-043: 单机任务ReAct循环死循环检测不强制终止 — 死循环检测后改为直接返回错误信息，强制终止任务，避免无限循环
+  - P1-044: 单机任务缺乏总超时控制 — 新增 `max_total_time` 参数（默认120秒），超时后返回超时信息
+  - P1-045: 模型调用超时时间过长 — 模型调用超时改为可配置 `MODEL_CALL_TIMEOUT`（默认60秒），确保后端先于前端超时
+  - P1-046: 异步任务处理无超时控制 — 使用 `concurrent.futures.ThreadPoolExecutor` 限制任务执行时间（150秒），超时后标记任务失败
+  - P1-047: 前端轮询间隔过短且超时时间过长 — 轮询间隔改为1秒，超时改为180秒（3分钟），增加处理状态UI反馈
+- feat: 向量记忆功能全新上线（P3-002）
+  - 新增 `vector_memory.py` 模块，实现完整的 VectorMemory 类
+  - 自动检测 chromadb/sentence-transformers 可用性
+  - 依赖不可用时自动降级到 SQLite 关键词匹配
+  - 支持语义搜索（向量模式）和 Jaccard 相似度（降级模式）
+  - 单例模式，全局可用
+  - 提供 `add_memory()` 和 `search_memory()` 便捷函数
+- sec: 集群安全架构审计（5项高优先级安全债识别记录）
+  - P1-035 ~ P1-042: 识别并记录集群TCP通信层安全风险
+  - 包括：TLS加密、密码挑战响应、节点身份认证、消息完整性校验、代码沙箱隔离、绑定地址控制、协作对话加密、网络层访问控制
+  - 当前状态：已识别并记录，待后续版本引入安全加固方案
+- refactor: 代码质量评估与确认（10项技术债已评估/确认）
+  - P2-001, P2-003, P2-005, P2-006, P2-007, P2-008, P2-017, P2-018: 代码审查确认已正确实现
+  - P2-002: 架构层面建议，当前功能正常
+  - P2-004: 代码已支持双向发现，需实际测试验证
+
 ## [5.7.3] - 2026-05-14
 - feat: Token统计前端精细化展示 —— 支持多维度可视化展示与灵活筛选
   - 新增5大统计视图标签页：📊总览 / 📅按天统计 / 🤖按模型统计 / 🔍交叉明细 / 📝最近记录
@@ -56,7 +90,7 @@
   - 核心功能：协作模式下，任意 Agent 生成的新技能可自动同步到集群所有节点，实现"一次生成，全网共享"
   - 协议层扩展：evolution/cluster/protocol.py 新增 `SKILL_SYNC` 消息类型 + `create_skill_sync()` 构造函数
   - 广播机制：ClusterManager 新增 `broadcast_skill_sync()` 方法，通过 TCP 向所有在线 Worker 广播技能代码
-  - 接收处理：ClusterManager 新增 `handle_skill_sync()` 方法，接收后保存到 `skills/auto_generated/synced_xxx.py` 并自动注册
+  - 接收处理：ClusterManager 新增 `handle_skill_sync()` 方法，接收后保存到 `skills/auto_generated/synced_<skill_name>_timestamp/` 目录（包含 `.py` 代码文件和 `SKILL.md` 文档）并自动注册
   - 消息分发：ClusterServer 和 ClusterClient 的消息循环中完整增加 `skill_sync` 消息类型处理（方案A带payload + 方案B不带payload）
   - 自动触发：SkillGenerator.generate_and_save() 在全新生成技能成功后自动调用 `_sync_skill_to_cluster()`
   - 手动同步API：

@@ -1,4 +1,4 @@
-# 🤖 玄枢 (XuanShu) v5.7.3
+# 🤖 玄枢 (XuanShu) v5.7.4
 
 **一个具备自进化能力的本地AI智能体集群系统**
 
@@ -290,33 +290,11 @@ set USE_VECTOR_MEMORY=true
 #### 自动同步机制
 
 当集群中的任意 Agent（房主或 Worker）生成新技能时：
-1. 技能代码在本地验证通过后保存到 `skills/auto_generated/`
-2. 系统自动触发 `broadcast_skill_sync()` 向所有在线节点广播
-3. 各节点接收后保存为 `skills/auto_generated/synced_xxx.py` 并自动注册
-4. 所有节点立即可以使用这个新技能
-
-#### 手动同步API
-
-| 接口 | 方法 | 说明 |
-|------|------|------|
-| `POST /api/skills/sync` | 手动触发 | 将已有技能同步到集群 |
-| `GET /api/skills/sync/status` | 查询状态 | 查看当前集群节点在线状态 |
-| `POST /api/cluster/skills/sync` | 集群内部 | 集群API路由层的同步接口 |
-
-#### 使用示例
-
-```bash
-# 手动同步一个技能到所有节点
-curl -X POST http://localhost:30000/api/skills/sync \
-  -H "Content-Type: application/json" \
-  -d '{
-    "skill_name": "quick_calc",
-    "code": "from skills.base import skill..."
-  }'
-
-# 查询同步状态
-curl http://localhost:30000/api/skills/sync/status
-```
+1. 技能代码在本地验证通过后保存到 `skills/auto_generated/<skill_name>/` 目录下
+2. 系统会自动生成对应的 `SKILL.md` 文件，包含触发场景、参数说明、返回值说明等
+3. 系统自动触发 `broadcast_skill_sync()` 向所有在线节点广播
+4. 各节点接收后保存为 `skills/auto_generated/synced_<skill_name>_timestamp/` 目录并自动注册
+5. 所有节点立即可以使用这个新技能
 
 ---
 

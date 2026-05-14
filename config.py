@@ -69,6 +69,16 @@ MAX_CODE_EXECUTIONS = 10
 # 代码执行超时时间：单次代码执行的超时时间（秒），防止长时间阻塞
 CODE_EXECUTION_TIMEOUT = 10
 
+# 模型调用超时时间：单次模型调用的超时时间（秒），防止模型响应过慢导致前端超时
+# 注意：此值应小于前端轮询超时时间，确保后端先超时而不是前端先超时
+MODEL_CALL_TIMEOUT = int(os.getenv("MODEL_CALL_TIMEOUT", 60))
+
+# ReAct循环最大总执行时间（秒），防止复杂任务运行过久
+REACT_MAX_TOTAL_TIME = int(os.getenv("REACT_MAX_TOTAL_TIME", 120))
+
+# ReAct循环最大迭代次数
+REACT_MAX_ITERATIONS = int(os.getenv("REACT_MAX_ITERATIONS", 8))
+
 # =============================================================================
 # Docker 沙箱配置（新增强）
 # =============================================================================

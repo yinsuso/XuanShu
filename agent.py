@@ -16,7 +16,7 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from config import MODEL_NAME, MAX_CODE_EXECUTIONS, SYSTEM_CONTEXT_FILES, PROJECT_ROOT
+from config import MODEL_NAME, MAX_CODE_EXECUTIONS, SYSTEM_CONTEXT_FILES, PROJECT_ROOT, REACT_MAX_ITERATIONS, REACT_MAX_TOTAL_TIME
 from conversation_manager import ConversationManager, MessageRole, conversation_manager as global_conversation_manager
 from evolution_engine import EvolutionEngine
 from evolution.react_loop import ReActLoop
@@ -40,7 +40,11 @@ class UniversalAgent:
         conversation_id: Optional[str] = None
     ):
         self.conversation_id = conversation_id
-        self.conversation_manager = ConversationManager(conversation_id)
+        # 【关键修复】使用全局单例对话管理器，避免 web_app 和 agent 各持一个实例导致对话分裂
+        from conversation_manager import get_global_conversation_manager
+        self.conversation_manager = get_global_conversation_manager()
+        if conversation_id:
+            self.conversation_manager.load_conversation_or_create(conversation_id)
         self.memory_system = EnhancedMemorySystem()
         # 兼容性别名：使 agent.memory 指向 memory_core，供 web_app.py 等使用
         self.memory = self.memory_system.db
@@ -129,6 +133,25 @@ class UniversalAgent:
         except Exception:
             pass
         return ""
+
+    def _get_skill_detail(self, skill_name: str, schema: dict) -> dict:
+        """获取技能的详细信息，包括参数说明。"""
+        detail = {
+            "name": skill_name,
+            "description": schema.get('function', {}).get('description', ''),
+            "trigger": self._load_skill_md_trigger(skill_name),
+            "parameters": []
+        }
+        params = schema.get('function', {}).get('parameters', {}).get('properties', {})
+        required = schema.get('function', {}).get('parameters', {}).get('required', [])
+        for param_name, param_info in params.items():
+            detail["parameters"].append({
+                "name": param_name,
+                "type": param_info.get('type', 'string'),
+                "description": param_info.get('description', ''),
+                "required": param_name in required
+            })
+        return detail
 
     def _build_system_prompt(self, query: str = "", is_collab_mode: bool = False, collab_context: Dict[str, Any] = None) -> str:
         skill_schemas = registry.get_openai_schemas()
@@ -332,7 +355,7 @@ class UniversalAgent:
         
         return sections
 
-    def call_model(self, prompt: str, use_context: bool = True) -> Dict[str, Any]:
+    def call_model(self, prompt: str, use_context: bool = True, is_collab_mode: bool = False, collab_context: Dict[str, Any] = None) -> Dict[str, Any]:
         config = config_manager.current_config
         if config is None:
             config_manager.load_configs()
@@ -343,18 +366,22 @@ class UniversalAgent:
         response_text = call_model(
             config=config,
             prompt=prompt,
-            system_prompt=self._build_system_prompt(query=prompt)
+            system_prompt=self._build_system_prompt(query=prompt, is_collab_mode=is_collab_mode, collab_context=collab_context)
         )
         return {"response": response_text}
 
-    def process_adaptive(self, user_input: str) -> str:
+    def process_adaptive(self, user_input: str, is_collab_mode: bool = False, collab_context: Dict[str, Any] = None) -> str:
         """
         自适应处理入口：根据任务复杂度自动选择 Simple 或 ReAct 模式，并在结束后强制复盘。
+        【注意】web_app 已在提交时通过 conv_manager 保存用户消息，此处不再重复添加，
+        仅添加助手回复并保存，避免同一消息被记录两次。
         """
-        self.conversation_manager.add_user_message(user_input)
-        
+        # 【关键修复】不再重复添加用户消息，因为 web_app 的 api_chat_async_submit
+        # 已经用同一个全局 conversation_manager 保存过了
+        # self.conversation_manager.add_user_message(user_input)
+
         is_complex = any(word in user_input for word in ['分析', '研究', '编写', '查找', '对比', '计划']) or len(user_input) > 50
-        
+
         final_response = ""
         tools_used = []
         success = True
@@ -362,12 +389,12 @@ class UniversalAgent:
         try:
             if is_complex:
                 logger.info("🚀 检测到复杂任务，启动 ReAct 闭环模式...")
-                react_loop = ReActLoop(self)
-                final_response = react_loop.run(user_input)
+                react_loop = ReActLoop(self, max_iterations=REACT_MAX_ITERATIONS, max_total_time=REACT_MAX_TOTAL_TIME)
+                final_response = react_loop.run(user_input, is_collab_mode=is_collab_mode, collab_context=collab_context)
                 tools_used = list(set([t.metadata.get('skill') for t in react_loop.thoughts if t.metadata.get('skill')]))
             else:
                 logger.info("⚡ 执行简单对话模式...")
-                final_response = self._process_simple(user_input)
+                final_response = self._process_simple(user_input, is_collab_mode=is_collab_mode, collab_context=collab_context)
 
             self.conversation_manager.add_assistant_message(final_response)
             self.conversation_manager.save_current()
@@ -392,34 +419,34 @@ class UniversalAgent:
 
         return final_response
 
-    async def process_adaptive_async(self, user_input: str) -> str:
+    async def process_adaptive_async(self, user_input: str, is_collab_mode: bool = False, collab_context: Dict[str, Any] = None) -> str:
         """
         异步版本的自适应处理 - 不阻塞事件循环，让其他功能在模型思考时也可用
         """
         import asyncio
         loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(None, self.process_adaptive, user_input)
+        return await loop.run_in_executor(None, self.process_adaptive, user_input, is_collab_mode, collab_context)
 
-    async def _process_simple_async(self, user_input: str) -> str:
+    async def _process_simple_async(self, user_input: str, is_collab_mode: bool = False, collab_context: Dict[str, Any] = None) -> str:
         """
         异步版本的简单对话处理
         """
         import asyncio
         loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(None, self._process_simple, user_input)
+        return await loop.run_in_executor(None, self._process_simple, user_input, is_collab_mode, collab_context)
 
-    def _process_simple(self, user_input: str) -> str:
+    def _process_simple(self, user_input: str, is_collab_mode: bool = False, collab_context: Dict[str, Any] = None) -> str:
         conversation_history = self.conversation_manager.get_history_text(limit=10)
         prompt = f"【对话历史】\n{conversation_history}\n\n【用户问题】\n{user_input}\n\n请回答或调用技能。"
         
-        response = self.call_model(prompt)
+        response = self.call_model(prompt, is_collab_mode=is_collab_mode, collab_context=collab_context)
         output = response.get("response", "")
         
         skill_name, skill_args = self._parse_skill_call(output)
         if skill_name:
             skill_result = self._execute_skill(skill_name, skill_args or {})
             follow_up = f"技能结果:\n{skill_result}\n\n请根据结果回答用户。"
-            final_data = self.call_model(follow_up)
+            final_data = self.call_model(follow_up, is_collab_mode=is_collab_mode, collab_context=collab_context)
             return final_data.get("response", "")
         
         return output

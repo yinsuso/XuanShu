@@ -1573,16 +1573,8 @@ async def start_task(request: Request):
     
     # 【修复P1-034】确保 enter_collab_mode 事件通过所有渠道广播到所有成员
     # 渠道1: manager.broadcast() 覆盖 TCP节点 + 本地WebSocket
-    manager.broadcast({
-        "type": "enter_collab_mode",
-        "task_type": task_type,
-        "description": description,
-        "timestamp": time.time()
-    })
-    
-    # 渠道2: 额外通过全局WebSocket广播，确保所有浏览器客户端都能收到
-    from evolution.cluster.cluster_api import broadcast_to_all_clients
-    await broadcast_to_all_clients({
+    # 【修复P1-036】房主自己也是客户端之一，通过 broadcast_to_room 统一广播避免重复
+    manager.broadcast_to_room(manager.room_id, {
         "type": "enter_collab_mode",
         "task_type": task_type,
         "description": description,
@@ -3007,15 +2999,37 @@ def _async_chat_worker_loop():
                 task.status = AsyncTaskStatus.PROCESSING
                 task.started_at = time.time()
             
-            # 实际调用Agent进行处理
+            # 实际调用Agent进行处理，带超时控制
+            import concurrent.futures
             try:
                 agent = get_agent()
-                final_response = agent.process_adaptive(task.message)
-                with _async_chat_lock:
-                    task.status = AsyncTaskStatus.COMPLETED
-                    task.result = final_response
-                    task.completed_at = time.time()
-                logger.info(f"✅ [异步对话任务] 任务 {task.task_id} 完成，响应长度: {len(final_response)}")
+                # 【关键修复】在后台线程中同步Agent的对话管理器与web_app的conv_manager
+                # 确保Agent使用同一个对话上下文，避免产生分裂的对话文件
+                if task.conversation_id:
+                    agent.conversation_manager.load_conversation_or_create(task.conversation_id)
+                else:
+                    # 如果任务没有conversation_id，同步当前web_app的对话状态
+                    if conv_manager.current_conversation:
+                        agent.conversation_manager.load_conversation_or_create(conv_manager.current_conversation.conversation_id)
+                # 使用线程池限制任务执行时间，防止无限运行
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                    future = executor.submit(agent.process_adaptive, task.message)
+                    # 最大执行时间：ReAct最大时间 + 模型调用缓冲
+                    max_execution_time = 150  # 2.5分钟，比前端超时稍短
+                    try:
+                        final_response = future.result(timeout=max_execution_time)
+                        with _async_chat_lock:
+                            task.status = AsyncTaskStatus.COMPLETED
+                            task.result = final_response
+                            task.completed_at = time.time()
+                        logger.info(f"✅ [异步对话任务] 任务 {task.task_id} 完成，响应长度: {len(final_response)}")
+                    except concurrent.futures.TimeoutError:
+                        future.cancel()
+                        with _async_chat_lock:
+                            task.status = AsyncTaskStatus.FAILED
+                            task.error = f"任务执行超时（超过{max_execution_time}秒），可能原因：模型响应过慢或任务过于复杂。建议简化任务后重试。"
+                            task.completed_at = time.time()
+                        logger.error(f"⏱️ [异步对话任务] 任务 {task.task_id} 执行超时")
             except Exception as e:
                 with _async_chat_lock:
                     task.status = AsyncTaskStatus.FAILED
@@ -3185,6 +3199,9 @@ async def api_chat(request: Request):
         
         response = ""
         agent = get_agent()
+        # 【关键修复】同步Agent的对话管理器，确保使用同一个对话上下文
+        if conv_manager.current_conversation:
+            agent.conversation_manager.load_conversation_or_create(conv_manager.current_conversation.conversation_id)
         # 3. 使用异步执行模型调用，带完整容错
         try:
             import asyncio
@@ -3193,7 +3210,7 @@ async def api_chat(request: Request):
             logger.warning(f"⚠️ 模型调用出现异常: {model_error}，但对话仍可正常保存")
             # 生成友好的空回复提示，避免完全没有助手消息
             response = f"【模型暂时无法回复】\n错误信息: {str(model_error)}"
-        
+
         # 4. 确保助手消息无论如何都添加，保证导出/统计/历史功能不会失败
         conv_manager.add_assistant_message(response)
         conv_manager.save_current()

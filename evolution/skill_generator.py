@@ -277,11 +277,20 @@ def skill_function(param1: str, param2: int = 0) -> str:
         try:
             safe_name = "".join(c if c.isalnum() or c in '_-' else '_' for c in skill_name)
             safe_name = safe_name.lower().replace('-', '_')
-            filename = f"auto_{safe_name}_{self.skill_count}.py"
-            filepath = os.path.join(AUTO_SKILLS_DIR, filename)
+
+            # 创建技能独立目录：skills/auto_generated/<skill_name>/
+            skill_dir = os.path.join(AUTO_SKILLS_DIR, safe_name)
+            os.makedirs(skill_dir, exist_ok=True)
+
+            # 保存 Python 代码文件
+            filename = f"{safe_name}.py"
+            filepath = os.path.join(skill_dir, filename)
 
             with open(filepath, 'w', encoding='utf-8') as f:
                 f.write(code)
+
+            # 生成 SKILL.md 文件
+            self._generate_skill_md(skill_dir, safe_name, code)
 
             self.skill_count += 1
             logger.info(f"自动生成的技能已保存: {filepath}")
@@ -289,3 +298,117 @@ def skill_function(param1: str, param2: int = 0) -> str:
         except Exception as e:
             logger.error(f"保存技能失败: {e}")
             return None
+
+    def _generate_skill_md(self, skill_dir: str, skill_name: str, code: str):
+        """
+        为自动生成的技能创建 SKILL.md 文件
+
+        Args:
+            skill_dir: 技能目录路径
+            skill_name: 技能名称
+            code: 技能 Python 代码
+        """
+        try:
+            # 从代码中提取装饰器信息
+            desc_match = re.search(r'description\s*=\s*["\']([^"\']+)["\']', code)
+            description = desc_match.group(1) if desc_match else f"自动生成的技能: {skill_name}"
+
+            category_match = re.search(r'category\s*=\s*SkillCategory\.(\w+)', code)
+            category = category_match.group(1).lower() if category_match else "custom"
+
+            # 从代码中提取函数签名和 docstring
+            func_match = re.search(r'def\s+(\w+)\s*\((.*?)\)\s*->\s*(\w+):', code, re.DOTALL)
+            func_name = func_match.group(1) if func_match else "execute"
+            func_params = func_match.group(2).strip() if func_match else ""
+            return_type = func_match.group(3) if func_match else "str"
+
+            # 提取 docstring
+            docstring_match = re.search(r'["\']{3}(.*?)["\']{3}', code, re.DOTALL)
+            docstring = docstring_match.group(1).strip() if docstring_match else ""
+
+            # 构建参数表格
+            params_section = ""
+            if func_params:
+                params_lines = []
+                for param in func_params.split(','):
+                    param = param.strip()
+                    if not param or param == 'self':
+                        continue
+                    # 解析参数名、类型、默认值
+                    param_parts = param.split(':')
+                    param_name = param_parts[0].strip()
+                    param_type = "string"
+                    param_default = ""
+                    if '=' in param:
+                        param_def = param.split('=')
+                        param_name = param_def[0].split(':')[0].strip()
+                        param_default = param_def[1].strip()
+                    if len(param_parts) > 1 and '=' not in param_parts[0]:
+                        type_part = param_parts[1].split('=')[0].strip()
+                        type_map = {'str': 'string', 'int': 'integer', 'float': 'number', 'bool': 'boolean', 'list': 'array', 'dict': 'object'}
+                        param_type = type_map.get(type_part, type_part)
+
+                    default_col = param_default if param_default else "-"
+                    req_col = "No" if param_default else "Yes"
+                    params_lines.append(f"| {param_name} | {param_type} | 参数: {param_name} | {req_col} | {default_col} |")
+
+                if params_lines:
+                    params_section = "\n".join([
+                        "## Parameters",
+                        "",
+                        "| Name | Type | Description | Required | Default |",
+                        "|------|------|-------------|----------|---------|",
+                    ] + params_lines)
+
+            # 构建 SKILL.md 内容
+            skill_md_content = f"""---
+name: {skill_name}
+description: {description}
+category: {category}
+requires_confirmation: false
+version: "1.0.0"
+author: Auto Generated
+tags: ["auto_generated"]
+---
+
+## Core Capability
+{description}
+
+## Trigger Scenario（触发场景）
+
+以下场景应调用此技能：
+
+- **自动化任务**：当需要执行 {skill_name} 相关操作时
+- **流程处理**：用户描述的操作流程可以通过此技能自动化完成
+
+**判断标准**：当需要 {description} 时，使用此技能。
+
+{params_section}
+
+## Execution Signature
+```python
+def {func_name}({func_params}) -> {return_type}:
+    ...
+```
+
+## Output Format
+
+### 成功返回
+返回处理结果字符串。
+
+### 错误返回
+- 执行错误：`错误: ...`
+
+## Notes
+- 此技能为系统自动生成
+- 如需完善文档，请手动编辑此 SKILL.md 文件
+- 原始 docstring: {docstring if docstring else "无"}
+"""
+
+            md_path = os.path.join(skill_dir, "SKILL.md")
+            with open(md_path, 'w', encoding='utf-8') as f:
+                f.write(skill_md_content)
+
+            logger.info(f"技能文档已生成: {md_path}")
+        except Exception as e:
+            logger.warning(f"生成 SKILL.md 失败: {e}")

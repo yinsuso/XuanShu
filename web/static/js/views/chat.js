@@ -293,16 +293,18 @@ function getStandaloneHelpText() {
 }
 
 function pollAsyncChatTask(taskId, sendBtn) {
-    const pollInterval = 500;
-    const maxPollTime = 300000;
+    const pollInterval = 1000;  // 轮询间隔改为1秒，减少服务器压力
+    const maxPollTime = 180000; // 最大轮询时间改为3分钟（与后端超时匹配）
     const startTime = Date.now();
+    let lastStatus = 'pending';
+    let statusUpdateTime = Date.now();
 
     return new Promise((resolve, reject) => {
         const poll = async () => {
             try {
                 const elapsed = Date.now() - startTime;
                 if (elapsed > maxPollTime) {
-                    reject(new Error('任务超时，请稍后查看结果'));
+                    reject(new Error('任务处理时间较长，已超出前端等待时间。任务可能仍在后台运行，请稍后刷新页面查看结果。'));
                     return;
                 }
 
@@ -313,15 +315,53 @@ function pollAsyncChatTask(taskId, sendBtn) {
                 }
 
                 const status = statusRes.status;
+                
+                // 更新UI状态显示
+                if (status !== lastStatus) {
+                    lastStatus = status;
+                    statusUpdateTime = Date.now();
+                    const messagesContainer = document.getElementById('messages');
+                    if (messagesContainer) {
+                        const lastChild = messagesContainer.lastElementChild;
+                        if (lastChild && lastChild.classList.contains('assistant-message')) {
+                            const contentDiv = lastChild.querySelector('.message-content');
+                            if (contentDiv) {
+                                if (status === 'processing') {
+                                    const processingTime = Math.floor((Date.now() - startTime) / 1000);
+                                    contentDiv.innerHTML = `⏳ 正在处理中... (${processingTime}秒)`;
+                                } else if (status === 'pending') {
+                                    contentDiv.innerHTML = `⏳ 等待处理中...`;
+                                }
+                            }
+                        }
+                    }
+                } else if (status === 'processing') {
+                    // 每10秒更新一次处理时间显示
+                    const processingTime = Math.floor((Date.now() - startTime) / 1000);
+                    if (processingTime % 10 === 0) {
+                        const messagesContainer = document.getElementById('messages');
+                        if (messagesContainer) {
+                            const lastChild = messagesContainer.lastElementChild;
+                            if (lastChild && lastChild.classList.contains('assistant-message')) {
+                                const contentDiv = lastChild.querySelector('.message-content');
+                                if (contentDiv && contentDiv.textContent.includes('⏳')) {
+                                    contentDiv.innerHTML = `⏳ 正在处理中... (${processingTime}秒)`;
+                                }
+                            }
+                        }
+                    }
+                }
+                
                 if (status === 'completed') {
                     resolve(statusRes.result);
                 } else if (status === 'failed') {
-                    reject(new Error(statusRes.error || '任务失败'));
+                    reject(new Error(statusRes.error || '任务执行失败'));
                 } else {
                     setTimeout(poll, pollInterval);
                 }
             } catch (pollError) {
-                setTimeout(poll, pollInterval);
+                // 网络错误时增加间隔，避免频繁请求
+                setTimeout(poll, pollInterval * 2);
             }
         };
         poll();
