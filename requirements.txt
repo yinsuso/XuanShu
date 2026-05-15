@@ -31,3 +31,19 @@ websockets>=12.0
 
 # 安全增强 (security hardening)
 docker>=7.1.0
+
+# ========= 文档处理依赖（format_converter 技能） =========
+# Word 文档处理（TXT/DOCX 互转）
+python-docx>=1.1.0
+# PDF 文本提取（PDF 转 TXT）
+pdfplumber>=0.11.0
+# PDF 处理后备方案
+PyPDF2>=3.0.0
+# PDF 生成（TXT 转 PDF）
+reportlab>=4.0.0
+# 通用文档格式转换（DOCX/PDF/HTML/MD 互转）
+# pandoc 为系统级工具，需单独安装: https://pandoc.org/installing.html
+
+# ========= 数据分析依赖（data_analyzer 技能） =========
+# 数据可视化图表生成
+matplotlib>=3.8.0

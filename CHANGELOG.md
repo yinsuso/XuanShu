@@ -1,4 +1,16 @@
 
+## [5.8.1] - 2026-05-15
+- feat: 新增八大技能，大幅扩展 Agent 能力边界
+  - `format_converter` 技能: 文档格式转换（Word/PDF/TXT/HTML/Markdown 互转）
+  - `hermes_controller` 技能: 控制 Hermes Agent 远程执行任务
+  - `openclaw_controller` 技能: 控制 OpenClaw 远程执行任务
+  - `data_analyzer` 技能: 数据分析（清洗、统计、可视化图表生成）
+  - `four_symbols_audit` 技能: 四象审计（青龙-环境/白虎-代码/朱雀-验证/玄武-沟通）
+  - `shell_exec` 技能: 跨平台命令行执行（Windows/Linux/macOS），支持 CMD/PowerShell/Bash/Zsh
+  - `file_open` 技能: 使用系统默认程序打开文件，模拟双击效果，支持文档/图片/视频/目录
+  - `browser_control` 技能: 浏览器控制，支持打开网页/获取页面信息/搜索引擎搜索
+
+
 ## [5.8.0] - 2026-05-15
 - milestone: 大版本5系列正式收官，多机协作Agent MVP版本完成
   - 从v5.0到v5.8.0，玄枢完成了从单机Agent到多机协作集群的完整进化

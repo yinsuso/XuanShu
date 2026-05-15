@@ -1,4 +1,4 @@
-# 🤖 XuanShu v5.8.0
+# 🤖 XuanShu v5.8.1
 
 **A Local AI Agent Cluster System with Self-Evolution Capability**
 
