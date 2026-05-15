@@ -157,6 +157,18 @@ def execute(db_type: str, connection_string: str, query: str, **kwargs) -> str:
             return json.dumps({
                 "error": "仅支持 SELECT、PRAGMA、SHOW 查询，不支持数据修改操作"
             }, ensure_ascii=False)
+
+        # 额外安全检查：禁止多语句和危险关键字
+        dangerous_keywords = ['DELETE', 'DROP', 'INSERT', 'UPDATE', 'ALTER', 'CREATE', 'EXEC', 'EXECUTE', 'UNION']
+        if ';' in query:
+            return json.dumps({
+                "error": "禁止执行多语句查询"
+            }, ensure_ascii=False)
+        for keyword in dangerous_keywords:
+            if keyword in query_stripped:
+                return json.dumps({
+                    "error": f"查询中包含不允许的关键字: {keyword}"
+                }, ensure_ascii=False)
         
         db_type = db_type.lower().strip()
         

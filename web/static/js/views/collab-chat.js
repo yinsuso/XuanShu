@@ -1,6 +1,6 @@
 import { STATE } from '../state.js';
 import { api } from '../api.js';
-import { showToast, showView, markdownToHtml, escapeHtml } from '../utils.js';
+import { showToast, showView, markdownToHtml, escapeHtml, formatDateTime } from '../utils.js';
 import { renderMembers } from './room-detail.js';
 
 export async function startCollabChat() {
@@ -325,12 +325,14 @@ export function appendCollabMessage(role, content, agentName = null) {
     }
 
     const msgIndex = container.children.length;
+    const timeStr = formatDateTime();
     div.innerHTML = `
         <div class='avatar'>${avatarIcon}</div>
         <div class='message-content'>
             ${prefixHtml}
             ${renderedContent}
-            <div style="margin-top:8px;display:flex;gap:4px;">
+            <div style="margin-top:4px;font-size:11px;color:#999;text-align:right;">${timeStr}</div>
+            <div style="margin-top:4px;display:flex;gap:4px;justify-content:flex-end;">
                 <button class="btn" style="font-size:11px;padding:2px 6px;width:auto;" onclick="window.copyCollabMessage(this, ${msgIndex})">📋 复制</button>
             </div>
         </div>

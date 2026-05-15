@@ -196,55 +196,82 @@ class ModelConfigManager:
         ]
 
 
-def call_model(config: ModelConfig, prompt: str, system_prompt: str = "", temperature: float = 0.7, max_retries: int = 3) -> str:
+def call_model(config: ModelConfig, prompt: str, system_prompt: str = "", temperature: float = 0.7, max_retries: int = 3, tools: List[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """
+    调用模型，支持标准 Function Calling。
+
+    Args:
+        config: 模型配置
+        prompt: 用户提示词
+        system_prompt: 系统提示词
+        temperature: 温度参数
+        max_retries: 最大重试次数
+        tools: OpenAI 格式的工具列表，每个工具包含 type 和 function 字段
+
+    Returns:
+        字典，包含:
+        - "content": 模型的文本回复内容
+        - "tool_calls": 工具调用列表（如果模型调用了工具），每个包含 name 和 arguments
+    """
     last_exception = None
     for attempt in range(max_retries):
         try:
             logger.info(f"模型调用尝试 {attempt + 1}/{max_retries}")
             if config.provider == ProviderType.OLLAMA:
-                result = _call_ollama(config, prompt, system_prompt, temperature)
+                result = _call_ollama(config, prompt, system_prompt, temperature, tools)
             else:
-                result = _call_openai_compatible(config, prompt, system_prompt, temperature)
-            
-            if not result or not result.strip():
+                result = _call_openai_compatible(config, prompt, system_prompt, temperature, tools)
+
+            if not result:
                 logger.warning(f"模型返回空内容，第 {attempt + 1} 次尝试")
                 if attempt < max_retries - 1:
                     time.sleep(1)
                     continue
                 raise Exception("模型连续多次返回空内容")
-            
+
+            content = result.get("content", "")
+            if not content and not result.get("tool_calls"):
+                logger.warning(f"模型返回空内容，第 {attempt + 1} 次尝试")
+                if attempt < max_retries - 1:
+                    time.sleep(1)
+                    continue
+                raise Exception("模型连续多次返回空内容")
+
             logger.info(f"模型调用成功（第 {attempt + 1} 次尝试）")
             return result
-            
+
         except Exception as e:
             last_exception = e
             logger.warning(f"模型调用失败，第 {attempt + 1} 次尝试", details={"error": str(e), "attempt": attempt + 1}, exc_info=True)
             if attempt < max_retries - 1:
                 time.sleep(2)
-    
+
     public_safe_msg = f"模型调用失败，已尝试 {max_retries} 次，请检查模型服务配置和网络连接后重试"
     logger.error(public_safe_msg, exc_info=True)
     raise Exception(public_safe_msg) from last_exception
 
-async def call_model_async(config: ModelConfig, prompt: str, system_prompt: str = "", temperature: float = 0.7, max_retries: int = 3) -> str:
+async def call_model_async(config: ModelConfig, prompt: str, system_prompt: str = "", temperature: float = 0.7, max_retries: int = 3, tools: List[Dict[str, Any]] = None) -> Dict[str, Any]:
     """异步版本的模型调用 - 带完整重试机制"""
     import asyncio
     loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, call_model, config, prompt, system_prompt, temperature, max_retries)
+    return await loop.run_in_executor(None, call_model, config, prompt, system_prompt, temperature, max_retries, tools)
 
 
-def _call_ollama(config: ModelConfig, prompt: str, system_prompt: str, temperature: float) -> str:
-    # Ollama 使用 /api/generate 端点（兼容旧版）
-    chat_url = f"{config.api_base}/api/generate"
-    
-    # 合并 system_prompt 和 prompt
-    full_prompt = prompt
+def _call_ollama(config: ModelConfig, prompt: str, system_prompt: str, temperature: float, tools: List[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """
+    调用 Ollama 模型，支持 Function Calling。
+    Ollama 使用 /api/chat 端点支持 tools 参数。
+    """
+    chat_url = f"{config.api_base}/api/chat"
+
+    messages = []
     if system_prompt:
-        full_prompt = f"{system_prompt}\n\n{prompt}"
-    
+        messages.append({"role": "system", "content": system_prompt})
+    messages.append({"role": "user", "content": prompt})
+
     payload = {
         "model": config.model_name,
-        "prompt": full_prompt,
+        "messages": messages,
         "stream": False,
         "options": {
             "temperature": temperature,
@@ -253,13 +280,27 @@ def _call_ollama(config: ModelConfig, prompt: str, system_prompt: str, temperatu
         }
     }
 
+    if tools:
+        payload["tools"] = tools
+
     try:
         response = requests.post(chat_url, json=payload, timeout=MODEL_CALL_TIMEOUT)
         response.raise_for_status()
         result = response.json()
-        
-        content = result.get("response", "")
-        
+
+        message = result.get("message", {})
+        content = message.get("content", "")
+
+        tool_calls = []
+        raw_tool_calls = message.get("tool_calls", [])
+        for tc in raw_tool_calls:
+            if isinstance(tc, dict):
+                func = tc.get("function", {})
+                tool_calls.append({
+                    "name": func.get("name", ""),
+                    "arguments": func.get("arguments", {})
+                })
+
         if token_tracker:
             if "usage" in result:
                 usage = result["usage"]
@@ -270,20 +311,26 @@ def _call_ollama(config: ModelConfig, prompt: str, system_prompt: str, temperatu
                     provider="ollama"
                 )
             else:
+                full_prompt_text = ""
+                for msg in messages:
+                    full_prompt_text += msg.get("content", "")
                 token_tracker.record_usage_estimation(
                     model_name=config.model_name,
-                    prompt_text=full_prompt,
+                    prompt_text=full_prompt_text,
                     completion_text=content,
                     provider="ollama"
                 )
-        
-        return content
+
+        return {"content": content, "tool_calls": tool_calls}
     except Exception as e:
         logger.error(f"Ollama调用失败: {e}")
         raise
 
 
-def _call_openai_compatible(config: ModelConfig, prompt: str, system_prompt: str, temperature: float) -> str:
+def _call_openai_compatible(config: ModelConfig, prompt: str, system_prompt: str, temperature: float, tools: List[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """
+    调用 OpenAI 兼容 API，支持标准 Function Calling。
+    """
     url = f"{config.api_base}/chat/completions"
     headers = {
         "Authorization": f"Bearer {config.api_key}",
@@ -302,17 +349,37 @@ def _call_openai_compatible(config: ModelConfig, prompt: str, system_prompt: str
         "stream": False
     }
 
+    if tools:
+        payload["tools"] = tools
+        payload["tool_choice"] = "auto"
+
     try:
         response = requests.post(url, json=payload, headers=headers, timeout=MODEL_CALL_TIMEOUT)
         response.raise_for_status()
         result = response.json()
-        
-        content = result["choices"][0]["message"]["content"]
-        
+
+        message = result["choices"][0]["message"]
+        content = message.get("content", "")
+
+        tool_calls = []
+        raw_tool_calls = message.get("tool_calls", [])
+        for tc in raw_tool_calls:
+            if isinstance(tc, dict):
+                func = tc.get("function", {})
+                args_str = func.get("arguments", "{}")
+                try:
+                    args = json.loads(args_str) if isinstance(args_str, str) else args_str
+                except json.JSONDecodeError:
+                    args = {}
+                tool_calls.append({
+                    "name": func.get("name", ""),
+                    "arguments": args
+                })
+
         full_prompt_text = ""
         for msg in messages:
             full_prompt_text += msg.get("content", "")
-        
+
         if token_tracker:
             if "usage" in result:
                 usage = result["usage"]
@@ -329,8 +396,8 @@ def _call_openai_compatible(config: ModelConfig, prompt: str, system_prompt: str
                     completion_text=content,
                     provider=config.provider.value
                 )
-        
-        return content
+
+        return {"content": content, "tool_calls": tool_calls}
     except Exception as e:
         logger.error(f"OpenAI兼容API调用失败: {e}")
         raise

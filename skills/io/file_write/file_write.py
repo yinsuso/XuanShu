@@ -12,7 +12,7 @@ SKILL_NAME = "file_write"
 SKILL_DESCRIPTION = "写入内容到指定文件，自动创建父目录。"
 SKILL_TRIGGER = "当需要创建新文件、修改代码或保存配置时使用。"
 SKILL_CATEGORY = "io"
-SKILL_REQUIRES_CONFIRMATION = False
+SKILL_REQUIRES_CONFIRMATION = True
 SKILL_PARAMETERS = [
     {
         "name": "path",

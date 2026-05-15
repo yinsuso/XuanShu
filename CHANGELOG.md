@@ -1,4 +1,33 @@
 
+## [5.8.0] - 2026-05-15
+- milestone: 大版本5系列正式收官，多机协作Agent MVP版本完成
+  - 从v5.0到v5.8.0，玄枢完成了从单机Agent到多机协作集群的完整进化
+  - 单机模式：自进化、技能生成、记忆系统、审批机制全部稳定运行
+  - 协作模式：房间创建/加入/解散、UDP三重发现、TCP通信、任务分发、心跳保活全闭环
+  - 技能同步：集群内技能自动同步，一次生成全网共享（v5.7.0）
+  - 跨互联网：支持公网IP/域名，突破局域网限制（v5.7.4）
+  - 100节点扩展性：分批并行+动态间隔+条件同步优化（v5.7.1）
+  - 安全加固：完整安全审计，修复2处致命错误、4处高危漏洞、2处中危问题、3处逻辑Bug（v5.7.5）
+  - Token统计：前端精细化展示，5视图+3筛选+图表可视化（v5.7.3）
+  - 向量记忆：三级降级向量记忆系统上线（v5.7.4）
+  - 后续版本将基于v6.0.0开始，进入「认知深化」阶段
+
+## [5.7.5] - 2026-05-15
+- sec: 全项目复盘审计与安全加固（朱雀审计完成）
+  - 致命导入错误修复：`evolution/reflection.py` 和 `evolution/workflow_engine.py` 相对导入路径修正
+  - 高危安全漏洞修复：`workflow.py` 的 `eval()` 注入风险 → AST白名单安全表达式解析
+  - 高危安全漏洞修复：`skills/io/file_write` 和 `skills/system/opencli_exec` 改为需要确认 (`SKILL_REQUIRES_CONFIRMATION = True`)
+  - 高危安全漏洞修复：`opencli_exec` 的 `shell=True` + 字符串拼接 → `shell=False` + 列表传参，消除命令注入
+  - 中危安全修复：`security.py` `verify_signature` 使用 `pop()` 修改原始字典 → 先 `copy()` 再操作
+  - 中危安全修复：`database_query` SQL注入防护增强，增加分号检测和危险关键字黑名单
+  - 逻辑Bug修复：`room_api.py` `manager.create_room()` 参数与签名不匹配 → 修正为正确参数
+  - 逻辑Bug修复：`skill_generator.py` 依赖私有变量 `_skill_filepaths` → 改为公开 `get_skill()` API
+  - 逻辑Bug修复：`utils/file_manager.py` `cleanup_task_dir` 参数误用（传完整路径而非task_id）
+  - 代码优化：`multi_agent.py` 删除未使用的 `MODEL_NAME` import
+  - 代码优化：`capability.py` 删除永远不会执行的 `"7b"` 死代码分支
+  - 全量语法验证：所有修改文件通过 `python -m py_compile` 验证
+  - 运行验证：核心模块导入测试通过，11个技能正常加载
+
 ## [5.7.4] - 2026-05-14
 - fix: 协作模式核心问题全面闭环修复（10项技术债偿还）
   - P1-026: 单机模式退出房间状态清除不完整 — `leave_room()` 移除 `if CLUSTER_ENABLED` 条件限制，确保单机模式下也执行完整清理

@@ -15,10 +15,11 @@ def sign_message(msg_dict: Dict[str, Any], secret_key: str) -> Dict[str, Any]:
 
 def verify_signature(msg_dict: Dict[str, Any], secret_key: str) -> bool:
     """验证消息签名，无 signature 字段或验证失败返回 False"""
-    sig = msg_dict.pop('signature', None)
+    msg_copy = msg_dict.copy()
+    sig = msg_copy.pop('signature', None)
     if sig is None:
         return False
-    payload = json.dumps(msg_dict, sort_keys=True, ensure_ascii=False).encode('utf-8')
+    payload = json.dumps(msg_copy, sort_keys=True, ensure_ascii=False).encode('utf-8')
     expected = hmac.new(secret_key.encode('utf-8'), payload, hashlib.sha256).hexdigest()
     return hmac.compare_digest(sig, expected)
 

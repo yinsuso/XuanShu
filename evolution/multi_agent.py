@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from abc import ABC, abstractmethod
 from logger import logger
-from config import MODEL_NAME
+
 
 
 class AgentRole(Enum):

@@ -273,13 +273,11 @@ class UniversalAgent:
             system_prompt += "\n..."
         system_prompt += "\n</available_skills>\n\n"
         
-        # 11. 工具调用格式
+        # 11. 工具调用说明
         system_prompt += "<tool_format>\n"
         system_prompt += "【重要】当用户请求匹配某个技能的触发场景时，你必须调用该技能，禁止直接用自身知识回答！\n"
-        system_prompt += "调用格式（必须使用 ```json 代码块包裹）：\n"
-        system_prompt += "```json\n"
-        system_prompt += "{ \"skill\": \"技能名称\", \"args\": { \"参数名\": \"参数值\" } }\n"
-        system_prompt += "```\n"
+        system_prompt += "系统已通过标准 Function Calling 机制向你提供了可用工具（skills）。\n"
+        system_prompt += "当需要调用技能时，请使用标准的工具调用格式，系统会自动解析并执行。\n"
         system_prompt += "【强制规则】\n"
         system_prompt += "- 如果用户明确要求使用某个技能，你必须调用该技能\n"
         system_prompt += "- 如果用户请求的内容匹配某个技能的触发场景，你必须调用该技能获取实时数据\n"
@@ -355,20 +353,34 @@ class UniversalAgent:
         
         return sections
 
-    def call_model(self, prompt: str, use_context: bool = True, is_collab_mode: bool = False, collab_context: Dict[str, Any] = None) -> Dict[str, Any]:
+    def call_model(self, prompt: str, use_context: bool = True, is_collab_mode: bool = False, collab_context: Dict[str, Any] = None, enable_tools: bool = True) -> Dict[str, Any]:
         config = config_manager.current_config
         if config is None:
             config_manager.load_configs()
             config = config_manager.current_config
             if config is None:
                 raise ValueError("❌ 无法获取模型配置！请检查 data/model_config.json")
-        
-        response_text = call_model(
+
+        tools = None
+        if enable_tools:
+            try:
+                tools = self.skills_registry.get_openai_schemas()
+                if tools:
+                    tools = [{"type": "function", "function": t["function"]} for t in tools]
+            except Exception as e:
+                logger.warning(f"获取技能 schemas 失败: {e}")
+
+        result = call_model(
             config=config,
             prompt=prompt,
-            system_prompt=self._build_system_prompt(query=prompt, is_collab_mode=is_collab_mode, collab_context=collab_context)
+            system_prompt=self._build_system_prompt(query=prompt, is_collab_mode=is_collab_mode, collab_context=collab_context),
+            tools=tools
         )
-        return {"response": response_text}
+
+        response_text = result.get("content", "")
+        tool_calls = result.get("tool_calls", [])
+
+        return {"response": response_text, "tool_calls": tool_calls}
 
     def process_adaptive(self, user_input: str, is_collab_mode: bool = False, collab_context: Dict[str, Any] = None) -> str:
         """
@@ -438,17 +450,34 @@ class UniversalAgent:
     def _process_simple(self, user_input: str, is_collab_mode: bool = False, collab_context: Dict[str, Any] = None) -> str:
         conversation_history = self.conversation_manager.get_history_text(limit=10)
         prompt = f"【对话历史】\n{conversation_history}\n\n【用户问题】\n{user_input}\n\n请回答或调用技能。"
-        
+
         response = self.call_model(prompt, is_collab_mode=is_collab_mode, collab_context=collab_context)
         output = response.get("response", "")
-        
+        tool_calls = response.get("tool_calls", [])
+
+        if tool_calls:
+            for tc in tool_calls:
+                skill_name = tc.get("name")
+                skill_args = tc.get("arguments", {})
+                if skill_name:
+                    skill_result = self._execute_skill(skill_name, skill_args or {})
+                    # tv_search 技能返回的内容包含精确播放链接，必须原样呈现给用户
+                    if skill_name == "tv_search":
+                        return skill_result
+                    follow_up = f"技能结果:\n{skill_result}\n\n请根据结果回答用户。"
+                    final_data = self.call_model(follow_up, is_collab_mode=is_collab_mode, collab_context=collab_context)
+                    return final_data.get("response", "")
+
         skill_name, skill_args = self._parse_skill_call(output)
         if skill_name:
             skill_result = self._execute_skill(skill_name, skill_args or {})
+            # tv_search 技能返回的内容包含精确播放链接，必须原样呈现给用户
+            if skill_name == "tv_search":
+                return skill_result
             follow_up = f"技能结果:\n{skill_result}\n\n请根据结果回答用户。"
             final_data = self.call_model(follow_up, is_collab_mode=is_collab_mode, collab_context=collab_context)
             return final_data.get("response", "")
-        
+
         return output
 
     def _parse_skill_call(self, text: str):
@@ -470,9 +499,24 @@ class UniversalAgent:
                 if not approval.get('allowed', True):
                     return f"❌ 安全拦截：{approval.get('message','已被阻止')} (风险等级: {approval.get('risk_level','unknown')})"
         try:
-            return skill.execute(**args)
+            result = skill.execute(**args)
+            # 记录技能调用到对话历史
+            self.conversation_manager.add_tool_message(
+                content=str(result),
+                tool_name=skill_name,
+                tool_args=args
+            )
+            self.conversation_manager.save_current()
+            return result
         except Exception as e:
-            return f"❌ 技能执行失败：{str(e)}"
+            error_msg = f"❌ 技能执行失败：{str(e)}"
+            self.conversation_manager.add_tool_message(
+                content=error_msg,
+                tool_name=skill_name,
+                tool_args=args
+            )
+            self.conversation_manager.save_current()
+            return error_msg
 
     def run(self):
         print("\n🚀 破执 v5.0 (Evolution Enabled) 已启动！")

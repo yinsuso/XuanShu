@@ -93,8 +93,6 @@ class CapabilityAssessor:
             return 0.80
         elif "9b" in model_lower or "8b" in model_lower or "7b" in model_lower:
             return 0.75
-        elif "7b" in model_lower:
-            return 0.72
         elif "6b" in model_lower or "5b" in model_lower or "4b" in model_lower:
             return 0.68
         elif "3b" in model_lower or "2b" in model_lower:

@@ -40,9 +40,10 @@ async def create_room(request: Request, auth: bool = verify_cluster_token):
         raise HTTPException(status_code=503, detail="集群管理器未初始化")
 
     try:
-        room = manager.create_room(name=name, password=password, description=description, creator=creator)
-        if not room:
+        room_id = manager.create_room(name=name, owner=creator)
+        if not room_id:
             raise HTTPException(status_code=500, detail="创建房间失败")
+        room = manager.get_room(room_id)
         return {"success": True, "room": room}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

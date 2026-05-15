@@ -159,6 +159,61 @@ from skills.base import skill, SkillCategory
 - 记录错误日志 `logger.error(...)` 并返回用户友好的错误信息
 - 避免未处理的异常导致 Agent 崩溃
 
+### 4.5 全角数字兼容性（强制要求）
+
+**【重要】当技能涉及数字参数输入时，必须处理全角数字的兼容性。**
+
+在中文输入环境下，用户可能输入全角数字（如 `１`、`２`、`３`）而非半角数字（如 `1`、`2`、`3`）。技能代码必须能够正确处理这两种输入。
+
+**实现方式：**
+
+1. **导入公共工具函数**（推荐）：
+   ```python
+   from skills.utils.text_utils import normalize_numeric_param
+   ```
+
+2. **在 `execute()` 函数入口处转换数字参数**：
+   ```python
+   def execute(speed: float = 1.0, pitch: str = "0", lines: int = 0, **kwargs) -> str:
+       """执行技能。"""
+       # 全角数字兼容性处理
+       try:
+           speed = normalize_numeric_param(speed, float)
+       except (ValueError, TypeError):
+           return f"错误: speed 参数格式无效: {speed}"
+       try:
+           lines = normalize_numeric_param(lines, int)
+       except (ValueError, TypeError):
+           return f"错误: lines 参数格式无效: {lines}"
+       
+       # 正常业务逻辑...
+   ```
+
+3. **需要处理全角数字的典型场景**：
+   - 用户选择列表序号（如 `２` 表示选择第2项）
+   - 数值参数（如语速 `０．９`、音调 `＋５`）
+   - 数量参数（如读取行数 `１００`）
+   - 页码参数（如 `３` 表示第3页）
+
+4. **全角数字对照表**：
+   | 全角 | 半角 |
+   |------|------|
+   | ０ | 0 |
+   | １ | 1 |
+   | ２ | 2 |
+   | ３ | 3 |
+   | ４ | 4 |
+   | ５ | 5 |
+   | ６ | 6 |
+   | ７ | 7 |
+   | ８ | 8 |
+   | ９ | 9 |
+   | ． | . |
+   | ＋ | + |
+   | － | - |
+
+**判断标准**：如果技能的参数类型为 `integer`、`number`/`float`，或参数描述中涉及"序号"、"数量"、"页码"等概念，则必须实现全角数字兼容性处理。
+
 ## 5. 实现步骤
 
 1. 在 `skills/` 下找到或创建合适的分类目录（如 `io/`, `code/`, `network/`）

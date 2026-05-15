@@ -1,6 +1,7 @@
 """
 影视搜索技能。
 基于影视资源 API，提供影视搜索和播放地址获取功能。
+流程：用户输入关键词 -> 输出所有搜索结果列表 -> 用户输入序号 -> 获取选中影视详情 -> 逐集输出播放链接
 Author: XuanShu Agent
 Date: 2026-05-14
 """
@@ -12,39 +13,26 @@ from skills.utils.net_utils import safe_request, fetch_json
 
 # 技能元数据
 SKILL_NAME = "tv_search"
-SKILL_DESCRIPTION = "搜索影视节目信息，获取播放地址。支持按关键词搜索影视资源，返回搜索结果列表及播放链接。当用户需要搜索电影、电视剧、综艺节目等影视资源时调用此技能。"
-SKILL_TRIGGER = "当用户需要搜索影视节目、获取播放地址、查找电影电视剧资源时使用。"
+SKILL_DESCRIPTION = "搜索影视节目信息并获取播放地址。分两步执行：第一步根据关键词搜索并输出所有结果列表供用户选择；第二步根据用户选择的序号获取该影视的详细信息和逐集播放链接。"
+SKILL_TRIGGER = "当用户需要搜索影视节目、获取播放地址、查找电影电视剧资源时使用。用户只需说'搜索电影 xxx'、'我想看 yyy'、'有没有 zzz 的资源'即可。"
 SKILL_CATEGORY = "network"
 SKILL_REQUIRES_CONFIRMATION = False
 SKILL_PARAMETERS = [
     {
-        "name": "action",
-        "type": "string",
-        "description": "操作类型（必填）。search=搜索影视，play=获取播放地址",
-        "enum": ["search", "play"]
-    },
-    {
         "name": "keyword",
         "type": "string",
-        "description": "搜索关键词（action=search 时必填），如：电影名称、电视剧名称、演员名",
-        "default": ""
+        "description": "影视名称关键词（必填），如：电影名称、电视剧名称、演员名。用于搜索相关影视。"
     },
     {
         "name": "vod_id",
         "type": "string",
-        "description": "影视 ID（action=play 时必填），从搜索结果中获取",
+        "description": "影视ID（在第二步使用）。当用户选择了某个影视后，传入该影视的vod_id获取详情和播放地址。",
         "default": ""
-    },
-    {
-        "name": "play_index",
-        "type": "integer",
-        "description": "集数索引（action=play 时可选），默认第 1 集",
-        "default": 1
     },
     {
         "name": "page",
         "type": "integer",
-        "description": "页码（action=search 时可选），默认第 1 页",
+        "description": "页码（可选），默认第 1 页",
         "default": 1
     },
     {
@@ -180,54 +168,10 @@ def parse_play_urls(vod_detail: Dict) -> List[Dict]:
     return sources
 
 
-def get_play_url(vod_id: str, play_index: int = 1, timeout: int = 30) -> Optional[Dict]:
-    """
-    获取播放 URL（优先非 m3u8 线路，手机友好）。
-
-    Args:
-        vod_id: 影视 ID
-        play_index: 集数索引（从 1 开始）
-        timeout: 超时时间
-
-    Returns:
-        播放数据字典，包含 url/list/sources/vod/current_source_name，失败返回 None
-    """
-    vod_detail = get_vod_detail(vod_id, timeout)
-    if not vod_detail:
-        return None
-
-    sources = parse_play_urls(vod_detail)
-    if not sources:
-        return None
-
-    # 优先选择非 m3u8 线路（手机可直接播放）
-    preferred_source = None
-    for source in sources:
-        if "m3u8" not in source["name"].lower():
-            preferred_source = source
-            break
-
-    if not preferred_source:
-        # 所有线路都是 m3u8，使用第一条
-        preferred_source = sources[0]
-
-    episodes = preferred_source.get("episodes", [])
-    if episodes and play_index <= len(episodes):
-        play_url = episodes[play_index - 1]["url"]
-        return {
-            "url": play_url,
-            "list": episodes,
-            "sources": sources,
-            "vod": vod_detail,
-            "current_source_name": preferred_source["name"]
-        }
-
-    return None
-
-
 def format_search_results(results: List[Dict], keyword: str, total: int) -> str:
     """
-    格式化搜索结果。
+    格式化搜索结果列表，供用户选择。
+    输出所有搜索结果，每条包含序号、名称、年份、状态、类型。
 
     Args:
         results: 影视列表
@@ -237,7 +181,7 @@ def format_search_results(results: List[Dict], keyword: str, total: int) -> str:
     Returns:
         格式化后的字符串
     """
-    lines = [f"✅ 影视搜索成功", f"关键词: {keyword}", f"共找到 {total} 部：", ""]
+    lines = [f"🎬 影视搜索成功", f"关键词: {keyword}", f"共找到 {total} 部相关影视：", ""]
 
     for i, vod in enumerate(results, 1):
         name = vod.get("vod_name", "未知")
@@ -258,35 +202,67 @@ def format_search_results(results: List[Dict], keyword: str, total: int) -> str:
         lines.append(info)
 
     lines.append("")
-    lines.append("提示：使用 play 操作并传入 vod_id 获取播放地址")
+    lines.append("💡 请回复你想看的序号（如：1），我会为你获取该影视的详细信息和播放地址。")
     return "\n".join(lines)
 
 
-def format_play_info(play_data: Dict) -> str:
+def format_vod_detail(vod: Dict) -> str:
     """
-    格式化播放信息。
+    格式化影视详情和逐集播放链接。
+    按用户要求：一集集输出，格式为 集数名：url
 
     Args:
-        play_data: 播放数据
+        vod: 影视详情字典
 
     Returns:
         格式化后的字符串
     """
-    if not play_data:
-        return "❌ 未找到播放信息"
-
-    vod = play_data.get("vod", {})
     name = vod.get("vod_name", "未知")
-    sources = play_data.get("sources", [])
-    current_source = play_data.get("current_source_name", "")
-    current_url = play_data.get("url", "")
+    year = vod.get("vod_year", "")
+    remarks = vod.get("vod_remarks", "")
+    type_name = vod.get("type_name", "")
+    actor = vod.get("vod_actor", "")
+    director = vod.get("vod_director", "")
+    content = vod.get("vod_content", "")
 
-    lines = [f"✅ 《{name}》播放信息", ""]
-    lines.append(f"当前线路: {current_source}")
-    lines.append(f"播放地址: {current_url}")
+    lines = [f"🎬 《{name}》", ""]
+
+    # 基本信息
+    info_parts = []
+    if year:
+        info_parts.append(f"年份: {year}")
+    if type_name:
+        info_parts.append(f"类型: {type_name}")
+    if remarks:
+        info_parts.append(f"状态: {remarks}")
+    if director:
+        info_parts.append(f"导演: {director}")
+    if actor:
+        info_parts.append(f"演员: {actor}")
+
+    if info_parts:
+        lines.append(" | ".join(info_parts))
+        lines.append("")
+
+    if content:
+        import re
+        content_clean = re.sub(r'<[^>]+>', '', content)
+        if len(content_clean) > 200:
+            content_clean = content_clean[:200] + "..."
+        lines.append(f"简介: {content_clean}")
+        lines.append("")
+
+    # 解析播放地址
+    sources = parse_play_urls(vod)
+
+    if not sources:
+        lines.append("❌ 抱歉，该影视暂无可用播放地址")
+        return "\n".join(lines)
+
+    lines.append("=" * 40)
     lines.append("")
 
-    # 列出所有线路的集数
+    # 逐个线路输出，每集一行：集名：url
     for source in sources:
         source_name = source.get("name", "")
         episodes = source.get("episodes", [])
@@ -298,12 +274,14 @@ def format_play_info(play_data: Dict) -> str:
                 is_m3u8 = True
 
         m3u8_tag = " [m3u8]" if is_m3u8 else ""
-        lines.append(f"线路: {source_name}{m3u8_tag}（共 {len(episodes)} 集）")
+        lines.append(f"📺 线路: {source_name}{m3u8_tag}（共 {len(episodes)} 集）")
+        lines.append("-" * 30)
 
         for ep in episodes:
             ep_name = ep.get("name", "").strip()
             ep_url = ep.get("url", "").strip()
-            lines.append(f"  {ep_name}: {ep_url}")
+            lines.append(f"{ep_name}：{ep_url}")
+
         lines.append("")
 
     if any("m3u8" in s.get("name", "").lower() for s in sources):
@@ -312,45 +290,39 @@ def format_play_info(play_data: Dict) -> str:
     return "\n".join(lines)
 
 
-def execute(action: str, keyword: str = "", vod_id: str = "", play_index: int = 1, page: int = 1, timeout: int = 30, **kwargs) -> str:
+def execute(keyword: str, vod_id: str = "", page: int = 1, timeout: int = 30, **kwargs) -> str:
     """
     执行影视搜索技能。
 
+    两步流程：
+    1. 当只提供 keyword 时：搜索影视并输出所有结果列表，供用户选择序号
+    2. 当提供 keyword + vod_id 时：获取指定影视的详情和逐集播放链接
+
     Args:
-        action: 操作类型，search 或 play
-        keyword: 搜索关键词（search 时必填）
-        vod_id: 影视 ID（play 时必填）
-        play_index: 集数索引（play 时可选，默认 1）
-        page: 页码（search 时可选，默认 1）
+        keyword: 搜索关键词（必填）
+        vod_id: 影视ID（第二步使用，用户选择后传入）
+        page: 页码（可选，默认 1）
         timeout: 超时时间（秒，默认 30）
         **kwargs: 兼容额外参数
 
     Returns:
-        格式化后的搜索结果或播放信息
+        格式化后的搜索结果列表或影视详情（含逐集播放链接）
     """
-    action = action.lower().strip()
+    # 第二步：如果提供了 vod_id，获取该影视详情并逐集输出（keyword 可为空）
+    if vod_id:
+        vod_detail = get_vod_detail(vod_id, timeout)
+        if not vod_detail:
+            return f"❌ 未找到影视详情，ID: {vod_id}"
+        return format_vod_detail(vod_detail)
 
-    if action == "search":
-        if not keyword:
-            return "❌ 搜索操作需要提供 keyword 参数"
+    # 第一步：搜索影视，输出所有结果列表（必须提供 keyword）
+    if not keyword:
+        return "❌ 请提供影视名称关键词，例如：'流浪地球'、'三体'、'神与律师'"
 
-        results, total = search_tv(keyword, page, timeout)
+    results, total = search_tv(keyword, page, timeout)
 
-        if not results:
-            return f"✅ 搜索完成，未找到与 '{keyword}' 相关的影视"
+    if not results:
+        return f"✅ 搜索完成，未找到与 '{keyword}' 相关的影视，请尝试其他关键词。"
 
-        return format_search_results(results, keyword, total)
-
-    elif action == "play":
-        if not vod_id:
-            return "❌ 播放操作需要提供 vod_id 参数"
-
-        play_data = get_play_url(vod_id, play_index, timeout)
-
-        if not play_data:
-            return f"❌ 未找到影视 ID '{vod_id}' 的播放信息"
-
-        return format_play_info(play_data)
-
-    else:
-        return f"❌ 未知操作: {action}，支持 search 或 play"
+    # 输出所有搜索结果，让用户选择
+    return format_search_results(results, keyword, total)

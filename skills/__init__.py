@@ -240,20 +240,26 @@ def get_openai_schemas() -> List[dict]:
     global _skills_registry
     schemas = []
     for info in _skills_registry.values():
+        properties = {
+            p['name']: {
+                'type': p['type'],
+                'description': p['description']
+            }
+            for p in info['metadata'].parameters
+        }
+        required = [p['name'] for p in info['metadata'].parameters if 'default' not in p]
+
+        if not properties:
+            properties = {"_dummy": {"type": "string", "description": "无参数技能占位符"}}
+
         schema = {
             'function': {
                 'name': info['metadata'].name,
                 'description': info['metadata'].description,
                 'parameters': {
                     'type': 'object',
-                    'properties': {
-                        p['name']: {
-                            'type': p['type'],
-                            'description': p['description']
-                        }
-                        for p in info['metadata'].parameters
-                    },
-                    'required': [p['name'] for p in info['metadata'].parameters if 'default' not in p]
+                    'properties': properties,
+                    'required': required
                 }
             }
         }

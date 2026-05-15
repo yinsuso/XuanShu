@@ -199,7 +199,7 @@ def auto_cleanup_old_tasks(days_old: int = 7, max_quota_bytes: int = DEFAULT_MAX
             
             if oldest_datetime < cutoff_time:
                 # 清理旧任务
-                cleanup_task_dir(task_dir, keep_logs=False)
+                cleanup_task_dir(task_id, keep_logs=False)
                 cleaned_count += 1
                 logger.info(f"🧹 已清理旧任务：{task_id[:8]}... (超过 {days_old} 天)")
         except Exception as e:

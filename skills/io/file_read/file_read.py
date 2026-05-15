@@ -6,6 +6,7 @@ Date: 2026-04-30
 """
 
 from skills.utils.file_utils import read_file_safe
+from skills.utils.text_utils import normalize_numeric_param
 
 # 技能元数据
 SKILL_NAME = "file_read"
@@ -30,13 +31,19 @@ SKILL_PARAMETERS = [
 def execute(path: str, lines: int = 0, **kwargs) -> str:
     """
     执行文件读取操作。
-    
+
     Args:
         path: 文件路径
         lines: 读取行数
         **kwargs: 额外参数（忽略）
-    
+
     Returns:
         文件内容或错误信息
     """
+    # 全角数字兼容性处理
+    try:
+        lines = normalize_numeric_param(lines, int)
+    except (ValueError, TypeError):
+        return f"❌ lines 参数格式无效: {lines}"
+
     return read_file_safe(path, lines=lines)

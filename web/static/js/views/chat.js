@@ -1,6 +1,6 @@
 import { STATE } from '../state.js';
 import { api } from '../api.js';
-import { showToast, markdownToHtml, escapeHtml, formatTime, showView } from '../utils.js';
+import { showToast, markdownToHtml, escapeHtml, formatTime, formatDateTime, showView } from '../utils.js';
 
 let lastUserMessage = '';
 let lastConversationId = null;
@@ -12,12 +12,14 @@ export function appendMessage(role, content, msgIndex = null) {
     div.className = 'message ' + (role === 'user' ? 'user-message' : 'assistant-message');
     const renderedContent = role === 'assistant' ? markdownToHtml(content) : escapeHtml(content);
     const index = msgIndex !== null ? msgIndex : container.children.length;
+    const timeStr = formatDateTime();
     div.innerHTML = `
         <div class='avatar'>${role === 'user' ? '👤' : '🤖'}</div>
         <div class='message-content'>
             ${renderedContent}
+            <div style="margin-top:4px;font-size:11px;color:#999;text-align:right;">${timeStr}</div>
             ${role === 'assistant' ? `
-                <div style="margin-top:8px;display:flex;gap:4px;">
+                <div style="margin-top:4px;display:flex;gap:4px;justify-content:flex-end;">
                     <button class="btn" style="font-size:11px;padding:2px 6px;width:auto;" onclick="window.copyMessage(this, ${index})">📋 复制</button>
                     <button class="btn" style="font-size:11px;padding:2px 6px;width:auto;" onclick="window.regenerateMessage(${index})">🔄 重新回复</button>
                 </div>
@@ -437,7 +439,7 @@ export async function createNewStandaloneConversation() {
         showToast('已切换到单机对话模式');
         showView('chat');
         document.getElementById('messages').innerHTML = '';
-        STATE.currentConversationId = null;
+        STATE.currentConversationId = res.conversation_id || null;
         document.getElementById('current-conversation').textContent = '新对话';
     } catch (e) {
         showToast('创建单机对话失败', true);
@@ -454,7 +456,7 @@ export async function createNewCollabConversation() {
         showToast('已切换到协作对话模式');
         showView('collab-chat');
         document.getElementById('collab-messages').innerHTML = '';
-        STATE.currentConversationId = null;
+        STATE.collabConversationId = res.conversation_id || null;
         document.getElementById('current-conversation').textContent = '新协作对话';
     } catch (e) {
         showToast('创建协作对话失败', true);

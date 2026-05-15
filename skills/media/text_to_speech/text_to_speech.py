@@ -11,6 +11,7 @@ import requests
 from pathlib import Path
 
 from logger import logger
+from skills.utils.text_utils import normalize_numeric_param
 
 # 技能元数据
 SKILL_NAME = "text_to_speech"
@@ -98,6 +99,16 @@ def execute(
     """
     if not text or not text.strip():
         return "错误: text 参数不能为空"
+
+    # 全角数字兼容性处理
+    try:
+        speed = normalize_numeric_param(speed, float)
+    except (ValueError, TypeError):
+        return f"错误: speed 参数格式无效: {speed}"
+    try:
+        pitch = str(normalize_numeric_param(pitch, float))
+    except (ValueError, TypeError):
+        return f"错误: pitch 参数格式无效: {pitch}"
 
     # 确定输出路径
     if output_file:

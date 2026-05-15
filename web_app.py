@@ -2507,7 +2507,8 @@ async def switch_conversation_mode_api(request: Request):
         else:
             conv_manager.switch_mode(conv_type)
 
-        return {"success": True, "message": f"已切换到{mode}模式对话"}
+        conversation_id = conv_manager.current_conversation.conversation_id if conv_manager.current_conversation else None
+        return {"success": True, "message": f"已切换到{mode}模式对话", "conversation_id": conversation_id}
     except Exception as e:
         logger.error(f"切换对话模式失败: {e}", exc_info=True)
         return {"success": False, "error": str(e)}
@@ -2702,11 +2703,12 @@ def skill_function(param1: str, param2: int = 0) -> str:
         if not config:
             return {"success": False, "error": "没有可用的模型配置"}
 
-        skill_code = call_model(
+        result = call_model(
             config=config,
             prompt=prompt,
             system_prompt="你是一个 Python 专家，擅长生成高质量的技能代码。"
         )
+        skill_code = result.get("content", "")
 
         if not skill_code:
             return {"success": False, "error": "模型返回空代码"}

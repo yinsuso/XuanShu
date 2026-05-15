@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from logger import logger
 from config import PROJECT_ROOT
-from .evolution.trajectory import TaskTrajectory
+from evolution.trajectory import TaskTrajectory
 
 REFLECTIONS_DIR = os.path.join(PROJECT_ROOT, "data", "reflections")
 os.makedirs(REFLECTIONS_DIR, exist_ok=True)

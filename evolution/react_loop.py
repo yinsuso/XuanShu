@@ -138,26 +138,21 @@ class ReActLoop:
 思考内容:
 {thought.content}
 
-可用技能:
-{self._list_skills()}
-
-请决定：
-1. 是否需要调用技能？
-2. 如果需要，调用哪个技能？参数是什么？
-3. 如果不需要，给出最终答案。
-
-请用JSON格式返回：
-{{
-    "needs_action": true/false,
-    "skill_name": "技能名称或null",
-    "args": {{"参数名": "参数值"}},
-    "final_answer": "最终答案或null",
-    "reasoning": "决策理由"
-}}"""
+请决定是否需要调用技能来获取信息或执行任务，还是直接给出最终答案。"""
 
         response = self.agent.call_model(prompt, is_collab_mode=is_collab_mode, collab_context=collab_context)
         content = response.get("response", "")
-        
+        tool_calls = response.get("tool_calls", [])
+
+        if tool_calls:
+            tc = tool_calls[0]
+            return ActionDecision(
+                needs_action=True,
+                skill_name=tc.get("name"),
+                args=tc.get("arguments", {}),
+                reasoning="模型通过 Function Calling 决定调用技能"
+            )
+
         return self._parse_decision(content)
     
     def _execute_action(self, decision: ActionDecision) -> str:

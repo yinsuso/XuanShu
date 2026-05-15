@@ -75,14 +75,13 @@ class EvolutionEngine:
         prompt = self.generate_reflection_prompt(task, result, success, tools_used)
 
         # 调用模型：使用动态获取的配置
-        response = call_model(
+        result = call_model(
             config=config,
             prompt=prompt,
             system_prompt="你是一个自我进化的 AI 助手，擅长复盘和总结经验。"
         )
 
-        # call_model 返回纯文本字符串
-        reflection_text = response
+        reflection_text = result.get("content", "")
         reflection = self.analyze_reflection(reflection_text)
 
         # 保存到记忆
@@ -148,14 +147,13 @@ def skill_function(param1: str, param2: int = 0) -> str:
 只输出 Python 代码，不要其他解释。
 """
         # 调用模型：使用动态获取的配置
-        response = call_model(
+        result = call_model(
             config=config,
             prompt=prompt,
             system_prompt="你是一个 Python 专家，擅长生成高质量的技能代码。"
         )
 
-        # call_model 返回纯文本字符串（技能代码）
-        return response
+        return result.get("content", "")
 
     def run_evolution_cycle(self, task: str, result: str, success: bool, tools_used: List[str]):
         """运行完整进化循环"""

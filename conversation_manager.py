@@ -205,30 +205,14 @@ class ConversationManager:
 
     def switch_mode(self, conversation_type: ConversationType):
         """切换到指定模式的对话，两套对话完全隔离。
-        如果该模式下有最近的对话，则加载它；否则创建新对话。"""
+        每次启动默认创建全新对话，不自动加载历史记录。"""
         if conversation_type == ConversationType.STANDALONE:
-            # 优先尝试加载单机模式最近的对话
-            last_standalone = self.list_conversations(limit=1, conversation_type=ConversationType.STANDALONE)
-            if last_standalone:
-                last_id = last_standalone[0]["conversation_id"]
-                if self.load_conversation(last_id):
-                    self._standalone_current_id = last_id
-                    logger.info(f"切换到单机模式并加载最近对话: {last_id[:8]}...")
-                    return
-            # 没有历史则创建新对话
             self.new_conversation(initial_title="单机对话", conversation_type=ConversationType.STANDALONE)
+            self.save_current()
             logger.info(f"切换到单机模式并创建新对话: {self._standalone_current_id[:8]}...")
         else:
-            # 优先尝试加载协作模式最近的对话
-            last_collab = self.list_conversations(limit=1, conversation_type=ConversationType.COLLABORATION)
-            if last_collab:
-                last_id = last_collab[0]["conversation_id"]
-                if self.load_conversation(last_id):
-                    self._collab_current_id = last_id
-                    logger.info(f"切换到协作模式并加载最近对话: {last_id[:8]}...")
-                    return
-            # 没有历史则创建新对话
             self.new_conversation(initial_title="协作对话", conversation_type=ConversationType.COLLABORATION)
+            self.save_current()
             logger.info(f"切换到协作模式并创建新对话: {self._collab_current_id[:8]}...")
 
     def load_conversation(self, conversation_id: str) -> bool:
@@ -308,8 +292,8 @@ class ConversationManager:
 
 标题："""
             
-            response = call_model(config=config, prompt=prompt, system_prompt="你是一个专业的标题生成器，擅长为对话生成简洁准确的标题。")
-            title = response.strip()
+            result = call_model(config=config, prompt=prompt, system_prompt="你是一个专业的标题生成器，擅长为对话生成简洁准确的标题。")
+            title = result.get("content", "").strip()
             
             if title and len(title) > 0:
                 if len(title) > 30:
@@ -440,15 +424,6 @@ def get_global_conversation_manager() -> ConversationManager:
     global _global_conversation_manager
     if _global_conversation_manager is None:
         _global_conversation_manager = ConversationManager()
-        
-        standalone_list = _global_conversation_manager.list_conversations(limit=1, conversation_type=ConversationType.STANDALONE)
-        collab_list = _global_conversation_manager.list_conversations(limit=1, conversation_type=ConversationType.COLLABORATION)
-        
-        if standalone_list:
-            _global_conversation_manager._standalone_current_id = None
-        if collab_list:
-            _global_conversation_manager._collab_current_id = None
-        
         logger.info("🚀 项目启动：默认创建全新对话，不自动加载历史记录")
     return _global_conversation_manager
 

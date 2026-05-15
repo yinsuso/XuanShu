@@ -1,4 +1,4 @@
-# 🤖 玄枢 (XuanShu) v5.7.4
+# 🤖 玄枢 (XuanShu) v5.8.0
 
 **一个具备自进化能力的本地AI智能体集群系统**
 
@@ -16,6 +16,7 @@
 - **🌐 局域网协作**：支持一键创建/加入协作房间，UDP三重发现机制确保中继路由器场景也能100%找到房间。
 - **🚀 跨互联网远程串联**：手动指定IP/域名，突破局域网限制！本地显卡电脑和远程GPU服务器可以跨地区串联成分布式算力集群，心跳保活、负载实时上报、分工协作！
 - **🔄 协作模式技能同步**：【v5.7.0 新增】协作模式下，任意 Agent 生成的新技能可自动同步到集群所有节点，实现"一次生成，全网共享"！
+- **🎯 v5.8.0 MVP 完结版**：大版本5系列正式收官，多机协作Agent完成MVP版本，具备完整的局域网/跨互联网协作能力！
 - **💾 双轨记忆系统**：结合 SQLite (高性能潜意识) 与 Markdown (可编辑意识)，实现长期记忆的精准检索与人工引导。
 - **🧠 三级降级向量记忆**：向量语义搜索 → SQLite 关键词匹配 → 纯 JSON 文件存储，自动检测依赖可用性，从高端服务器到嵌入式设备全平台适配。
 - **👁️ Web 资源直显**：完美支持模型生成的图片、音频、视频在 Web 端直接预览。
@@ -168,6 +169,42 @@ set WEB_PORT=8080  # Windows
 export WEB_PORT=8080  # Linux/Mac
 ```
 
+#### 集群API Token配置
+
+启动时如果看到 `[CONFIG安全警告] 检测到使用默认Cluster Token`，说明需要配置永久Token。
+
+**配置方法（推荐在启动前设置）：**
+
+**Windows 用户（PowerShell）：**
+```powershell
+# 临时设置（当前窗口有效）
+$env:CLUSTER_API_TOKEN = "your-secure-random-token-32-chars-min"
+python launcher.py
+
+# 永久设置（用户级别）
+[Environment]::SetEnvironmentVariable("CLUSTER_API_TOKEN", "your-secure-random-token-32-chars-min", "User")
+# 设置后需要重新打开终端窗口生效
+```
+
+**Windows 用户（CMD）：**
+```cmd
+set CLUSTER_API_TOKEN=your-secure-random-token-32-chars-min
+python launcher.py
+```
+
+**Linux / macOS 用户：**
+```bash
+# 临时设置（当前终端有效）
+export CLUSTER_API_TOKEN="your-secure-random-token-32-chars-min"
+python launcher.py
+
+# 永久设置（写入 ~/.bashrc 或 ~/.zshrc）
+echo 'export CLUSTER_API_TOKEN="your-secure-random-token-32-chars-min"' >> ~/.bashrc
+source ~/.bashrc
+```
+
+> **Token要求**：建议至少32位字符，包含字母、数字和符号，确保集群通信安全。所有加入同一集群的节点必须使用相同的 `CLUSTER_API_TOKEN`。
+
 ## 🛠️ 技术栈
 - **Backend**: FastAPI, SQLite (WAL), Python 3.10
 - **Frontend**: HTML5, CSS3, JavaScript (Vanilla)
@@ -232,6 +269,7 @@ set USE_VECTOR_MEMORY=true
 | CLUSTER_ROLE | str | `worker` | CLUSTER_ROLE | 角色(manager/worker) |
 | CLUSTER_MANAGER_HOST | str | `127.0.0.1` | CLUSTER_MANAGER_HOST | Manager地址 |
 | CLUSTER_MANAGER_PORT | int | `30001` | CLUSTER_MANAGER_PORT | Manager端口 |
+| CLUSTER_API_TOKEN | str | 自动生成 | CLUSTER_API_TOKEN | 集群API安全令牌（见下方配置说明） |
 
 
 ## 🗺️ 集群协作 — 单机群殴，分布式算力协同
@@ -283,7 +321,15 @@ set USE_VECTOR_MEMORY=true
 
 ---
 
-### 🔄 协作模式技能同步（v5.7.0 新增）
+### 🎯 v5.8.0 MVP 完结版（v5.8.0 新增）
+大版本5系列正式收官。从v5.0到v5.8.0，玄枢完成了从单机Agent到多机协作集群的完整进化：
+- ✅ 单机模式：自进化、技能生成、记忆系统、审批机制
+- ✅ 协作模式：房间创建/加入/解散、UDP发现、TCP通信、任务分发
+- ✅ 技能同步：集群内技能自动同步，一次生成全网共享
+- ✅ 跨互联网：支持公网IP/域名，突破局域网限制
+- ✅ 安全加固：完整的安全审计，高危漏洞修复
+
+后续版本将基于v6.0.0开始，进入「认知深化」阶段。
 
 在协作模式下，任意 Agent 生成的新技能可以**自动同步**到集群中的所有其他节点，实现"一次生成，全网共享"。
 
@@ -372,12 +418,11 @@ sudo firewall-cmd --reload
 - 访问 `/static/index.html` 进入主界面。
 - 集群控制面板提供：
   - 房间状态、成员列表
-  - 节点实时负载（CPU、内存、GPU）
   - 任务队列与完成状态
   - 一键启停协作任务
 
 ## AI声明：
-本项目由Trae 、 qwen3.5 、step-3.5-flash 、kimi-k2.6 与 gemma 4 模型提供技术辅助，部分代码由这几个模型/工具编写并审核。
+本项目由Trae 、 qwen3.5 、step-3.5-flash 、kimi-k2.6 与 gemma 4 模型提供技术辅助，大部分代码由这几个模型/工具编写并审核。
 
 
 ## 📜 开源协议

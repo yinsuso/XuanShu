@@ -18,7 +18,7 @@ SKILL_NAME = "opencli_exec"
 SKILL_DESCRIPTION = "执行 opencli 命令，获取命令输出结果。支持 help、version、list 等所有 opencli 子命令。"
 SKILL_TRIGGER = "当需要执行 opencli 命令、查询 opencli 版本、获取帮助信息或执行其他 opencli 相关操作时使用。"
 SKILL_CATEGORY = "system"
-SKILL_REQUIRES_CONFIRMATION = False
+SKILL_REQUIRES_CONFIRMATION = True
 SKILL_PARAMETERS = [
     {
         "name": "command",
@@ -82,18 +82,17 @@ def execute(command: str = "", timeout: int = 30, **kwargs) -> str:
     """
     opencli_path = _find_opencli()
 
-    # 构建完整命令
+    # 构建完整命令（使用列表传参，避免shell注入）
+    command_parts = [opencli_path]
     if command and command.strip():
-        full_command = f"{opencli_path} {command.strip()}"
-    else:
-        full_command = opencli_path
+        command_parts.extend(command.strip().split())
 
-    logger.info(f"执行 opencli 命令: {full_command}")
+    logger.info(f"执行 opencli 命令: {' '.join(command_parts)}")
 
     try:
         result = subprocess.run(
-            full_command,
-            shell=True,
+            command_parts,
+            shell=False,
             capture_output=True,
             text=True,
             timeout=timeout,

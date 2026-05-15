@@ -19,17 +19,25 @@ export function markdownToHtml(text) {
         return `<pre><code class="language-${lang || 'text'}">${code.trim()}</code></pre>`;
     });
 
+    // 无序列表：将连续的 - 行收集后统一包裹
     text = text.replace(/^- (.*$)/gim, '<li>$1</li>');
-    text = text.replace(/(?:<li>.*<\/li>)+/g, function(match) {
-        return `<ul>${match}</ul>`;
-    });
-
-    text = text.replace(/^\d+\. (.*$)/gim, '<li>$1</li>');
-    text = text.replace(/(?:<li>.*<\/li>)+/g, function(match) {
-        if (!match.includes('<ul>')) {
-            return `<ol>${match}</ol>`;
+    text = text.replace(/(<li>.*<\/li>\n?)+/g, function(match) {
+        if (!match.includes('<ol>')) {
+            return `<ul>${match}</ul>`;
         }
         return match;
+    });
+
+    // 有序列表：保留原始序号，使用 <ol start="n"> 确保序号正确
+    // 先匹配连续的数字开头行，统一处理
+    text = text.replace(/((?:^\d+\. .*\n?)+)/gim, function(match) {
+        const items = match.trim().split('\n');
+        const startMatch = items[0].match(/^(\d+)\.\s/);
+        const start = startMatch ? startMatch[1] : '1';
+        const lis = items.map(line => {
+            return line.replace(/^\d+\.\s/, '<li>') + '</li>';
+        }).join('\n');
+        return `<ol start="${start}">${lis}</ol>`;
     });
 
     text = text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank">$1</a>');
@@ -60,6 +68,17 @@ export function formatTime(timeStr) {
     } catch {
         return timeStr;
     }
+}
+
+export function formatDateTime(date = new Date()) {
+    const pad = (n) => String(n).padStart(2, '0');
+    const y = date.getFullYear();
+    const m = pad(date.getMonth() + 1);
+    const d = pad(date.getDate());
+    const H = pad(date.getHours());
+    const M = pad(date.getMinutes());
+    const S = pad(date.getSeconds());
+    return `${y}-${m}-${d} ${H}:${M}:${S}`;
 }
 
 export function showView(viewName) {

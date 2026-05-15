@@ -147,8 +147,22 @@ class WorkflowInstance:
     
     def _evaluate_condition(self, condition: str) -> bool:
         try:
+            import ast
             namespace = {**self.variables, **self.results}
-            result = eval(condition, {}, namespace)
+            tree = ast.parse(condition.strip(), mode='eval')
+            allowed_nodes = (
+                ast.Expression, ast.BinOp, ast.UnaryOp, ast.BoolOp, ast.Compare,
+                ast.Num, ast.Constant, ast.Str, ast.Name, ast.Load, ast.Add,
+                ast.Sub, ast.Mult, ast.Div, ast.Mod, ast.Pow, ast.FloorDiv,
+                ast.USub, ast.UAdd, ast.Not, ast.Invert, ast.And, ast.Or,
+                ast.Eq, ast.NotEq, ast.Lt, ast.LtE, ast.Gt, ast.GtE,
+                ast.Is, ast.IsNot, ast.In, ast.NotIn, ast.Tuple, ast.List
+            )
+            for node in ast.walk(tree):
+                if not isinstance(node, allowed_nodes):
+                    logger.warning(f"条件中包含不允许的操作: {type(node).__name__}")
+                    return False
+            result = eval(compile(tree, '<string>', 'eval'), {"__builtins__": {}}, namespace)
             return bool(result)
         except Exception as e:
             logger.warning(f"条件评估失败: {e}")

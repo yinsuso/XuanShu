@@ -126,6 +126,25 @@ class SkillGenerator:
    - 长度不超过30字符
    - 仅包含小写字母、数字、下划线
    - 禁止使用中文、标点、空格
+7. 【强制要求】全角数字兼容性处理：
+   - 如果技能涉及数字参数（如序号、数量、页码、数值等），必须在 execute() 函数入口处处理全角数字
+   - 导入工具函数：from skills.utils.text_utils import normalize_numeric_param
+   - 在函数开头对所有数字参数调用 normalize_numeric_param() 进行转换
+   - 示例：
+     ```python
+     from skills.utils.text_utils import normalize_numeric_param
+     
+     def execute(lines: int = 0, speed: float = 1.0, **kwargs) -> str:
+         try:
+             lines = normalize_numeric_param(lines, int)
+         except (ValueError, TypeError):
+             return f"错误: lines 参数格式无效: {{lines}}"
+         try:
+             speed = normalize_numeric_param(speed, float)
+         except (ValueError, TypeError):
+             return f"错误: speed 参数格式无效: {{speed}}"
+         # 正常业务逻辑...
+     ```
 
 模板示例:
 ```python
@@ -175,8 +194,11 @@ def skill_function(param1: str, param2: int = 0) -> str:
             # 检查是否已存在同名技能
             existing_filepath = None
             if skill_name:
-                from skills import _skill_filepaths
-                existing_filepath = _skill_filepaths.get(skill_name)
+                from skills import get_skill
+                existing_skill = get_skill(skill_name)
+                if existing_skill:
+                    import inspect
+                    existing_filepath = inspect.getfile(existing_skill.execute_func) if hasattr(existing_skill, 'execute_func') else None
 
             if existing_filepath:
                 # 升级现有技能
